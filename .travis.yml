@@ -1,44 +1,37 @@
 language: python
 sudo: required
-# https://docs.travis-ci.com/user/ci-environment/ to get a modern gcc etc
 dist: trusty
-
-# notes from http://conda.pydata.org/docs/travis.html
 python:
-  # We don't actually use the Travis Python, but this keeps it organized.
-  - "3.6"
+- '3.6'
 install:
-  # We do this conditionally because it saves us some downloading if the
-  # version is the same. 
-  - wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh;
-  - export RANDOM_ID=`python -c "from random import choice; print(''.join([choice('1234567890') for i in range(6)]))"`; 
-  - bash miniconda.sh -b -p $HOME/miniconda
-  - export PATH="$HOME/miniconda/bin:$PATH"
-  - printenv TRAVIS_PULL_REQUEST
-  - printenv TRAVIS_PULL_REQUEST_BRANCH
-  - printenv TRAVIS_COMMIT
-  - printenv TRAVIS_BRANCH
-  - printenv
-  - hash -r
-  - conda config --set always_yes yes --set changeps1 no
-  - conda update -q conda
-  # Useful for debugging any issues with conda
-  - conda info -a
-  - conda create -q -n test-environment python=$TRAVIS_PYTHON_VERSION numpy pytest cython nose boto3 PyYAML Click pytest numba
-  - source activate test-environment
-  - pip install glob2 pylint tornado awscli
-
+- wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh;
+- export RANDOM_ID=`python -c "from random import choice; print(''.join([choice('1234567890')
+  for i in range(6)]))"`;
+- bash miniconda.sh -b -p $HOME/miniconda
+- export PATH="$HOME/miniconda/bin:$PATH"
+- printenv TRAVIS_PULL_REQUEST
+- printenv TRAVIS_PULL_REQUEST_BRANCH
+- printenv TRAVIS_COMMIT
+- printenv TRAVIS_BRANCH
+- printenv
+- hash -r
+- conda config --set always_yes yes --set changeps1 no
+- conda update -q conda
+- conda info -a
+- conda create -q -n test-environment python=$TRAVIS_PYTHON_VERSION numpy pytest cython
+  nose boto3 PyYAML Click pytest numba
+- source activate test-environment
+- pip install glob2 pylint tornado awscli
 before_script:
-  - export EPOCH_STAMP=`date +%s`
-  - export BUILD_GUID=`echo $TRAVIS_JOB_NUMBER | sed 's/\./_/g'`_${EPOCH_STAMP}_${RANDOM_ID}
-  - echo CLEAN BUILD ID IS $BUILD_GUID
-
-script:
-    pytest -v --fulltrace tests/simple_tests.py
-
+- export EPOCH_STAMP=`date +%s`
+- export BUILD_GUID=`echo $TRAVIS_JOB_NUMBER | sed 's/\./_/g'`_${EPOCH_STAMP}_${RANDOM_ID}
+- echo CLEAN BUILD ID IS $BUILD_GUID
+script: pytest -v --fulltrace tests/simple_tests.py
 after_script:
-  # always make sure we do this cleanup if we can
-  - aws s3 rm --recursive s3://numpywrentest/pywren.linalg
+- aws s3 rm --recursive s3://numpywrentest/pywren.linalg
 after_failure:
-  - aws s3 rm --recursive s3://numpywrentest/pywren.linalg
-
+- aws s3 rm --recursive s3://numpywrentest/pywren.linalg
+env:
+  matrix:
+  - secure: QUbD3c8nhEYEDNTeN98MF4dYa4ykH87ReqnvxeEM6m/FV1JtP+v1bAQ67pCFNMUy+R+G2Fvk7T4n48xINvn7CLThaomGrKdoZylPfV5vmQfbOXEp36EqbLfaFwL3PHjVyO0n8n06dilJT38vGgoDzYTmX+YIX7+W8Rd/8IJ2oeyNfGO9qePXOZJy1xohi3K5wVeyoDvLDzUtyERhTgMhXNy+K6Zc/6hXIK61u09jNpyfGVnJnlgkZzNBX4K+eCj3CO6nXjPCgd5+Qy0vFH7uckD6Gf6JsnTv7DSPd94bPDX4jGtHmvDdJUu7pmaSRMG3gZSlNv9PF7xa3mqcLdILsXDiaipGdq1RDDh2lgHF23EvIVUOxd8f8D++ta1oAJo4t5zYfsAyAHVjG4msh33qcBxZmrmvpz1EXn15I9DdKvPpSiZQ+B3O0WKsMZV3yRdN+eJFRWj93J0hFeHvkGVQx3On//CNVeYU/fJeq75wSZS4MNzssai6unBqI8nrybZoTtfFLOCLRWh2qNX+ilg8Y6T8ARo96zPmUIrP6HDRbNs9gt0uVeM8CmSuQ75FD5dQaD2WM+x6sFLA2OZwywS/F7FaAEwRv+8kr+5ztNH1mPX6vvhLLZj9zUUqt3E8TgCkrO9Lu3NWBWHYVemJg93MKh7CL1YWUJrSFQr6/7MeCFI=
+  - secure: eJssUirmffRf4uJHe75s880MxJpZV5ybCO6pZTrWlnBZScMLJr2LQxBw887Y+yLhONM5UUtoDPshrXPWnbZ+f4P7CDytflmFH1TNTbWYU7OievJq1XSrRBVkQOubwfyMRWk/erDAv4VANiU+x39s0T8WPP5XD0mnn0O8GdIwsxhMfmyhIWp4G6oOT76KCTYW8nDgNfjf3qbaLHXSR6x9D4vKqZ1mYrO1wYUmrwQrU9xoebDsoRY6JzYesxc9Xl/nNBv3twmyDsyJcIKIxSzNhIivDO6PVcLlQo9bHrkU10y39w9x9DNdcDDLWs43r1+n/jw1mtgnZTgWEnEzadHHnrBKKQychytgZxihtUh5i97kfI42O7WrBZ2jATD0k5BsFTrUdSml/rObWvI747FNNkFggtczpU6xuBKOquv9Sl9VqyssHhe6eSrL03GbarJEV4ic+IvzjxPGRtMEeRZasr6KzafKxKFsIxIHYJdx0oEB7cYEkCvQeRohYarWub9zJZsqZcuwGsB1EYwXZXRQXbuDSuI7794DQ3ulmDv78XWcFKFtNj2rh0pC+qIrz+oXUwM8WXXssDvZPUBCwy25xw/1MRjpV9c/v24sujYg/oQuVUBk5YckhVuTjkyEf5pGv5WXPKHyqg8qgvZsTMGfKECv8gZUrdozg6+C7b+/E5k=
