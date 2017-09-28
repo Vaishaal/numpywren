@@ -7,6 +7,7 @@ import time
 import boto3
 import cloudpickle
 import numpy as np
+import json
 
 
 def list_all_keys(bucket, prefix):
@@ -35,12 +36,62 @@ def block_key_to_block(key):
     except Exception as e:
         return None
 
+def get_local_matrix(X_sharded, dtype="float64", workers=22, mmap_loc=None):
+    hash_key = hash.hash_string(X_sharded.key)
+    if (mmap_loc == None):
+        mmap_loc = "/dev/shm/{0}".format(hash_key)
+    return fast_kernel_column_blocks_get(X_sharded, \
+                                  col_blocks=X_sharded._block_idxs(1), \
+                                  row_blocks=X_sharded._block_idxs(0), \
+                                  mmap_loc=mmap_loc, \
+                                  workers=workers, \
+                                  dtype=dtype)
 
-class ShardedMatrix(object):
+def fast_kernel_column_blocks_get(K, col_blocks, mmap_loc, workers=21, dtype="float64", row_blocks=None):
+    futures = fast_kernel_column_block_async(K, col_blocks, mmap_loc=mmap_loc, workers=workers, dtype=dtype, row_blocks=row_blocks)
+    fs.wait(futures)
+    [f.result() for f in futures]
+    return load_mmap(*futures[0].result())
+
+def fast_kernel_column_block_async(K, col_blocks, executor=None, workers=23, mmap_loc="/dev/shm/block0", wait=False, dtype="float64", row_blocks=None):
+
+    if (executor == None):
+        executor = fs.ProcessPoolExecutor(max_workers=workers)
+
+
+    if (row_blocks == None):
+        row_blocks = K._block_idxs(0)
+
+    total_block_width = 0
+    total_block_height = 0
+    for row_block in row_blocks:
+        total_block_height += min(K.shard_sizes[0], K.shape[0] - row_block*K.shard_sizes[0])
+
+    for col_block in col_blocks:
+        total_block_width += min(K.shard_sizes[1], K.shape[1] - col_block*K.shard_sizes[1])
+
+    mmap_shape = (total_block_height,  total_block_width)
+    s = time.time()
+    np.memmap(mmap_loc, dtype=dtype, mode='w+', shape=mmap_shape)
+    e = time.time()
+    futures = []
+    chunk_size = int(np.ceil(len(row_blocks)/workers))
+    chunks = misc.chunk(row_blocks, chunk_size)
+    row_offset = 0
+    for c in chunks:
+        futures.append(executor.submit(K.get_blocks_mmap, c, col_blocks, mmap_loc, mmap_shape, dtype=dtype, row_offset=row_offset, col_offset=0))
+        row_offset += len(c)
+    return futures
+
+def load_mmap(mmap_loc, mmap_shape, mmap_dtype):
+    return np.memmap(mmap_loc, dtype=mmap_dtype, mode='r+', shape=mmap_shape)
+
+
+
+class Matrix(object):
     def __init__(self, key,
                  shape=None,
-                 shard_size_0=None,
-                 shard_size_1=None,
+                 shard_sizes=[],
                  bucket=None,
                  prefix='pywren.linalg/'):
 
@@ -53,27 +104,32 @@ class ShardedMatrix(object):
         self.prefix = prefix
         self.key = key
         self.key_base = prefix + self.key + "/"
+        self.replication_factor = 1
         header = self.__read_header__()
-        self.pwex = None
         if header is None and shape is None:
             raise Exception("header doesn't exist and no shape provided")
         if not (header is None) and shape is None:
-            self.shard_size_0 = header.shard_size_0
-            self.shard_size_1 = header.shard_size_1
-            self.shape = header.shape
+            self.shard_sizes = header['shard_sizes']
+            self.shape = header['shape']
         else:
             self.shape = shape
-            self.shard_size_0 = shard_size_0
-            self.shard_size_1 = shard_size_1
+            self.shard_sizes = shard_sizes
 
-        if self.shard_size_0 is None:
-            raise Exception("No shard_0_size provided")
-        if self.shard_size_1 is None:
-            self.shard_size_1 = self.shape[1]
+        self.shard_size_0 = self.shard_sizes[0]
+        self.shard_size_1 = self.shard_sizes[1]
 
         self.symmetric = False
-        self.shard_sizes = (self.shard_size_0, self.shard_size_1)
         self.__write_header__()
+
+    def __write_header__(self):
+        key = self.key_base + "header"
+        client = boto3.client('s3')
+        header = {}
+        header['shape'] = self.shape
+        header['shard_sizes'] = self.shard_sizes
+        client.put_object(Key=key, Bucket = self.bucket, Body=json.dumps(header), ACL="bucket-owner-full-control")
+        return 0
+
 
     @property
     def blocks_exist(self):
@@ -108,9 +164,6 @@ class ShardedMatrix(object):
         block_idxs = set(self.block_idxs)
         block_idxs_exist = set(self.block_idxs_exist)
         return list(filter(lambda x: x, list(block_idxs_exist.symmetric_difference(block_idxs))))
-
-
-
 
     @property
     def block_idxs(self):
@@ -209,23 +262,15 @@ class ShardedMatrix(object):
             key_string = "{0}_{1}_{2}_{3}_{4}_{5}_{6}".format(start_0, end_0, self.shard_size_0, start_1, end_1, self.shard_size_1, rep)
             return self.key_base + key_string
 
-
-
     def __read_header__(self):
         client = boto3.client('s3')
         try:
             key = self.key_base + "header"
-            header = cloudpickle.loads(client.get_object(Bucket=self.bucket, Key=key)['Body'].read())
+            header = json.loads(client.get_object(Bucket=self.bucket, Key=key)['Body'].read())
         except:
             header = None
         return header
 
-
-    def __write_header__(self):
-        client = boto3.client('s3')
-        key = self.key_base + "header"
-        client.put_object(Key=key, Bucket = self.bucket, Body=cloudpickle.dumps(self), ACL="bucket-owner-full-control")
-        return 0
 
     def __shard_idx_to_key__(self, shard_0, shard_1, replicate=0):
         N = self.shape[0]
@@ -321,16 +366,13 @@ class ShardedMatrix(object):
                 block_0, block_1 = block_1, block_0
 
             s = time.time()
-            if ((block_0, block_1) in self.__cached_blocks):
-                X_block = self.__cached_blocks[(block_0, block_1)]
-            else:
-                r = np.random.choice(self.replication_factor, 1)[0]
-                key = self.__shard_idx_to_key__(block_0, block_1, r)
-                bio = self.__s3_key_to_byte_io__(key)
-                e = time.time()
-                s = time.time()
-                X_block = np.load(bio)
-                e = time.time()
+            r = np.random.choice(self.replication_factor, 1)[0]
+            key = self.__shard_idx_to_key__(block_0, block_1, r)
+            bio = self.__s3_key_to_byte_io__(key)
+            e = time.time()
+            s = time.time()
+            X_block = np.load(bio)
+            e = time.time()
 
             if (flip):
                 X_block = X_block.T
@@ -360,9 +402,6 @@ class ShardedMatrix(object):
 
     def delete_block(self, block_0, block_1):
         client = boto3.client('s3')
-        if ((block_0, block_1) in self.__cached_blocks):
-            del self.__cached_blocks[(block_0, block_1)]
-
         start_0 = block_0*self.shard_size_0
         end_0 = min(block_0*self.shard_size_0 + self.shard_size_0, self.shape[0])
         shape_0 = end_0 - start_0
@@ -381,12 +420,11 @@ class ShardedMatrix(object):
         return cloudpickle.dumps(self)
 
 
-class ShardedSymmetricMatrix(ShardedMatrix):
+class SymmetricMatrix(Matrix):
     def __init__(self, key, data=None, shape=None, shard_size_0=4096, shard_size_1=None, bucket=None, prefix='pywren.linalg/', transposed = False, diag_offset=0.0):
-        ShardedMatrix.__init__(self, key, data, shape, shard_size_0, shard_size_1, bucket, prefix, transposed)
+        Matrix.__init__(self, key, data, shape, shard_size_0, shard_size_1, bucket, prefix, transposed)
         self.symmetric = True
         self.diag_offset = diag_offset
-        self.__cached_blocks = {}
 
     def _blocks(self, axis=None):
 
@@ -422,7 +460,7 @@ class ShardedSymmetricMatrix(ShardedMatrix):
             raise Exception("Invalid Axis")
 
     def _block_idxs(self, axis=None):
-        all_block_idxs = ShardedMatrix._block_idxs(self, axis=axis)
+        all_block_idxs = Matrix._block_idxs(self, axis=axis)
         if (axis == None):
             sorted_pairs = map(lambda x: tuple(sorted(x)), all_block_idxs)
             valid_blocks = sorted(list(set(sorted_pairs)))
