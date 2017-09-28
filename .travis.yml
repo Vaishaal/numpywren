@@ -34,7 +34,7 @@ before_script:
   - echo CLEAN BUILD ID IS $BUILD_GUID
 
 script:
-    pytest -v --traceback tests/simple_test
+    pytest -v --fulltrace tests/simple_tests.py
 
 after_script:
   # always make sure we do this cleanup if we can
