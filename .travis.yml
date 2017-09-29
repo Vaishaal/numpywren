@@ -21,16 +21,43 @@ install:
 - conda create -q -n test-environment python=$TRAVIS_PYTHON_VERSION numpy pytest cython
   nose boto3 PyYAML Click pytest numba scipy
 - source activate test-environment
-- pip install glob2 pylint tornado awscli sklearn cloudpickle
+- pip install glob2 pylint tornado awscli sklearn cloudpickle pywren
+
 before_script:
 - export EPOCH_STAMP=`date +%s`
 - export BUILD_GUID=`echo $TRAVIS_JOB_NUMBER | sed 's/\./_/g'`_${EPOCH_STAMP}_${RANDOM_ID}
 - echo CLEAN BUILD ID IS $BUILD_GUID
-script: pytest -v --fulltrace tests/simple_tests.py
+- export BUCKET_NAME=`echo numpywren_travis_$BUILD_GUID | sed 's/_/-/g'`
+- echo $BUCKET_NAME
+- pywren test_config
+- pywren get_aws_account_id
+
+script:
+- pywren create_config --lambda_role=pywren_travis_test_$BUILD_GUID --function_name=pywren_travis_$BUILD_GUID --bucket_name=$BUCKET_NAME --sqs_queue=pywren_travis_$BUILD_GUID --standalone_name=pywren_travis_$BUILD_GUID
+- pywren create_role
+- pywren create_bucket
+- pywren create_instance_profile
+- pywren create_queue
+- sleep 10
+- pywren deploy_lambda
+- pytest -v --fulltrace tests/simple_tests.py
+
 after_script:
-- aws s3 rm --recursive s3://numpywrentest/pywren.linalg
+- pywren delete_queue
+- pywren delete_lambda
+- pywren delete_instance_profile
+- pywren delete_role
+- pywren delete_bucket
+- pywren standalone terminate_instances
+
 after_failure:
-- aws s3 rm --recursive s3://numpywrentest/pywren.linalg
+- pywren delete_queue
+- pywren delete_lambda
+- pywren delete_instance_profile
+- pywren delete_role
+- pywren delete_bucket
+- pywren standalone terminate_instances
+
 env:
   global:
   - secure: mAE3/N7JNzrm+ydQd6RXUADdLqwxxCSiCGsEoUUEuyJSFWoMQc30BGsx3GRB3Tbr/ieMr49pAct3dkJNMHwY2g9CD9enJHb//UaNiMMAJhWZvdAD95MhupbyMfA+p35J6dVyPm4BfuKNqSg3u1JA4xxfQg2oUH2L6PHCe63HEoa0hOe34CWcW6Gc7Cj7mxGwFHrP2Nv9JjpJyF7pZQAktbx5Vkplzh5iXrRcZsz/B6/pq3hif5VaFaF+uaMNe8YL7u5NT0s2wKTXGqZXPPCvaSP3apNN6vcqWJ3Lih9pxnyRfrITO7D/oXAe5TbP0jKXBG5I7gW2UIQrh3zweA1hCeYqY+Lpq+aIEqipn79pkQDo1101bwSuC/1onCFIqndUuYtz58wipe2ZPHJqEgGI5ENxBKEq8zk1sUqkIBC3jKA/o0Q2czwzRuUmQAV2tEhP6adVA/MoPiFHjKPrCRUCSXTvfJCjiIEzau8WbSXBis4r2TYOeh60tciPo8NUPdPPxMxyZj+DaX6ULMfb6G5SHp9pkek2IVWoqVE3r8Dn9mKtVJxEMDCY6FmF3wRRHMqDnrnMsBn2DGMxUXYKI4wmrVUgYe1R6Fsytein1/oL56aChxyZ4iztsq915bQGvHHKaAwhFiTJ0lz3nPdnUpU7oIRrq2PZpOvKB+j4YIx9Ph0=

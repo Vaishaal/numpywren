@@ -8,92 +8,24 @@ import boto3
 import cloudpickle
 import numpy as np
 import json
+import logging
+from . import matrix_utils
+from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix
+import pywren.wrenconfig as wc
+
+logger = logging.getLogger(__name__)
+try:
+    DEFAULT_BUCKET = wc.default()['s3']['bucket']
+except Exception as e:
+    DEFAULT_BUCKET = ""
 
 
-def list_all_keys(bucket, prefix):
-    client = boto3.client('s3')
-    objects = client.list_objects(Bucket=bucket, Prefix=prefix, Delimiter=prefix)
-    keys = list(map(lambda x: x['Key'], objects['Contents']))
-    truncated = objects['IsTruncated']
-    next_marker = objects.get('NextMarker')
-    while truncated:
-        objects = client.list_objects(Bucket=bucket, Prefix=prefix,
-                                      Delimiter=prefix, Marker=next_marker)
-        truncated = objects['IsTruncated']
-        next_marker = objects.get('NextMarker')
-        keys += list(map(lambda x: x['Key'], objects['Contents']))
-    return list(filter(lambda x: len(x) > 0, keys))
-
-def block_key_to_block(key):
-    try:
-        block_key = key.split("/")[-1]
-        blocks_split = block_key.split("_")
-        b0_start = int(blocks_split[0])
-        b0_end = int(blocks_split[1])
-        b1_start = int(blocks_split[3])
-        b1_end = int(blocks_split[4])
-        return ((b0_start, b0_end), (b1_start, b1_end))
-    except Exception as e:
-        return None
-
-def get_local_matrix(X_sharded, dtype="float64", workers=22, mmap_loc=None):
-    hash_key = hash.hash_string(X_sharded.key)
-    if (mmap_loc == None):
-        mmap_loc = "/dev/shm/{0}".format(hash_key)
-    return fast_kernel_column_blocks_get(X_sharded, \
-                                  col_blocks=X_sharded._block_idxs(1), \
-                                  row_blocks=X_sharded._block_idxs(0), \
-                                  mmap_loc=mmap_loc, \
-                                  workers=workers, \
-                                  dtype=dtype)
-
-def fast_kernel_column_blocks_get(K, col_blocks, mmap_loc, workers=21, dtype="float64", row_blocks=None):
-    futures = fast_kernel_column_block_async(K, col_blocks, mmap_loc=mmap_loc, workers=workers, dtype=dtype, row_blocks=row_blocks)
-    fs.wait(futures)
-    [f.result() for f in futures]
-    return load_mmap(*futures[0].result())
-
-def fast_kernel_column_block_async(K, col_blocks, executor=None, workers=23, mmap_loc="/dev/shm/block0", wait=False, dtype="float64", row_blocks=None):
-
-    if (executor == None):
-        executor = fs.ProcessPoolExecutor(max_workers=workers)
-
-
-    if (row_blocks == None):
-        row_blocks = K._block_idxs(0)
-
-    total_block_width = 0
-    total_block_height = 0
-    for row_block in row_blocks:
-        total_block_height += min(K.shard_sizes[0], K.shape[0] - row_block*K.shard_sizes[0])
-
-    for col_block in col_blocks:
-        total_block_width += min(K.shard_sizes[1], K.shape[1] - col_block*K.shard_sizes[1])
-
-    mmap_shape = (total_block_height,  total_block_width)
-    s = time.time()
-    np.memmap(mmap_loc, dtype=dtype, mode='w+', shape=mmap_shape)
-    e = time.time()
-    futures = []
-    chunk_size = int(np.ceil(len(row_blocks)/workers))
-    chunks = misc.chunk(row_blocks, chunk_size)
-    row_offset = 0
-    for c in chunks:
-        futures.append(executor.submit(K.get_blocks_mmap, c, col_blocks, mmap_loc, mmap_shape, dtype=dtype, row_offset=row_offset, col_offset=0))
-        row_offset += len(c)
-    return futures
-
-def load_mmap(mmap_loc, mmap_shape, mmap_dtype):
-    return np.memmap(mmap_loc, dtype=mmap_dtype, mode='r+', shape=mmap_shape)
-
-
-
-class Matrix(object):
+class BigMatrix(object):
     def __init__(self, key,
                  shape=None,
                  shard_sizes=[],
-                 bucket=None,
-                 prefix='pywren.linalg/'):
+                 bucket=DEFAULT_BUCKET,
+                 prefix='numpywren.objects/'):
 
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
@@ -271,6 +203,11 @@ class Matrix(object):
             header = None
         return header
 
+    def __delete_header__(self):
+        key = self.key_base + "header"
+        client = boto3.client('s3')
+        client.delete_object(Bucket=self.bucket, Key=key)
+
 
     def __shard_idx_to_key__(self, shard_0, shard_1, replicate=0):
         N = self.shape[0]
@@ -291,6 +228,7 @@ class Matrix(object):
             try:
                 bio = io.BytesIO(client.get_object(Bucket=self.bucket, Key=key)['Body'].read())
             except Exception as e:
+                raise
                 n_tries += 1
         if bio is None:
             raise Exception("S3 Read Failed")
@@ -319,12 +257,6 @@ class Matrix(object):
             futures.append(future)
         fs.wait(futures)
         return 0
-
-
-    def get_blocks(self, blocks_0, block_1):
-        client = boto3.client('s3')
-        blocks = [self.get_block(block_0, block_1, client) for block_0 in blocks_0]
-        return np.vstack(blocks)
 
     def get_blocks_mmap(self, blocks_0, blocks_1, mmap_loc, mmap_shape, dtype='float32', row_offset=0, col_offset=0):
         X_full = np.memmap(mmap_loc, dtype=dtype, mode='r+', shape=mmap_shape)
@@ -416,15 +348,24 @@ class Matrix(object):
             deletions.append(client.delete_object(Key=key, Bucket=self.bucket))
         return deletions
 
-    def dumps(self):
-        return cloudpickle.dumps(self)
+    def free(self):
+        [self.delete_block(x[0],x[1]) for x in self.block_idxs_exist]
+        self.__delete_header__()
 
 
-class SymmetricMatrix(Matrix):
-    def __init__(self, key, data=None, shape=None, shard_size_0=4096, shard_size_1=None, bucket=None, prefix='pywren.linalg/', transposed = False, diag_offset=0.0):
-        Matrix.__init__(self, key, data, shape, shard_size_0, shard_size_1, bucket, prefix, transposed)
+    def numpy(self):
+        return matrix_utils.get_local_matrix(self)
+
+
+class BigSymmetricMatrix(BigMatrix):
+
+    def __init__(self, key,
+                 shape=None,
+                 shard_sizes=[],
+                 bucket=DEFAULT_BUCKET,
+                 prefix='numpywren.objects/'):
+        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix)
         self.symmetric = True
-        self.diag_offset = diag_offset
 
     def _blocks(self, axis=None):
 
@@ -460,7 +401,7 @@ class SymmetricMatrix(Matrix):
             raise Exception("Invalid Axis")
 
     def _block_idxs(self, axis=None):
-        all_block_idxs = Matrix._block_idxs(self, axis=axis)
+        all_block_idxs = BigMatrix._block_idxs(self, axis=axis)
         if (axis == None):
             sorted_pairs = map(lambda x: tuple(sorted(x)), all_block_idxs)
             valid_blocks = sorted(list(set(sorted_pairs)))
@@ -481,10 +422,8 @@ class SymmetricMatrix(Matrix):
             key = self.__shard_idx_to_key__(block_0, block_1)
             bio = self.__s3_key_to_byte_io__(key)
             X_block = np.load(bio)
-
-            if block_0 == block_1 and X_block.shape[0] == X_block.shape[1]:
-                diag = np.diag_indices(X_block.shape[0])
-                X_block[diag] += self.diag_offset
+            if (flipped):
+                X_block = X_block.T
         except:
             print(block_0, block_1)
             raise
@@ -558,3 +497,13 @@ class SymmetricMatrix(Matrix):
         key = self.__get_matrix_shard_key__(start_0, end_0, start_1, end_1)
         deletions.append(client.delete_object(Key=key, Bucket=self.bucket))
         return deletions
+
+
+
+
+
+
+
+
+
+

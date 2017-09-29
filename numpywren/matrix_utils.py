@@ -18,6 +18,16 @@ def chunk(l, n):
     for i in range(0, len(l), n):
         yield l[i:i + n]
 
+def generate_key_name(X, Y, op):
+    assert op == "cxyt"
+
+    if (X.key == Y.key):
+        key = "XXT({0})".format(X.key)
+    else:
+        key = "XYT({0}, {1})".format(X.key, Y.key)
+    return key
+
+
 def list_all_keys(bucket, prefix):
     client = boto3.client('s3')
     objects = client.list_objects(Bucket=bucket, Prefix=prefix, Delimiter=prefix)
@@ -90,6 +100,53 @@ def fast_kernel_column_block_async(K, col_blocks, executor=None, workers=23, mma
         futures.append(executor.submit(K.get_blocks_mmap, c, col_blocks, mmap_loc, mmap_shape, dtype=dtype, row_offset=row_offset, col_offset=0))
         row_offset += len(c)
     return futures
+
+def fast_kernel_row_block_async(K, col_blocks, executor=None, workers=23, mmap_loc="/dev/shm/block0", wait=False, dtype="float64", row_blocks=None):
+
+    if (executor == None):
+        executor = fs.ProcessPoolExecutor(max_workers=workers)
+
+
+    if (row_blocks == None):
+        row_blocks = K._block_idxs(0)
+
+    total_block_width = 0
+    total_block_height = 0
+    for row_block in row_blocks:
+        total_block_height += min(K.shard_sizes[0], K.shape[0] - row_block*K.shard_sizes[0])
+
+    print(col_blocks)
+    print(max(col_blocks))
+    print("ARGMAX", np.argmax(col_blocks))
+    for col_block in col_blocks:
+        total_block_width += min(K.shard_sizes[1], K.shape[1] - col_block*K.shard_sizes[1])
+
+    mmap_shape = (total_block_height,  total_block_width)
+    print("MMAP SHAPE IS ", mmap_shape)
+    s = time.time()
+    X = np.memmap(mmap_loc, dtype=dtype, mode='w+', shape=mmap_shape)
+    e = time.time()
+    futures = []
+    chunk_size = int(np.ceil(len(col_blocks)/workers))
+    chunks = misc.chunk(col_blocks, chunk_size)
+    col_offset = 0
+    for c in chunks:
+        futures.append(executor.submit(K.get_blocks_mmap, row_blocks, c, mmap_loc, mmap_shape, dtype=dtype, col_offset=col_offset, row_offset=0))
+        col_offset += len(c)
+    return futures
+
+def fast_kernel_column_blocks_get(K, col_blocks, mmap_loc, workers=21, dtype="float64", row_blocks=None):
+    futures = fast_kernel_column_block_async(K, col_blocks, mmap_loc=mmap_loc, workers=workers, dtype=dtype, row_blocks=row_blocks)
+    fs.wait(futures)
+    [f.result() for f in futures]
+    return load_mmap(*futures[0].result())
+
+def fast_kernel_row_blocks_get(K, col_blocks, mmap_loc, workers=21, dtype="float64", row_blocks=None):
+    futures = fast_kernel_row_block_async(K, col_blocks, mmap_loc=mmap_loc, workers=workers, dtype=dtype, row_blocks=row_blocks)
+    fs.wait(futures)
+    [f.result() for f in futures]
+    return load_mmap(*futures[0].result())
+
 
 def load_mmap(mmap_loc, mmap_shape, mmap_dtype):
     return np.memmap(mmap_loc, dtype=mmap_dtype, mode='r+', shape=mmap_shape)
