@@ -19,7 +19,7 @@ def _cxyt_remote(block_pairs, XYT, X, Y, reduce_idxs=[0]):
         for r in reduce_idxs:
             block1 = X.get_block(bidx_0, r)
             block2 = Y.get_block(bidx_1, r)
-            if (XYT_block == None):
+            if (XYT_block is None):
                 XYT_block = block1.dot(block2.T)
             else:
                 XYT_block += block1.dot(block2.T)
