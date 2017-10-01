@@ -23,7 +23,7 @@ def _cxyt_remote(block_pairs, XYT, X, Y, reduce_idxs=[0]):
                 XYT_block = block1.dot(block2.T)
             else:
                 XYT_block += block1.dot(block2.T)
-        XYT.put_block(bidx_0, bidx_1, XYT_block)
+        XYT.put_block(XYT_block, bidx_0, bidx_1)
 
 def cxyt(pwex, X, Y, out_bucket, tasks_per_job=1, local=False):
 

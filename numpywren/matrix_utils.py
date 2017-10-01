@@ -54,6 +54,35 @@ def block_key_to_block(key):
     except Exception as e:
         return None
 
+def get_blocks_mmap(bigm, blocks_0, blocks_1, mmap_loc, mmap_shape, dtype='float32', row_offset=0, col_offset=0):
+    X_full = np.memmap(mmap_loc, dtype=dtype, mode='r+', shape=mmap_shape)
+
+    b_start = col_offset*bigm.shard_sizes[1]
+    for i,block_1 in enumerate(blocks_1):
+        width = min(bigm.shard_sizes[1], bigm.shape[1] - (block_1)*bigm.shard_sizes[1])
+        b_end = b_start + width
+        for i,block_0 in enumerate(blocks_0):
+            block = bigm.get_block(block_0, block_1)
+            curr_row_block = (row_offset+i)
+            sidx = curr_row_block*bigm.shard_sizes[0]
+            eidx = min((curr_row_block+1)*bigm.shard_sizes[0], bigm.shape[0])
+            try:
+                X_full[sidx:eidx, b_start:b_end] = block
+            except Exception as e:
+                print("SIDX", sidx)
+                print("EIDX  ", eidx)
+                print("BEND", b_end)
+                print("BSTART", b_start)
+                print(width, block_1, block_0, block.shape, (eidx-sidx, b_end-b_start))
+                print("X_FULL PART SHAPE ", X_full[sidx:eidx, b_start:b_end].shape)
+                print("X FULL SHAPE ", X_full.shape)
+                print(e)
+                raise
+        b_start = b_end
+    X_full.flush()
+    return (mmap_loc, mmap_shape, dtype)
+
+
 def get_local_matrix(X_sharded, dtype="float64", workers=22, mmap_loc=None):
     hash_key = hash_string(X_sharded.key)
     if (mmap_loc == None):
@@ -97,7 +126,7 @@ def fast_kernel_column_block_async(K, col_blocks, executor=None, workers=23, mma
     chunks = chunk(row_blocks, chunk_size)
     row_offset = 0
     for c in chunks:
-        futures.append(executor.submit(K.get_blocks_mmap, c, col_blocks, mmap_loc, mmap_shape, dtype=dtype, row_offset=row_offset, col_offset=0))
+        futures.append(executor.submit(get_blocks_mmap, K, c, col_blocks, mmap_loc, mmap_shape, dtype=dtype, row_offset=row_offset, col_offset=0))
         row_offset += len(c)
     return futures
 
@@ -131,7 +160,7 @@ def fast_kernel_row_block_async(K, col_blocks, executor=None, workers=23, mmap_l
     chunks = misc.chunk(col_blocks, chunk_size)
     col_offset = 0
     for c in chunks:
-        futures.append(executor.submit(K.get_blocks_mmap, row_blocks, c, mmap_loc, mmap_shape, dtype=dtype, col_offset=col_offset, row_offset=0))
+        futures.append(executor.submit(get_blocks_mmap, K, row_blocks, c, mmap_loc, mmap_shape, dtype=dtype, col_offset=col_offset, row_offset=0))
         col_offset += len(c)
     return futures
 
