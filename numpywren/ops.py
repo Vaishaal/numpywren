@@ -2,7 +2,7 @@ import boto3
 import itertools
 import numpy as np
 from .matrix import BigSymmetricMatrix, BigMatrix
-from .matrix_utils import load_mmap, fast_kernel_row_blocks_get, chunk, generate_key_name
+from .matrix_utils import load_mmap, chunk, generate_key_name
 import concurrent.futures as fs
 import math
 import os

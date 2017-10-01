@@ -25,7 +25,8 @@ class BigMatrix(object):
                  shape=None,
                  shard_sizes=[],
                  bucket=DEFAULT_BUCKET,
-                 prefix='numpywren.objects/'):
+                 prefix='numpywren.objects/',
+                 dtype=np.float64):
 
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
@@ -36,15 +37,18 @@ class BigMatrix(object):
         self.prefix = prefix
         self.key = key
         self.key_base = prefix + self.key + "/"
+        self.dtype = dtype
         header = self.__read_header__()
         if header is None and shape is None:
             raise Exception("header doesn't exist and no shape provided")
         if not (header is None) and shape is None:
             self.shard_sizes = header['shard_sizes']
             self.shape = header['shape']
+            self.dtype = eval(header['dtype'])
         else:
             self.shape = shape
             self.shard_sizes = shard_sizes
+            self.dtype = dtype
 
         if (len(self.shape) != len(self.shard_sizes)):
             raise Exception("shard_sizes should be same length as shape")
@@ -58,6 +62,7 @@ class BigMatrix(object):
         header = {}
         header['shape'] = self.shape
         header['shard_sizes'] = self.shard_sizes
+        header['dtype'] = str(self.dtype)
         client.put_object(Key=key, Bucket = self.bucket, Body=json.dumps(header), ACL="bucket-owner-full-control")
         return 0
 
@@ -66,6 +71,7 @@ class BigMatrix(object):
     def blocks_exist(self):
         prefix = self.prefix + self.key
         all_keys = list_all_keys(self.bucket, prefix)
+        print(all_keys)
         return list(filter(lambda x: x != None, map(block_key_to_block, all_keys)))
 
     @property
@@ -157,7 +163,7 @@ class BigMatrix(object):
             end = min(start+self.shard_sizes[i], self.shape[i])
             starts.append(start)
             ends.append(end)
-        return zip(starts, ends)
+        return tuple(zip(starts, ends))
 
 
     def __shard_idx_to_key__(self, block_idx):
@@ -204,34 +210,6 @@ class BigMatrix(object):
         [f.result() for f in futures]
         return 0
 
-    def get_blocks_mmap(self, blocks_0, blocks_1, mmap_loc, mmap_shape, dtype='float32', row_offset=0, col_offset=0):
-        X_full = np.memmap(mmap_loc, dtype=dtype, mode='r+', shape=mmap_shape)
-
-        b_start = col_offset*self.shard_sizes[1]
-        for i,block_1 in enumerate(blocks_1):
-            width = min(self.shard_sizes[1], self.shape[1] - (block_1)*self.shard_sizes[1])
-            b_end = b_start + width
-            for i,block_0 in enumerate(blocks_0):
-                block = self.get_block(block_0, block_1)
-                curr_row_block = (row_offset+i)
-                sidx = curr_row_block*self.shard_sizes[0]
-                eidx = min((curr_row_block+1)*self.shard_sizes[0], self.shape[0])
-                try:
-                    X_full[sidx:eidx, b_start:b_end] = block
-                except Exception as e:
-                    print("SIDX", sidx)
-                    print("EIDX  ", eidx)
-                    print("BEND", b_end)
-                    print("BSTART", b_start)
-                    print(width, block_1, block_0, block.shape, (eidx-sidx, b_end-b_start))
-                    print("X_FULL PART SHAPE ", X_full[sidx:eidx, b_start:b_end].shape)
-                    print("X FULL SHAPE ", X_full.shape)
-                    print(e)
-                    raise
-            b_start = b_end
-        X_full.flush()
-        return (mmap_loc, mmap_shape, dtype)
-
 
     def get_block(self, *block_idx):
         if (len(block_idx) != len(self.shape)):
@@ -258,7 +236,7 @@ class BigMatrix(object):
         return client.delete_object(Key=key, Bucket=self.bucket)
 
     def free(self):
-        [self.delete_block(x[0],x[1]) for x in self.block_idxs_exist]
+        print([self.delete_block(*x) for x in self.block_idxs_exist])
         self.__delete_header__()
 
 

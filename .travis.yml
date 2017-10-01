@@ -40,7 +40,7 @@ script:
 - pywren create_queue
 - sleep 10
 - pywren deploy_lambda
-- pytest -v --fulltrace tests/simple_tests.py
+- pytest -v --fulltrace tests/
 
 after_script:
 - pywren delete_queue
