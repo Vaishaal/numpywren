@@ -26,7 +26,8 @@ class BigMatrix(object):
                  shard_sizes=[],
                  bucket=DEFAULT_BUCKET,
                  prefix='numpywren.objects/',
-                 dtype=np.float64):
+                 dtype=np.float64,
+                 transposed=False):
 
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
@@ -38,6 +39,8 @@ class BigMatrix(object):
         self.key = key
         self.key_base = prefix + self.key + "/"
         self.dtype = dtype
+        self.transposed = transposed
+        self.symmetric = False
         header = self.__read_header__()
         if header is None and shape is None:
             raise Exception("header doesn't exist and no shape provided")
@@ -65,6 +68,22 @@ class BigMatrix(object):
         header['dtype'] = str(self.dtype)
         client.put_object(Key=key, Bucket = self.bucket, Body=json.dumps(header), ACL="bucket-owner-full-control")
         return 0
+
+    @property
+    def T(self):
+        return self.__transpose__()
+
+    def __transpose__(self):
+        transposed = self.__class__(key=self.key,
+                                   shape=self.shape,
+                                   shard_sizes=self.shard_sizes,
+                                   bucket=self.bucket,
+                                   prefix=self.prefix,
+                                   dtype=self.dtype,
+                                   transposed=True)
+        return transposed
+
+
 
 
     @property
@@ -167,6 +186,7 @@ class BigMatrix(object):
 
 
     def __shard_idx_to_key__(self, block_idx):
+
         real_idxs = self.__block_idx_to_real_idx__(block_idx)
         key = self.__get_matrix_shard_key__(real_idxs)
         return key
@@ -214,9 +234,13 @@ class BigMatrix(object):
     def get_block(self, *block_idx):
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
+        if (self.transposed):
+            block_idx = tuple(reversed(block_idx))
         key = self.__shard_idx_to_key__(block_idx)
         bio = self.__s3_key_to_byte_io__(key)
         X_block = np.load(bio)
+        if (self.transposed):
+            X_block = X_block.T
         return X_block
 
     def put_block(self, block, *block_idx):
@@ -225,7 +249,9 @@ class BigMatrix(object):
 
         if (block.shape != current_shape):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
-
+        if (self.transposed):
+            block_idx = tuple(reversed(block_idx))
+            block = block.T
         key = self.__shard_idx_to_key__(block_idx)
         return self.__save_matrix_to_s3__(block, key)
 
@@ -253,6 +279,11 @@ class BigSymmetricMatrix(BigMatrix):
                  prefix='numpywren.objects/'):
         BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix)
         self.symmetric = True
+
+    @property
+    def T(self):
+        return self
+
 
     def _symmetrize_idx(self, block_idx):
         if np.all(block_idx[0] > block_idx[-1]):
