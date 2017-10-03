@@ -1,6 +1,6 @@
 import sklearn.datasets as datasets
 from numpywren.matrix import BigMatrix
-from numpywren import matrix_utils, ops
+from numpywren import matrix_utils, binops
 import pytest
 import numpy as np
 import pywren
