@@ -115,10 +115,10 @@ def mul(pwex, X, Y, out_bucket=None, tasks_per_job=1):
 def div(pwex, X, Y, out_bucket=None, tasks_per_job=1):
     raise NotImplementedError
 
-def and(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+def logical_and(pwex, X, Y, out_bucket=None, tasks_per_job=1):
     raise NotImplementedError
 
-def or(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+def logical_or(pwex, X, Y, out_bucket=None, tasks_per_job=1):
     raise NotImplementedError
 
 def xor(pwex, X, Y, out_bucket=None, tasks_per_job=1):
