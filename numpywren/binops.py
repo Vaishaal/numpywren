@@ -87,16 +87,16 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False):
 
 # matrix vector multiply
 # hard
-def dgemv(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+def gemv(pwex, X, Y, out_bucket=None, tasks_per_job=1):
     raise NotImplementedError
 
 # symmetric rank k update
 # hard
-def dsyrk(pwex, X, Y, out_bucket=None, tasks_per_job):
+def syrk(pwex, X, Y, out_bucket=None, tasks_per_job=1):
     raise NotImplementedError
 
 # very hard
-def posv(pwex, X, Y, out_bucket=None, tasks_per_job):
+def posv(pwex, X, Y, out_bucket=None, tasks_per_job=1):
     raise NotImplementedError
 
 # easy

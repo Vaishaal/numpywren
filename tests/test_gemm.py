@@ -9,7 +9,7 @@ import unittest
 class GemmTestClass(unittest.TestCase):
     def test_single_shard_matrix_multiply(self):
         np.random.seed(0)
-        X = np.random.randn(2,2)
+        X = np.random.randn(128,128)
         X_sharded = BigMatrix("gemm_test_0", shape=X.shape, shard_sizes=X.shape)
         X_sharded.shard_matrix(X)
         pwex = pywren.default_executor()
