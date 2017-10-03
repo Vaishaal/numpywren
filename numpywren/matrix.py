@@ -73,6 +73,12 @@ class BigMatrix(object):
     def T(self):
         return self.__transpose__()
 
+    def __str__(self):
+        rep = "{0}({1})".format(self.__class__.__name__, self.key)
+        if (self.transposed):
+            rep += ".T"
+        return rep
+
     def __transpose__(self):
         transposed = self.__class__(key=self.key,
                                    shape=self.shape,

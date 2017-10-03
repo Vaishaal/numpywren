@@ -11,24 +11,23 @@ from pywren.executor import Executor
 import time
 
 
-
-def _cxyt_remote(block_pairs, XYT, X, Y, reduce_idxs=[0]):
+def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0]):
     for bp in block_pairs:
         bidx_0, bidx_1 = bp
-        XYT_block = None
+        XY_block = None
         for r in reduce_idxs:
             block1 = X.get_block(bidx_0, r)
-            block2 = Y.get_block(bidx_1, r)
-            if (XYT_block is None):
-                XYT_block = block1.dot(block2.T)
+            block2 = Y.get_block(r, bidx_1)
+            if (XY_block is None):
+                XY_block = block1.dot(block2)
             else:
-                XYT_block += block1.dot(block2.T)
-        XYT.put_block(XYT_block, bidx_0, bidx_1)
+                XY_block += block1.dot(block2)
+        XY.put_block(XY_block, bidx_0, bidx_1)
 
-def cxyt(pwex, X, Y, out_bucket, tasks_per_job=1, local=False):
+def gemm(pwex, X, Y, out_bucket, tasks_per_job=1, local=False):
 
     '''
-        Compute XYT return
+        Compute XY return
         @param pwex - Execution context
         @param X - rhs matrix
         @param Y - lhs matrix
@@ -41,20 +40,20 @@ def cxyt(pwex, X, Y, out_bucket, tasks_per_job=1, local=False):
     reduce_idxs = Y._block_idxs(axis=1)
     print(reduce_idxs)
 
-    root_key = generate_key_name(X, Y, "cxyt")
+    root_key = generate_key_name(X, Y, "gemm")
 
-    if (X.key == Y.key):
-        XYT = BigSymmetricMatrix(root_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]])
+    if (X.key == Y.key and (X.transposed ^ Y.transposed)):
+        XY = BigSymmetricMatrix(root_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]])
     else:
-        XYT = BigMatrix(root_key, shape=(X.shape[0], Y.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], Y.shard_sizes[0]])
+        XY = BigMatrix(root_key, shape=(X.shape[0], Y.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], Y.shard_sizes[0]])
 
-    num_out_blocks = len(XYT.blocks)
+    num_out_blocks = len(XY.blocks)
     num_jobs = int(num_out_blocks/float(tasks_per_job))
 
-    print("Total number of output blocks", len(XYT.block_idxs))
-    print("Total number of output blocks that exist", len(XYT.blocks_exist))
+    print("Total number of output blocks", len(XY.block_idxs))
+    print("Total number of output blocks that exist", len(XY.blocks_exist))
 
-    block_idxs_to_map = list(set(XYT.block_idxs))
+    block_idxs_to_map = list(set(XY.block_idxs))
 
     print("Number of output blocks to generate ", len(block_idxs_to_map))
 
@@ -62,7 +61,7 @@ def cxyt(pwex, X, Y, out_bucket, tasks_per_job=1, local=False):
 
 
     def pywren_run(x):
-        return _cxyt_remote(x, XYT, X, Y, reduce_idxs=reduce_idxs)
+        return _gemm_remote_0(x, XY, X, Y, reduce_idxs=reduce_idxs)
 
     all_futures = []
     for i, c in enumerate(chunked_blocks):
@@ -77,13 +76,13 @@ def cxyt(pwex, X, Y, out_bucket, tasks_per_job=1, local=False):
             all_futures.append((i,futures))
 
     if (local):
-        return XYT
+        return XY
 
     for i, futures, in all_futures:
         pywren.wait(futures)
         [f.result() for f in futures]
 
-    return XYT
+    return XY
 
 
 

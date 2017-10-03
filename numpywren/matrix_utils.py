@@ -19,12 +19,8 @@ def chunk(l, n):
         yield l[i:i + n]
 
 def generate_key_name(X, Y, op):
-    assert op == "cxyt"
-
-    if (X.key == Y.key):
-        key = "XXT({0})".format(X.key)
-    else:
-        key = "XYT({0}, {1})".format(X.key, Y.key)
+    assert op == "gemm"
+    key = "gemm({0}, {1})".format(str(X), str(Y))
     return key
 
 def load_mmap(mmap_loc, mmap_shape, mmap_dtype):
