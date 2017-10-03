@@ -24,7 +24,7 @@ def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0]):
                 XY_block += block1.dot(block2)
         XY.put_block(XY_block, bidx_0, bidx_1)
 
-def gemm(pwex, X, Y, out_bucket, tasks_per_job=1, local=False):
+def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False):
 
     '''
         Compute XY return
@@ -38,7 +38,8 @@ def gemm(pwex, X, Y, out_bucket, tasks_per_job=1, local=False):
     '''
     # 0 -> 1 or 1 -> 0
     reduce_idxs = Y._block_idxs(axis=1)
-    print(reduce_idxs)
+    if (out_bucket == None):
+        out_bucket = X.bucket
 
     root_key = generate_key_name(X, Y, "gemm")
 
@@ -84,6 +85,45 @@ def gemm(pwex, X, Y, out_bucket, tasks_per_job=1, local=False):
 
     return XY
 
+# matrix vector multiply
+# hard
+def dgemv(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+    raise NotImplementedError
 
+# symmetric rank k update
+# hard
+def dsyrk(pwex, X, Y, out_bucket=None, tasks_per_job):
+    raise NotImplementedError
 
+# very hard
+def posv(pwex, X, Y, out_bucket=None, tasks_per_job):
+    raise NotImplementedError
+
+# easy
+def add(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+    raise NotImplementedError
+
+# easy
+def sub(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+    raise NotImplementedError
+
+# easy
+def mul(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+    raise NotImplementedError
+
+# easy
+def div(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+    raise NotImplementedError
+
+def and(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+    raise NotImplementedError
+
+def or(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+    raise NotImplementedError
+
+def xor(pwex, X, Y, out_bucket=None, tasks_per_job=1):
+    raise NotImplementedError
+
+def elemwise_binop_func(pwex, X, Y, f, out_bucket=None, tasks_per_job=1, local=False):
+    raise NotImplementedError
 

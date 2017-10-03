@@ -3,7 +3,8 @@ from numpywren.matrix import BigMatrix
 from numpywren import matrix_utils, binops
 import pytest
 import numpy as np
-import pywren import unittest
+import pywren
+import unittest
 
 
 class SimpleTestClass(unittest.TestCase):
