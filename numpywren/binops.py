@@ -2,7 +2,7 @@ import boto3
 import itertools
 import numpy as np
 from .matrix import BigSymmetricMatrix, BigMatrix
-from .matrix_utils import load_mmap, chunk, generate_key_name
+from .matrix_utils import load_mmap, chunk, generate_key_name_binop
 import concurrent.futures as fs
 import math
 import os
@@ -41,7 +41,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False):
     if (out_bucket == None):
         out_bucket = X.bucket
 
-    root_key = generate_key_name(X, Y, "gemm")
+    root_key = generate_key_name_binop(X, Y, "gemm")
 
     if (X.key == Y.key and (X.transposed ^ Y.transposed)):
         XY = BigSymmetricMatrix(root_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]])

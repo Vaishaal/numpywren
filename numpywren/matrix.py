@@ -220,22 +220,6 @@ class BigMatrix(object):
         response = client.put_object(Key=out_key, Bucket=self.bucket, Body=outb.getvalue(),ACL="bucket-owner-full-control")
         return response
 
-    def shard_matrix(self, X, n_jobs=1):
-        print("Sharding matrix..... of shape {0}".format(X.shape))
-        all_bidxs = self.block_idxs
-        all_blocks = self.blocks
-        executor = fs.ThreadPoolExecutor(n_jobs)
-        futures = []
-        print("ALL_BLOCKS", all_blocks)
-        for (bidxs,blocks) in zip(all_bidxs, all_blocks):
-            slices = [slice(s,e) for s,e in blocks]
-            X_block = X.__getitem__(slices)
-            future = executor.submit(self.put_block, X_block, *bidxs)
-            futures.append(future)
-        fs.wait(futures)
-        [f.result() for f in futures]
-        return 0
-
 
     def get_block(self, *block_idx):
         if (len(block_idx) != len(self.shape)):

@@ -12,16 +12,26 @@ import hashlib
 def hash_string(s):
     return hashlib.sha1(s.encode('utf-8')).hexdigest()
 
+def hash_array(s):
+    byte_view = s.view(np.uint8)
+    return hashlib.sha1(byte_view).hexdigest()
+
 def chunk(l, n):
     """Yield successive n-sized chunks from l."""
     if n == 0: return []
     for i in range(0, len(l), n):
         yield l[i:i + n]
 
-def generate_key_name(X, Y, op):
+def generate_key_name_binop(X, Y, op):
     assert op == "gemm"
     key = "gemm({0}, {1})".format(str(X), str(Y))
     return key
+
+def generate_key_name_uop(X, op):
+    raise NotImplementedError
+
+def generate_key_name_local_matrix(X_local):
+    return hash_array(X_local)
 
 def load_mmap(mmap_loc, mmap_shape, mmap_dtype):
     return np.memmap(mmap_loc, dtype=mmap_dtype, mode='r+', shape=mmap_shape)
