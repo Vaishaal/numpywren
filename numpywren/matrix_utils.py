@@ -5,6 +5,7 @@ import os
 import time
 
 import boto3
+import botocore
 import cloudpickle
 import numpy as np
 import hashlib
@@ -13,6 +14,7 @@ def hash_string(s):
     return hashlib.sha1(s.encode('utf-8')).hexdigest()
 
 def hash_array(s):
+    s = np.ascontiguousarray(s)
     byte_view = s.view(np.uint8)
     return hashlib.sha1(byte_view).hexdigest()
 
@@ -23,8 +25,11 @@ def chunk(l, n):
         yield l[i:i + n]
 
 def generate_key_name_binop(X, Y, op):
-    assert op == "gemm"
-    key = "gemm({0}, {1})".format(str(X), str(Y))
+    assert op == "gemm" or op == "chol"
+    if (op == "gemm"):
+        key = "gemm({0}, {1})".format(str(X), str(Y))
+    elif (op == "chol"):
+        key = "chol({0}, {1})".format(str(X), str(Y))
     return key
 
 def generate_key_name_uop(X, op):
@@ -49,6 +54,17 @@ def list_all_keys(bucket, prefix):
         next_marker = objects.get('NextMarker')
         keys += list(map(lambda x: x['Key'], objects['Contents']))
     return list(filter(lambda x: len(x) > 0, keys))
+
+def key_exists(bucket, key):
+    '''Return true if a key exists in s3 bucket'''
+    client = boto3.client('s3')
+    try:
+        obj = client.head_object(Bucket=bucket, Key=key)
+        return True
+    except botocore.exceptions.ClientError as exc:
+        if exc.response['Error']['Code'] != '404':
+            raise
+        return False
 
 def block_key_to_block(key):
     try:

@@ -10,15 +10,15 @@ import numpy as np
 import json
 import logging
 from . import matrix_utils
-from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix
+from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists
 import pywren.wrenconfig as wc
+import botocore
 
 logger = logging.getLogger(__name__)
 try:
     DEFAULT_BUCKET = wc.default()['s3']['bucket']
 except Exception as e:
     DEFAULT_BUCKET = ""
-
 
 class BigMatrix(object):
     def __init__(self, key,
@@ -27,7 +27,8 @@ class BigMatrix(object):
                  bucket=DEFAULT_BUCKET,
                  prefix='numpywren.objects/',
                  dtype=np.float64,
-                 transposed=False):
+                 transposed=False,
+                 parent_fn=None):
 
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
@@ -41,6 +42,7 @@ class BigMatrix(object):
         self.dtype = dtype
         self.transposed = transposed
         self.symmetric = False
+        self.parent_fn = parent_fn
         header = self.__read_header__()
         if header is None and shape is None:
             raise Exception("header doesn't exist and no shape provided")
@@ -220,6 +222,8 @@ class BigMatrix(object):
         response = client.put_object(Key=out_key, Bucket=self.bucket, Body=outb.getvalue(),ACL="bucket-owner-full-control")
         return response
 
+    def _register_parent(self, parent_fn):
+        self.parent_fn = parent_fn
 
     def get_block(self, *block_idx):
         if (len(block_idx) != len(self.shape)):
@@ -227,8 +231,14 @@ class BigMatrix(object):
         if (self.transposed):
             block_idx = tuple(reversed(block_idx))
         key = self.__shard_idx_to_key__(block_idx)
-        bio = self.__s3_key_to_byte_io__(key)
-        X_block = np.load(bio)
+        exists = key_exists(self.bucket, key)
+        if (not exists and self.parent_fn == None):
+            raise Exception("Key does not exist, and no parent function prescripted")
+        elif (not exists and self.parent_fn != None):
+            X_block = self.parent_fn(*block_idx)
+        else:
+            bio = self.__s3_key_to_byte_io__(key)
+            X_block = np.load(bio)
         if (self.transposed):
             X_block = X_block.T
         return X_block
@@ -309,8 +319,13 @@ class BigSymmetricMatrix(BigMatrix):
         if block_idx_sym != block_idx:
             flipped = True
         key = self.__shard_idx_to_key__(block_idx_sym)
-        bio = self.__s3_key_to_byte_io__(key)
-        X_block = np.load(bio)
+        if (not exists and self.parent_fn == None):
+            raise Exception("Key does not exist, and no parent function prescripted")
+        elif (not exists and self.parent_fn != None):
+            X_block = self.parent_fn(*block_idx)
+        else:
+            bio = self.__s3_key_to_byte_io__(key)
+            X_block = np.load(bio)
         if (flipped):
             X_block = X_block.T
         return X_block
@@ -326,7 +341,6 @@ class BigSymmetricMatrix(BigMatrix):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
         key = self.__shard_idx_to_key__(block_idx)
         return self.__save_matrix_to_s3__(block, key)
-
 
 
     def delete_block(self, *block_idx):
