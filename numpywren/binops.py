@@ -136,14 +136,12 @@ def chol(pwex, X, Y, out_bucket=None, tasks_per_job=1):
         def pywren_run(x):
             return block_matmul_update(L, A, L_bb_inv_bigm, *x)
         column_blocks = [block for block in all_blocks if (block[0] == i and block[1] > i)]
-        print("COLUMN BLOCKS",column_blocks)
         futures = pwex.map(pywren_run, column_blocks)
         pywren.wait(futures)
         [f.result() for f in futures]
         def pywren_run_2(x):
             return syrk_update(L, A, block_0_idx, block_1_idx, block)
         other_blocks = [block for block in all_blocks if (block[0] > i and block[1] > i)]
-        print("TRAILING BLOCKS", other_blocks)
         futures = pwex.map(pywren_run, column_blocks)
         pywren.wait(futures)
         [f.result() for f in futures]
