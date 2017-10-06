@@ -98,7 +98,6 @@ class BigMatrix(object):
     def blocks_exist(self):
         prefix = self.prefix + self.key
         all_keys = list_all_keys(self.bucket, prefix)
-        print(all_keys)
         return list(filter(lambda x: x != None, map(block_key_to_block, all_keys)))
 
     @property
@@ -262,8 +261,9 @@ class BigMatrix(object):
         return client.delete_object(Key=key, Bucket=self.bucket)
 
     def free(self):
-        print([self.delete_block(*x) for x in self.block_idxs_exist])
+        [self.delete_block(*x) for x in self.block_idxs_exist]
         self.__delete_header__()
+        return 0
 
 
     def numpy(self):

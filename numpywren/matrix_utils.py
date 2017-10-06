@@ -72,8 +72,6 @@ def block_key_to_block(key):
         if (block_key) == "header": return None
         blocks_split = block_key.strip('_').split("_")
 
-        print(len(blocks_split))
-        print(blocks_split)
         assert(len(blocks_split)%3 == 0)
         block = []
         for i in range(0,len(blocks_split),3):
@@ -81,7 +79,6 @@ def block_key_to_block(key):
             end = int(blocks_split[i+1])
             block.append((start,end))
 
-        print("RETURNING", block)
         return tuple(block)
     except Exception as e:
         raise
@@ -89,7 +86,6 @@ def block_key_to_block(key):
 
 def get_blocks_mmap(bigm, block_idxs, local_idxs, mmap_loc, mmap_shape, dtype='float32'):
     '''Map block_idxs to local_idxs in np.memmamp object found at mmap_loc'''
-    print("MMAP_SHAPE", mmap_shape)
     X_full = np.memmap(mmap_loc, dtype=dtype, mode='r+', shape=mmap_shape)
     for block_idx, local_idx  in zip(block_idxs, local_idxs):
         local_idx_slices = [slice(s,e) for s,e in local_idx]
@@ -122,7 +118,6 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
     matrix_locations = [{} for _ in range(len(bigm.shape))]
     matrix_maxes = [0 for _ in range(len(bigm.shape))]
     current_local_idx = np.zeros(len(bigm.shape), np.int)
-    print(blocks_to_get)
     # statically assign parts of our mmap matrix to parts of our sharded matrix
     for axis, axis_blocks in enumerate(blocks_to_get):
         axis_size = 0
@@ -157,8 +152,6 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
             real_idx = bigm.__block_idx_to_real_idx__(block_idx)
             local_idx = tuple((matrix_locations[i][(s,e)] for i,(s,e) in enumerate(real_idx)))
             local_idxs.append(local_idx)
-            print("REAL_IDX", real_idx, "LOCAL_IDX", local_idx)
-        print("LOCAL_IDXS",  local_idxs)
         futures.append(executor.submit(get_blocks_mmap, bigm, block_idxs, local_idxs, mmap_loc, mmap_shape, bigm.dtype))
     return futures
 
