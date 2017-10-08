@@ -155,6 +155,23 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
         futures.append(executor.submit(get_blocks_mmap, bigm, block_idxs, local_idxs, mmap_loc, mmap_shape, bigm.dtype))
     return futures
 
+def constant_parent(bigm, cnst, *block_idx):
+    real_idxs = bigm.__block_idx_to_real_idx__(block_idx)
+    current_shape = tuple([e - s for s,e in real_idxs])
+    return np.full(current_shape, cnst)
+
+def constant_zeros(bigm, *block_idx):
+    real_idxs = bigm.__block_idx_to_real_idx__(block_idx)
+    current_shape = tuple([e - s for s,e in real_idxs])
+    return np.zeros(current_shape)
+
+
+
+
+
+
+
+
 
 
 
