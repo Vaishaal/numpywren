@@ -10,6 +10,23 @@ import cloudpickle
 import numpy as np
 import hashlib
 
+class MmapArray():
+    def __init__(self, mmaped, mode=None,idxs=None):
+        self.loc = mmaped.filename
+        self.dtype = mmaped.dtype
+        self.shape = mmaped.shape
+        self.mode = mmaped.mode
+        self.idxs = idxs
+        if (mode != None):
+            self.mode = mode
+
+    def load(self):
+        X = np.memmap(self.loc, dtype=self.dtype, mode=self.mode, shape=self.shape)
+        if self.idxs != None:
+            return X[self.idxs[0]:self.idxs[1]]
+        else:
+            return X
+
 def hash_string(s):
     return hashlib.sha1(s.encode('utf-8')).hexdigest()
 
@@ -95,7 +112,7 @@ def get_blocks_mmap(bigm, block_idxs, local_idxs, mmap_loc, mmap_shape, dtype='f
     return (mmap_loc, mmap_shape, dtype)
 
 
-def get_local_matrix(bigm, workers=22, mmap_loc=None, big_axis=0):
+def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
     hash_key = hash_string(bigm.key)
     if (mmap_loc == None):
         mmap_loc = "/tmp/{0}".format(hash_key)

@@ -109,6 +109,8 @@ def block_matmul_update(L, X, L_bb_inv, block_0_idx, block_1_idx):
     L_bb_inv = L_bb_inv.get_block(0,0)
     X_block = X.get_block(block_1_idx, block_0_idx).T
     L_block = X_block.T.dot(L_bb_inv)
+    #print("X_block", X_block)
+    #print("L_bb_inv", L_bb_inv)
     L.put_block(L_block, block_1_idx, block_0_idx)
     #print("BLOCK_MATMUL_UPDATE POSTUPDATE\n", L.numpy())
     return 0
@@ -148,26 +150,36 @@ def chol(pwex, X, Y, out_bucket=None, tasks_per_job=1):
         else:
             diag_block = L.get_block(j,j)
             A = L
+        print("Iteration {0}, cholesky".format(j))
         L_bb = cholesky(diag_block.T)
+        #print("L_bb", L_bb)
         L.put_block(L_bb.T, j, j)
         L_bb_inv = solve(L_bb, np.eye(L_bb.shape[0]))
+        #print("L_bb_inv", L_bb)
         L_bb_inv_bigm = local_numpy_init(L_bb_inv, L_bb_inv.shape)
+        #print("L_bb_inv", L_bb_inv_bigm.get_block(0,0))
         def pywren_run(x):
             return block_matmul_update(L, A, L_bb_inv_bigm, *x)
         column_blocks = [block for block in all_blocks if (block[0] == j and block[1] > j)]
+        print("Iteration {0}, column update".format(j))
+        t = time.time()
         futures = pwex.map(pywren_run, column_blocks)
         pywren.wait(futures)
         [f.result() for f in futures]
-        print("COLUMN_BLOCKS",column_blocks)
+        print("Iteration {0} Column update took {1}".format(j, time.time() - t))
+        #print("COLUMN_BLOCKS",column_blocks)
         def pywren_run_2(x):
             print(x)
             return syrk_update(L, A, j, *x)
         other_blocks = list([block for block in all_blocks if (block[0] > j and block[1] > j and block[0] <= block[1])])
-        print("OTHER_BLOCKS",other_blocks)
+        #print("OTHER_BLOCKS",other_blocks)
+        t = time.time()
+        print("Iteration {0}, trailing matrix update".format(j))
         futures = pwex.map(pywren_run_2, other_blocks)
         pywren.wait(futures)
         [f.result() for f in futures]
-        print("BLOCKS OF L EXIST ", L.block_idxs_exist)
+        print("Iteration {0} trailing matrix update took {1}".format(j, time.time() - t))
+        #print("BLOCKS OF L EXIST ", L.block_idxs_exist)
         L_bb_inv_bigm.free()
     return L
 

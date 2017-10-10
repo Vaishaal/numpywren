@@ -133,7 +133,6 @@ class BigMatrix(object):
         return self._block_idxs()
 
     def _blocks(self, axis=None):
-
         all_blocks = []
         for i in range(len(self.shape)):
             blocks_axis = [(j, j + self.shard_sizes[i]) for j in range(0, self.shape[i], self.shard_sizes[i])]
@@ -141,7 +140,7 @@ class BigMatrix(object):
                 blocks_axis.pop()
 
             if blocks_axis[-1][1] < self.shape[i]:
-                blocks_axis.append((blocks_axis[-1][1], self.shape[axis]))
+                blocks_axis.append((blocks_axis[-1][1], self.shape[i]))
             all_blocks.append(blocks_axis)
 
         if axis is None:
@@ -277,89 +276,9 @@ class BigSymmetricMatrix(BigMatrix):
                  shape=None,
                  shard_sizes=[],
                  bucket=DEFAULT_BUCKET,
-                 prefix='numpywren.objects/'):
-        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix)
-        self.symmetric = True
-
-    @property
-    def T(self):
-        return self
-
-
-    def _symmetrize_idx(self, block_idx):
-        if np.all(block_idx[0] > block_idx[-1]):
-            return tuple(block_idx)
-        else:
-            return tuple(reversed(block_idx))
-
-    def _symmetrize_all_idxs(self, all_block_idxs):
-        return sorted(list(set((map(lambda x: tuple(self._symmetrize_idx(x)), all_block_idxs)))))
-
-    def _blocks(self, axis=None):
-        if axis is None:
-            block_idxs = self._block_idxs()
-            blocks = [self.__block_idx_to_real_idx__(x) for x in block_idxs]
-            return blocks
-        elif (type(axis) != int):
-            raise Exception("Axis must be integer")
-        else:
-            return super()._blocks(axis=axis)
-
-    def _block_idxs(self, axis=None):
-        all_block_idxs = super()._block_idxs(axis=axis)
-        if (axis == None):
-            valid_block_idxs = self._symmetrize_all_idxs(all_block_idxs)
-            return valid_block_idxs
-        else:
-            return all_block_idxs
-
-    def get_block(self, *block_idx):
-        # For symmetric matrices it suffices to only read from lower triangular
-        flipped = False
-        block_idx_sym = self._symmetrize_idx(block_idx)
-        if block_idx_sym != block_idx:
-            flipped = True
-        key = self.__shard_idx_to_key__(block_idx_sym)
-        if (not exists and self.parent_fn == None):
-            raise Exception("Key does not exist, and no parent function prescripted")
-        elif (not exists and self.parent_fn != None):
-            X_block = self.parent_fn(*block_idx)
-        else:
-            bio = self.__s3_key_to_byte_io__(key)
-            X_block = np.load(bio)
-        if (flipped):
-            X_block = X_block.T
-        return X_block
-
-    def put_block(self, block, *block_idx):
-        block_idx_sym = self._symmetrize_idx(block_idx)
-        if block_idx_sym != block_idx:
-            flipped = True
-            block = block.T
-        real_idxs = self.__block_idx_to_real_idx__(block_idx_sym)
-        current_shape = tuple([e - s for s,e in real_idxs])
-        if (block.shape != current_shape):
-            raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
-        key = self.__shard_idx_to_key__(block_idx)
-        return self.__save_matrix_to_s3__(block, key)
-
-
-    def delete_block(self, *block_idx):
-        client = boto3.client('s3')
-        block_idx_sym = self._symmetrize_idx(block_idx)
-        if block_idx_sym != block_idx:
-            flipped = True
-        key = self.__shard_idx_to_key__(block_idx_sym)
-        client = boto3.client('s3')
-        return client.delete_object(Key=key, Bucket=self.bucket)
-
-class BigSymmetricMatrix(BigMatrix):
-    def __init__(self, key,
-                 shape=None,
-                 shard_sizes=[],
-                 bucket=DEFAULT_BUCKET,
-                 prefix='numpywren.objects/'):
-        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix)
+                 prefix='numpywren.objects/',
+                 parent_fn=None):
+        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix, parent_fn)
         self.symmetric = True
 
     @property
@@ -405,7 +324,7 @@ class BigSymmetricMatrix(BigMatrix):
         if (not exists and self.parent_fn == None):
             raise Exception("Key does not exist, and no parent function prescripted")
         elif (not exists and self.parent_fn != None):
-            X_block = self.parent_fn(self, *block_idx)
+            X_block = self.parent_fn(self, *block_idx_sym)
         else:
             bio = self.__s3_key_to_byte_io__(key)
             X_block = np.load(bio)
@@ -434,4 +353,5 @@ class BigSymmetricMatrix(BigMatrix):
         key = self.__shard_idx_to_key__(block_idx_sym)
         client = boto3.client('s3')
         return client.delete_object(Key=key, Bucket=self.bucket)
+
 
