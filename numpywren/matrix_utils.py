@@ -42,15 +42,16 @@ def chunk(l, n):
         yield l[i:i + n]
 
 def generate_key_name_binop(X, Y, op):
-    assert op == "gemm" or op == "chol"
+    assert op == "gemm"
     if (op == "gemm"):
         key = "gemm({0}, {1})".format(str(X), str(Y))
-    elif (op == "chol"):
-        key = "chol({0}, {1})".format(str(X), str(Y))
     return key
 
 def generate_key_name_uop(X, op):
-    raise NotImplementedError
+    assert op == "chol"
+    if (op == "chol"):
+        key = "chol({0})".format(str(X))
+        return key
 
 def generate_key_name_local_matrix(X_local):
     return hash_array(X_local)
