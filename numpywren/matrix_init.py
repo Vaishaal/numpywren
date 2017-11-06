@@ -11,6 +11,7 @@ import hashlib
 from .matrix import BigMatrix, BigSymmetricMatrix
 from .matrix_utils import generate_key_name_local_matrix, constant_zeros, MmapArray
 
+
 def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False):
     #print("Sharding matrix..... of shape {0}".format(X_local.shape))
     key = generate_key_name_local_matrix(X_local)
@@ -52,9 +53,9 @@ def shard_matrix(bigm, X_local, n_jobs=1, executor=None):
     if (executor == None):
         executor = fs.ThreadPoolExecutor(n_jobs)
     futures = []
-    old_parent = bigm.parent_fn
-    bigm.parent_fn = constant_zeros
-    X_local_mmaped = bigm.numpy()
+    t = time.time()
+    X_local_mmaped = np.memmap("/dev/shm/{0}".format(bigm.key), dtype=bigm.dtype, shape=bigm.shape, mode="w+")
+    e = time.time()
     np.copyto(X_local_mmaped, X_local)
     X_local_mmap = MmapArray(X_local_mmaped, "r")
     for (bidxs,blocks) in zip(all_bidxs, all_blocks):
@@ -64,7 +65,6 @@ def shard_matrix(bigm, X_local, n_jobs=1, executor=None):
         futures.append(future)
         fs.wait(futures)
     [f.result() for f in futures]
-    bigm.parent_fn = old_parent
     return bigm
 
 
