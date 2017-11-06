@@ -16,9 +16,9 @@ def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False):
     #print("Sharding matrix..... of shape {0}".format(X_local.shape))
     key = generate_key_name_local_matrix(X_local)
     if (not symmetric):
-        bigm = BigMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes)
+        bigm = BigMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype)
     else:
-        bigm = BigSymmetricMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes)
+        bigm = BigSymmetricMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype)
     return shard_matrix(bigm, X_local, n_jobs=n_jobs)
 
 
