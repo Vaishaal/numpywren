@@ -102,15 +102,15 @@ def block_key_to_block(key):
         raise
         return None
 
-def get_blocks_mmap(bigm, block_idxs, local_idxs, mmap_loc, mmap_shape, dtype='float32'):
+def get_blocks_mmap(bigm, block_idxs, local_idxs, mmap_loc, mmap_shape):
     '''Map block_idxs to local_idxs in np.memmamp object found at mmap_loc'''
-    X_full = np.memmap(mmap_loc, dtype=dtype, mode='r+', shape=mmap_shape)
+    X_full = np.memmap(mmap_loc, dtype=bigm.dtype, mode='r+', shape=mmap_shape)
     for block_idx, local_idx  in zip(block_idxs, local_idxs):
         local_idx_slices = [slice(s,e) for s,e in local_idx]
         block_data = bigm.get_block(*block_idx)
         X_full[local_idx_slices] = block_data
     X_full.flush()
-    return (mmap_loc, mmap_shape, dtype)
+    return (mmap_loc, mmap_shape, bigm.dtype)
 
 
 def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
@@ -170,13 +170,16 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
             real_idx = bigm.__block_idx_to_real_idx__(block_idx)
             local_idx = tuple((matrix_locations[i][(s,e)] for i,(s,e) in enumerate(real_idx)))
             local_idxs.append(local_idx)
-        futures.append(executor.submit(get_blocks_mmap, bigm, block_idxs, local_idxs, mmap_loc, mmap_shape, bigm.dtype))
+        futures.append(executor.submit(get_blocks_mmap, bigm, block_idxs, local_idxs, mmap_loc, mmap_shape))
     return futures
 
-def constant_parent(bigm, cnst, *block_idx):
-    real_idxs = bigm.__block_idx_to_real_idx__(block_idx)
-    current_shape = tuple([e - s for s,e in real_idxs])
-    return np.full(current_shape, cnst)
+def make_constant_parent(cnst):
+    def constant_parent(bigm, *block_idx):
+        real_idxs = bigm.__block_idx_to_real_idx__(block_idx)
+        current_shape = tuple([e - s for s,e in real_idxs])
+        return np.full(current_shape, cnst)
+    return constant_parent
+
 
 def constant_zeros(bigm, *block_idx):
     real_idxs = bigm.__block_idx_to_real_idx__(block_idx)

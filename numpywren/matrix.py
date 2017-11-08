@@ -266,8 +266,32 @@ class BigMatrix(object):
         return 0
 
 
-    def numpy(self):
-        return matrix_utils.get_local_matrix(self)
+    def numpy(self, workers=16):
+        return matrix_utils.get_local_matrix(self, workers)
+
+class Scalar(BigMatrix):
+    def __init__(self, key,
+                 bucket=DEFAULT_BUCKET,
+                 prefix='numpywren.objects/',
+                 parent_fn=None, 
+                 dtype='float64'):
+        BigMatrix.__init__(self, key, [1], [1], bucket=bucket, prefix=prefix, parent_fn=parent_fn, dtype=dtype)
+
+    def numpy(self, workers=1):
+        return BigMatrix.get_block(self, 0)[0]
+
+    def get(self, workers=1):
+        return BigMatrix.get_block(self, 0)[0]
+
+    def put(self, value):
+        value = np.array([value])
+        BigMatrix.put_block(self, value, 0)
+
+    def __str__(self):
+        rep = "Scalar({0})".format(self.key)
+        return rep
+
+
 
 
 class BigSymmetricMatrix(BigMatrix):
