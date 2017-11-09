@@ -9,6 +9,7 @@ import botocore
 import cloudpickle
 import numpy as np
 import hashlib
+import pickle
 
 class MmapArray():
     def __init__(self, mmaped, mode=None,idxs=None):
@@ -34,6 +35,15 @@ def hash_array(s):
     s = np.ascontiguousarray(s)
     byte_view = s.view(np.uint8)
     return hashlib.sha1(byte_view).hexdigest()
+
+def hash_function(f):
+    byte_view = pickle.dumps(f)
+    return hashlib.sha1(byte_view).hexdigest()
+
+def hash_bytes(byte_string):
+    return hashlib.sha1(byte_string.encode('utf-8')).hexdigest()
+
+
 
 def chunk(l, n):
     """Yield successive n-sized chunks from l."""

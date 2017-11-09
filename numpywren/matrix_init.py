@@ -10,17 +10,38 @@ import numpy as np
 import hashlib
 from .matrix import BigMatrix, BigSymmetricMatrix
 from .matrix_utils import generate_key_name_local_matrix, constant_zeros, MmapArray
+from . import matrix_utils
+import numpy as np
 
 
-def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False):
+def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=False):
     #print("Sharding matrix..... of shape {0}".format(X_local.shape))
     key = generate_key_name_local_matrix(X_local)
     if (not symmetric):
         bigm = BigMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype)
     else:
         bigm = BigSymmetricMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype)
-    return shard_matrix(bigm, X_local, n_jobs=n_jobs)
+    if (not exists):
+        return shard_matrix(bigm, X_local, n_jobs=n_jobs)
+    else:
+        return bigm
 
+def empty_result_matrix(X_sharded, function, shape=None, shard_sizes=None, symmetric=False, dtype=None):
+    if (dtype == None):
+        dtype = X_sharded.dtype
+    if (shape == None):
+        shape = X_sharded.shape
+    if (shard_sizes == None):
+        shard_sizes = X_sharded.shard_sizes
+    #print("Sharding matrix..... of shape {0}".format(X_local.shape))
+    key_hash = X_sharded.key
+    function_hash = matrix_utils.hash_function(function)
+    key = matrix_utils.hash_bytes(function_hash + key_hash)
+    if (not symmetric):
+        bigm = BigMatrix(key, shape=shape, shard_sizes=shard_sizes, dtype=dtype)
+    else:
+        bigm = BigSymmetricMatrix(key, shape=shape, shard_sizes=shard_sizes, dtype=dtype)
+    return bigm
 
 def mmap_put_block(bigm, mmap_array, bidxs_blocks):
     bidxs,blocks = zip(*bidxs_blocks)
