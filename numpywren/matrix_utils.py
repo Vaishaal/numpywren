@@ -10,6 +10,7 @@ import cloudpickle
 import numpy as np
 import hashlib
 import pickle
+import pywren.serialize as serialize
 
 class MmapArray():
     def __init__(self, mmaped, mode=None,idxs=None):
@@ -37,7 +38,8 @@ def hash_array(s):
     return hashlib.sha1(byte_view).hexdigest()
 
 def hash_function(f):
-    byte_view = pickle.dumps(f)
+    serializer = serialize.SerializeIndependent()
+    byte_view = serializer([f])[0][0]
     return hashlib.sha1(byte_view).hexdigest()
 
 def hash_bytes(byte_string):
@@ -72,7 +74,9 @@ def load_mmap(mmap_loc, mmap_shape, mmap_dtype):
 def list_all_keys(bucket, prefix):
     client = boto3.client('s3')
     objects = client.list_objects(Bucket=bucket, Prefix=prefix, Delimiter=prefix)
-    keys = list(map(lambda x: x['Key'], objects['Contents']))
+    if (objects.get('Contents') == None):
+        return []
+    keys = list(map(lambda x: x['Key'], objects.get('Contents', [] )))
     truncated = objects['IsTruncated']
     next_marker = objects.get('NextMarker')
     while truncated:

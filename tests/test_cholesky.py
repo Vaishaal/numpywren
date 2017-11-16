@@ -7,6 +7,7 @@ from numpy.linalg import cholesky
 import pywren
 import unittest
 import concurrent.futures as fs
+import time
 
 
 
@@ -27,10 +28,11 @@ class CholeskyTestClass(unittest.TestCase):
 
     def test_multiple_shard_cholesky(self):
         np.random.seed(1)
-        size = 8192
-        shard_size = 1024
+        size = 128
+        shard_size = 64
+        np.random.seed(1)
         print("Generating X")
-        executor = fs.ProcessPoolExecutor(20)
+        executor = fs.ProcessPoolExecutor(16)
         X = np.random.randn(size, 128)
         print("Generating A")
         A = X.dot(X.T) + np.eye(X.shape[0])
@@ -40,8 +42,18 @@ class CholeskyTestClass(unittest.TestCase):
         shard_sizes = (shard_size, shard_size)
         A_sharded= BigSymmetricMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes)
         y_sharded = BigMatrix("cholesky_test_y", shape=y.shape, shard_sizes=shard_sizes[:1])
+        A_sharded.free()
+        y_sharded.free()
+        A_sharded= BigSymmetricMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes)
+        y_sharded = BigMatrix("cholesky_test_y", shape=y.shape, shard_sizes=shard_sizes[:1])
+        t = time.time()
         shard_matrix(A_sharded, A, executor=executor)
+        e = time.time()
+        print("A_sharded", e - t)
+        t = time.time()
         shard_matrix(y_sharded, y, executor=executor)
+        e = time.time()
+        print("y_sharded time", e - t)
         print("Computing LL^{T}")
         L = cholesky(A)
         print(L)
@@ -52,4 +64,6 @@ class CholeskyTestClass(unittest.TestCase):
         print("L_{infty} difference ", np.max(np.abs(L_sharded_local - L)))
         assert(np.allclose(L,L_sharded_local))
 
-
+if __name__ == "__main__":
+    tests = CholeskyTestClass()
+    tests.test_multiple_shard_cholesky()

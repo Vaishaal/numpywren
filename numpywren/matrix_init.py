@@ -14,15 +14,16 @@ from . import matrix_utils
 import numpy as np
 
 
-def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=False):
+def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=False, executor=None):
     #print("Sharding matrix..... of shape {0}".format(X_local.shape))
+    print("Generating key name...")
     key = generate_key_name_local_matrix(X_local)
     if (not symmetric):
         bigm = BigMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype)
     else:
         bigm = BigSymmetricMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype)
     if (not exists):
-        return shard_matrix(bigm, X_local, n_jobs=n_jobs)
+        return shard_matrix(bigm, X_local, n_jobs=n_jobs, executor=executor)
     else:
         return bigm
 
@@ -56,7 +57,7 @@ def mmap_put_block(bigm, mmap_array, bidxs_blocks):
 def _shard_matrix(bigm, X_local, n_jobs=1, executor=None):
     all_bidxs = bigm.block_idxs
     all_blocks = bigm.blocks
-    executor = fs.ThreadPoolExecutor(n_jobs)
+    executor = fs.ProcessPoolExecutor(n_jobs)
     futures = []
     for (bidxs,blocks) in zip(all_bidxs, all_blocks):
         slices = [slice(s,e) for s,e in blocks]
@@ -69,10 +70,12 @@ def _shard_matrix(bigm, X_local, n_jobs=1, executor=None):
 
 
 def shard_matrix(bigm, X_local, n_jobs=1, executor=None):
+    print("SHARDING")
     all_bidxs = bigm.block_idxs
     all_blocks = bigm.blocks
     if (executor == None):
         executor = fs.ThreadPoolExecutor(n_jobs)
+    print(executor)
     futures = []
     t = time.time()
     X_local_mmaped = np.memmap("/dev/shm/{0}".format(bigm.key), dtype=bigm.dtype, shape=bigm.shape, mode="w+")

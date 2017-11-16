@@ -28,7 +28,8 @@ class BigMatrix(object):
                  prefix='numpywren.objects/',
                  dtype=np.float64,
                  transposed=False,
-                 parent_fn=None):
+                 parent_fn=None,
+                 write_header=False):
 
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
@@ -59,7 +60,9 @@ class BigMatrix(object):
             raise Exception("shard_sizes should be same length as shape")
 
         self.symmetric = False
-        self.__write_header__()
+        if (write_header):
+            # write a header if you want to load this value later
+            self.__write_header__()
 
     def __write_header__(self):
         key = self.key_base + "header"
@@ -262,6 +265,10 @@ class BigMatrix(object):
 
     def free(self):
         [self.delete_block(*x) for x in self.block_idxs_exist]
+        return 0
+
+    def delete(self):
+        self.free()
         self.__delete_header__()
         return 0
 
@@ -275,7 +282,16 @@ class Scalar(BigMatrix):
                  prefix='numpywren.objects/',
                  parent_fn=None, 
                  dtype='float64'):
-        BigMatrix.__init__(self, key, [1], [1], bucket=bucket, prefix=prefix, parent_fn=parent_fn, dtype=dtype)
+        self.bucket = bucket
+        self.prefix = prefix
+        self.key = key
+        self.key_base = prefix + self.key + "/"
+        self.dtype = dtype
+        self.transposed = False
+        self.symmetric = True
+        self.parent_fn = parent_fn
+        self.shard_sizes = [1]
+        self.shape = [1]
 
     def numpy(self, workers=1):
         return BigMatrix.get_block(self, 0)[0]

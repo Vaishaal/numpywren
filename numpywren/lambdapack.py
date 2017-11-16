@@ -1,6 +1,7 @@
 import numpywren
 import numpywren.matrix
 from numpywren.matrix import BigMatrix, BigSymmetricMatrix, Scalar
+from .matrix_utils import load_mmap, chunk, generate_key_name_uop, constant_zeros
 import numpy as np
 import pywren
 from numpywren import matrix_utils, uops
@@ -15,6 +16,8 @@ from enum import Enum
 import boto3
 import hashlib
 import copy
+import concurrent.futures as fs
+import sys
 
 try:
   DEFAULT_CONFIG = wc.default()
@@ -22,6 +25,20 @@ except:
   DEFAULT_CONFIG = {}
 
 
+class LocalExecutor(object):
+  def __init__(self, procs=1, config=DEFAULT_CONFIG):
+    self.procs = procs
+    self.executor = fs.ThreadPoolExecutor(max_workers=procs)
+    self.config = DEFAULT_CONFIG
+
+  def call_async(self, f, *args, **kwargs):
+    return self.executor.submit(f, *args, **kwargs)
+
+  def map(self, f, arg_list):
+    futures = []
+    for a in arg_list:
+      futures.append(self.call_async(f, a))
+    return futures
 
 class RemoteInstructionOpCodes(Enum):
     S3_LOAD = 0
@@ -31,6 +48,7 @@ class RemoteInstructionOpCodes(Enum):
     CHOL = 4
     INVRS = 5
     RET = 6
+    EXIT = 7
 
 
 class RemoteInstructionExitCodes(Enum):
@@ -40,21 +58,29 @@ class RemoteInstructionExitCodes(Enum):
     REPLAY = 3
     NOT_STARTED = 4
 
+class RemoteInstructionTypes(Enum):
+  IO = 0
+  COMPUTE = 1
+
 EC = RemoteInstructionExitCodes
 OC = RemoteInstructionOpCodes
+IT = RemoteInstructionTypes
 
 
 class RemoteInstruction(object):
     def __init__(self, i_id):
         self.id = i_id
         self.ret_code = -1
+        self.start_time = None
+        self.end_time = None
+        self.type = None
+
 
     def clear(self):
         self.result = None
 
     def __deep_copy__(self, memo):
         return self
-
 
 
 class RemoteLoad(RemoteInstruction):
@@ -66,10 +92,15 @@ class RemoteLoad(RemoteInstruction):
         self.result = None
 
     def __call__(self):
+        self.start_time = time.time()
         if (self.result == None):
             self.result = self.matrix.get_block(*self.bidxs)
-            self.ret_code = 0
+            self.size = sys.getsizeof(self.result)
+
+        self.end_time = time.time()
         return self.result
+
+
 
     def clear(self):
         self.result = None
@@ -91,9 +122,12 @@ class RemoteWrite(RemoteInstruction):
         self.result = None
 
     def __call__(self):
+        self.start_time = time.time()
         if (self.result == None):
             self.result = self.matrix.put_block(self.data_instr.result, *self.bidxs)
+            self.size = sys.getsizeof(self.data_instr.result)
             self.ret_code = 0
+        self.end_time = time.time()
         return self.result
 
     def clear(self):
@@ -114,16 +148,20 @@ class RemoteSYRK(RemoteInstruction):
         self.argv = argv_instr
         self.result = None
     def __call__(self):
+        self.start_time = time.time()
         if (self.result == None):
             old_block = self.argv[0].result
             block_2 = self.argv[1].result
             block_1 = self.argv[2].result
             self.result = old_block - block_2.dot(block_1.T)
+            self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
             self.ret_code = 0
+        self.end_time = time.time()
         return self.result
 
     def clear(self):
         self.result = None
+
 
     def __str__(self):
         return "{0} = SYRK {1} {2} {3}".format(self.id, self.argv[0].id,  self.argv[1].id,  self.argv[2].id)
@@ -136,11 +174,14 @@ class RemoteTRSM(RemoteInstruction):
         self.argv = argv_instr
         self.result = None
     def __call__(self):
+        self.start_time = time.time()
         if (self.result == None):
             L_bb_inv = self.argv[1].result
             col_block = self.argv[0].result
             self.result = col_block.dot(L_bb_inv.T)
+            self.flops = 2*col_block.shape[0]*col_block.shape[1]*L_bb_inv.shape[0]
             self.ret_code = 0
+        self.end_time = time.time()
         return self.result
 
     def clear(self):
@@ -157,10 +198,15 @@ class RemoteCholesky(RemoteInstruction):
         self.argv = argv_instr
         self.result = None
     def __call__(self):
+        self.start_time = time.time()
+        s = time.time()
         if (self.result == None):
             L_bb = self.argv[0].result
             self.result = np.linalg.cholesky(L_bb)
+            self.flops = 1.0/3.0*(L_bb.shape[0]**3) + 2.0/3.0*(L_bb.shape[0])
             self.ret_code = 0
+        e = time.time()
+        self.end_time = time.time()
         return self.result
 
     def clear(self):
@@ -177,10 +223,13 @@ class RemoteInverse(RemoteInstruction):
         self.argv = argv_instr
         self.result = None
     def __call__(self):
+        self.start_time = time.time()
         if (self.result == None):
             L_bb = self.argv[0].result
             self.result = np.linalg.inv(L_bb)
+            self.flops = 2.0/3.0*(L_bb.shape[0]**3)
             self.ret_code = 0
+        self.end_time  = time.time()
         return self.result
 
     def clear(self):
@@ -197,8 +246,11 @@ class RemoteReturn(RemoteInstruction):
         self.return_loc = return_loc
         self.result = None
     def __call__(self):
+        self.start_time = time.time()
         if (self.result == None):
           self.return_loc.put(EC.SUCCESS.value)
+          self.size = sys.getsizeof(EC.SUCCESS.value)
+        self.end_time = time.time()
         return self.result
 
     def clear(self):
@@ -206,7 +258,6 @@ class RemoteReturn(RemoteInstruction):
 
     def __str__(self):
         return "{0} = RET {1}".format(self.id, self.return_loc)
-
 
 class InstructionBlock(object):
     block_count = 0
@@ -246,7 +297,7 @@ class LambdaPackProgram(object):
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
         self.executor = executor
-        self.bucket = pwex.config['s3']['bucket']
+        self.bucket = pywren_config['s3']['bucket']
         self.inst_blocks = [copy.copy(x) for x in inst_blocks]
         self.program_string = "\n".join([str(x) for x in inst_blocks])
         program_string = "\n".join([str(x) for x in self.inst_blocks])
@@ -255,17 +306,17 @@ class LambdaPackProgram(object):
         self.hash = hashed.hexdigest()
 
         self.ret_matrix = Scalar(self.hash, dtype=np.uint8)
-        # delete it if it exists
         self.ret_matrix.free()
-        self.ret_matrix.parent_fn =  matrix_utils.make_constant_parent(EC.NOT_STARTED.value)
+        self.ret_matrix.put(EC.NOT_STARTED.value)
         self.children, self.parents = self._io_dependency_analyze(self.inst_blocks)
         self.starters = []
         self.terminators = []
 
         max_i_id = max([inst.id for inst_block in self.inst_blocks for inst in inst_block.instrs])
-
-
         self.remote_return = RemoteReturn(max_i_id + 1, self.ret_matrix)
+        self.return_block = InstructionBlock([self.remote_return], label="EXIT")
+        self.inst_blocks.append(self.return_block)
+
         self.pc = max_i_id + 1
         self.block_return_matrices = []
         for i, (children, parents, inst_block) in enumerate(zip(self.children, self.parents, self.inst_blocks)):
@@ -273,57 +324,60 @@ class LambdaPackProgram(object):
                 self.terminators.append(i)
             if len(parents) == 0:
                 self.starters.append(i)
-            if (len(children) > 0):
-               block_hash = hashlib.sha1((self.hash + str(i)).encode()).hexdigest()
-               block_ret_matrix  = Scalar(block_hash, dtype=np.uint8)
-               block_ret_matrix.free()
-               block_ret_matrix.put(EC.NOT_STARTED.value)
-               block_return = RemoteReturn(self.pc + 1, block_ret_matrix)
-               self.inst_blocks[i].instrs.append(block_return)
-            else:
-               block_ret_matrix = self.ret_matrix
+            block_hash = hashlib.sha1((self.hash + str(i)).encode()).hexdigest()
+            block_ret_matrix  = Scalar(block_hash, dtype=np.uint8)
+            block_ret_matrix.free()
+            block_ret_matrix.put(EC.NOT_STARTED.value)
+            block_return = RemoteReturn(self.pc + 1, block_ret_matrix)
+            self.inst_blocks[i].instrs.append(block_return)
             self.block_return_matrices.append(block_ret_matrix)
-        for i in self.terminators:
-            self.inst_blocks[i].instrs.append(self.remote_return)
 
+        for i in self.terminators:
+          self.children[i].append(len(self.inst_blocks) - 1)
+        self.children.append([])
+        self.parents.append(self.terminators)
+        self.block_return_matrices.append(self.ret_matrix)
 
     def pywren_func(self, i):
-        children = self.children[i]
-        parents = self.parents[i]
         # 1. check if program has terminated
         # 2. check if this instruction_block has executed successfully
         # 3. check if parents are not completed
         # if any of the above are False -> exit
         try:
+          print("RUNNING " , i)
+          children = self.children[i]
+          parents = self.parents[i]
           program_status = self.program_status().value
           parents_status = [self.inst_block_status(i).value for i in parents]
           my_status = self.inst_block_status(i).value
-          if (sum(parents_status) != EC.SUCCESS.value):
-              return self.inst_blocks[i], EC.RUNNING
+          if (i == len(self.inst_blocks) - 1):
+            # special case final block
+            print("RETURN BLOCK")
+            pass
+          elif (sum(parents_status) != EC.SUCCESS.value):
+              return i, self.inst_blocks[i], EC.RUNNING
           elif (program_status != EC.RUNNING.value):
-              return self.inst_blocks[i], EC.EXCEPTION
+              return i, self.inst_blocks[i], EC.EXCEPTION
           elif (my_status != EC.NOT_STARTED.value):
-              return self.inst_blocks[i], EC.REPLAY
+              return i, self.inst_blocks[i], EC.REPLAY
           self.set_inst_block_status(i, EC.RUNNING)
           ret_code = self.inst_blocks[i]()
           self.set_inst_block_status(i, EC(ret_code))
           self.inst_blocks[i].clear()
           child_futures = []
           pwex = self.executor(config=self.pywren_config)
-          for child in children:
-              child_futures.append(pwex.call_async(self.pywren_func, child))
-          return self.inst_blocks[i], child_futures
+          child_futures = pwex.map(self.pywren_func, children, extra_env={"OMP_NUM_THREADS": "1"})
+          return i, self.inst_blocks[i], child_futures
         except Exception as e:
+            print("EXCEPTION ", e)
             self.handle_exception(e)
             raise
 
     def start(self):
-        self.ret_matrix.parent_fn =  matrix_utils.make_constant_parent(EC.RUNNING.value)
-        pwex = pywren.default_executor()
-        futures = []
-        for i in self.starters:
-            futures.append(pwex.call_async(self.pywren_func, i))
-        return futures
+        self.ret_matrix.put(EC.RUNNING)
+        pwex = self.executor(config=self.pywren_config)
+        self.futures = pwex.map(self.pywren_func, self.starters, extra_env={"OMP_NUM_THREADS": "1"})
+        return self.futures
 
     def handle_exception(self, error):
         e = EC.EXCEPTION.value
@@ -338,6 +392,24 @@ class LambdaPackProgram(object):
         while (status == EC.RUNNING):
             time.sleep(sleep_time)
             status = self.program_status()
+
+
+    def unwind(self):
+      if (self.program_status() != EC.SUCCESS):
+        raise Exception("Unwind can only be called when program has succeeded")
+      results = []
+      for f in self.futures:
+        results += self.__unwind_recursive(f)
+      return sorted(results, key=lambda x: x[0])
+
+    def __unwind_recursive(self, future):
+      index, inst_block, children = future.result()
+      if (isinstance(children, RemoteInstructionExitCodes)):
+        return []
+      results = [(index, inst_block)]
+      for c in children:
+        results += self.__unwind_recursive(c)
+      return results
 
     def inst_block_status(self, i):
         return EC(self.block_return_matrices[i].get())
@@ -407,6 +479,64 @@ def make_local_cholesky_and_inverse(pc, L_out, L_bb_inv_out, L_in, b0, label=Non
     write_inverse = RemoteWrite(pc, L_bb_inv_out, inverse, 0, 0)
     pc += 1
     return InstructionBlock([block_load, cholesky, inverse, write_diag, write_inverse], label=label), 5
+
+def _chol(X, out_bucket=None):
+    if (out_bucket == None):
+        out_bucket = X.bucket
+    out_key = generate_key_name_uop(X, "chol")
+    # generate output matrix
+    L = BigMatrix(out_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]], parent_fn=constant_zeros, write_header=True)
+    # generate intermediate matrices
+    trailing = [X]
+    cholesky_diag_inverses = []
+    all_blocks = list(L.block_idxs)
+    block_idxs = sorted(X._block_idxs(0))
+
+    for i,j0 in enumerate(X._block_idxs(0)):
+        L_trailing = BigMatrix(out_key + "_{0}_trailing".format(i),
+                       shape=(X.shape[0], X.shape[0]),
+                       bucket=out_bucket,
+                       shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]],
+                       parent_fn=constant_zeros)
+        block_size =  min(X.shard_sizes[0], X.shape[0] - X.shard_sizes[0]*j0)
+        L_bb_inv = BigMatrix(out_key + "_({0},{0})_inv".format(i),
+                             shape=(block_size, block_size),
+                             bucket=out_bucket,
+                             shard_sizes=[block_size, block_size],
+                             parent_fn=constant_zeros)
+
+        trailing.append(L_trailing)
+        cholesky_diag_inverses.append(L_bb_inv)
+    trailing.append(L)
+    all_instructions = []
+
+    pc = 0
+    par_block = 0
+    for i in block_idxs:
+        L_inv = cholesky_diag_inverses[i]
+        instructions, count = make_local_cholesky_and_inverse(pc, trailing[-1], L_inv, trailing[i], i, label="local")
+        all_instructions.append(instructions)
+        pc += count
+        par_count = 0 
+        parallel_block = []
+        for j in block_idxs[i+1:]:
+            instructions, count = make_column_update(pc, trailing[-1], trailing[i], L_inv, j, i, label="parallel_block_{0}_job_{1}".format(par_block, par_count))
+            all_instructions.append(instructions)
+            pc += count
+            par_count += 1
+        #all_instructions.append(PywrenInstructionBlock(pwex, parallel_block))
+        par_block += 1
+        par_count = 0 
+        parallel_block = []
+        for j in block_idxs[i+1:]:
+            for k in block_idxs[i+1:]:
+                if (k > j): continue
+                instructions, count = make_low_rank_update(pc, trailing[i+1], trailing[i], trailing[-1], i, j, k, label="parallel_block_{0}_job_{1}".format(par_block, par_count))
+                all_instructions.append(instructions)
+                pc += count
+                par_count += 1
+        #all_instructions.append(PywrenInstructionBlock(pwex, parallel_block))
+    return all_instructions, trailing[-1], trailing[:-1]
 
 
 
