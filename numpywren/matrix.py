@@ -50,7 +50,7 @@ class BigMatrix(object):
         if not (header is None) and shape is None:
             self.shard_sizes = header['shard_sizes']
             self.shape = header['shape']
-            self.dtype = eval(header['dtype'])
+            self.dtype = header['dtype']
         else:
             self.shape = shape
             self.shard_sizes = shard_sizes
@@ -317,8 +317,10 @@ class BigSymmetricMatrix(BigMatrix):
                  shard_sizes=[],
                  bucket=DEFAULT_BUCKET,
                  prefix='numpywren.objects/',
-                 parent_fn=None):
-        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix, parent_fn)
+                 dtype=np.float64,
+                 parent_fn=None,
+                 write_header=False):
+        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix, dtype, parent_fn, write_header)
         self.symmetric = True
 
     @property

@@ -11,6 +11,7 @@ import numpy as np
 import hashlib
 import pickle
 import pywren.serialize as serialize
+import inspect
 
 class MmapArray():
     def __init__(self, mmaped, mode=None,idxs=None):
@@ -38,14 +39,15 @@ def hash_array(s):
     return hashlib.sha1(byte_view).hexdigest()
 
 def hash_function(f):
-    serializer = serialize.SerializeIndependent()
-    byte_view = serializer([f])[0][0]
-    return hashlib.sha1(byte_view).hexdigest()
+    src_code = inspect.getsource(f)
+    return hashlib.sha1(src_code.encode()).hexdigest()
 
 def hash_bytes(byte_string):
     return hashlib.sha1(byte_string.encode('utf-8')).hexdigest()
 
-
+def hash_args(args):
+    arg_bytes = pickle.dumps(args)
+    return hashlib.sha1(arg_bytes).hexdigest()
 
 def chunk(l, n):
     """Yield successive n-sized chunks from l."""

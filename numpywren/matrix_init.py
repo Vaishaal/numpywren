@@ -9,25 +9,26 @@ import cloudpickle
 import numpy as np
 import hashlib
 from .matrix import BigMatrix, BigSymmetricMatrix
+from . import matrix
 from .matrix_utils import generate_key_name_local_matrix, constant_zeros, MmapArray
 from . import matrix_utils
 import numpy as np
 
 
-def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=False, executor=None):
+def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=False, executor=None, write_header=False, bucket=matrix.DEFAULT_BUCKET):
     #print("Sharding matrix..... of shape {0}".format(X_local.shape))
     print("Generating key name...")
     key = generate_key_name_local_matrix(X_local)
     if (not symmetric):
-        bigm = BigMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype)
+        bigm = BigMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype, write_header=write_header, bucket=bucket)
     else:
-        bigm = BigSymmetricMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype)
+        bigm = BigSymmetricMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype, write_header=write_header, bucket=bucket)
     if (not exists):
         return shard_matrix(bigm, X_local, n_jobs=n_jobs, executor=executor)
     else:
         return bigm
 
-def empty_result_matrix(X_sharded, function, shape=None, shard_sizes=None, symmetric=False, dtype=None):
+def empty_result_matrix(X_sharded, function, args, shape=None, shard_sizes=None, symmetric=False, dtype=None):
     if (dtype == None):
         dtype = X_sharded.dtype
     if (shape == None):
@@ -37,7 +38,8 @@ def empty_result_matrix(X_sharded, function, shape=None, shard_sizes=None, symme
     #print("Sharding matrix..... of shape {0}".format(X_local.shape))
     key_hash = X_sharded.key
     function_hash = matrix_utils.hash_function(function)
-    key = matrix_utils.hash_bytes(function_hash + key_hash)
+    args_hash = matrix_utils.hash_args(args)
+    key = matrix_utils.hash_string(function_hash + key_hash + args_hash)
     if (not symmetric):
         bigm = BigMatrix(key, shape=shape, shard_sizes=shard_sizes, dtype=dtype)
     else:
