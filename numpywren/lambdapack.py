@@ -34,7 +34,7 @@ class LocalExecutor(object):
   def call_async(self, f, *args, **kwargs):
     return self.executor.submit(f, *args, **kwargs)
 
-  def map(self, f, arg_list):
+  def map(self, f, arg_list, **kwargs):
     futures = []
     for a in arg_list:
       futures.append(self.call_async(f, a))
