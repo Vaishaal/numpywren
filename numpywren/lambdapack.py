@@ -1,6 +1,6 @@
 import numpywren
 import numpywren.matrix
-from numpywren.matrix import BigMatrix, BigSymmetricMatrix, Scalar
+from .matrix import BigMatrix, BigSymmetricMatrix, Scalar
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, constant_zeros
 import numpy as np
 import pywren
@@ -18,6 +18,7 @@ import hashlib
 import copy
 import concurrent.futures as fs
 import sys
+import botocore
 
 try:
   DEFAULT_CONFIG = wc.default()
@@ -26,7 +27,7 @@ except:
 
 
 class LocalExecutor(object):
-  def __init__(self, procs=1, config=DEFAULT_CONFIG):
+  def __init__(self, procs=32, config=DEFAULT_CONFIG):
     self.procs = procs
     self.executor = fs.ThreadPoolExecutor(max_workers=procs)
     self.config = DEFAULT_CONFIG
@@ -62,9 +63,69 @@ class RemoteInstructionTypes(Enum):
   IO = 0
   COMPUTE = 1
 
+class RemoteProgramState(object):
+  ''' Host integers on dynamodb '''
+  def __init__(self, key, table_name="lambdapack"):
+    self.key = {"id": {"S":key}}
+    self.table_name = table_name
+
+  def put(self, value):
+    assert isinstance(value, int)
+    item = self.key.copy()
+    item["val"] = {"N": str(value)}
+    client = boto3.client('dynamodb', region_name='us-west-2')
+    client.put_item(TableName=self.table_name, Item=item)
+
+  def get(self):
+    client = boto3.client('dynamodb', region_name='us-west-2')
+    resp = client.get_item(TableName=self.table_name, Key=self.key, ConsistentRead=True)
+    if "Item" in resp.keys():
+      return int(resp["Item"]["val"]["N"])
+    else:
+      return None
+
+  def incr(self, inc=1):
+    client = boto3.client('dynamodb', region_name='us-west-2')
+    assert isinstance(inc, int)
+    done = False
+    while (not done):
+      try:
+        old_val = self.get()
+        if (old_val is None):
+          update_value = {":newval":{"N":str(inc)}}
+          update = "ADD val :newval"
+          cond = "attribute_not_exists(Id)"
+          client.update_item(TableName=self.table_name, Key=self.key, UpdateExpression=update, ExpressionAttributeValues=update_value, ConditionExpression=cond)
+          final_val = inc
+          done = True
+        else:
+          update_value = {":newval":{"N":str(old_val+inc)}, ":oldval":{"N":str(old_val)}}
+          update = "SET val = :newval"
+          cond = "val = :oldval"
+          client.update_item(TableName=self.table_name, Key=self.key, UpdateExpression=update, ExpressionAttributeValues=update_value, ConditionExpression=cond)
+          done = True
+          final_val = old_val + inc
+      except botocore.exceptions.ClientError as e:
+        # Ignore the ConditionalCheckFailedException, bubble up
+        # other exceptions.
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+          raise
+    return final_val
+
+
+
+
+
+
+
+
+
+
 EC = RemoteInstructionExitCodes
 OC = RemoteInstructionOpCodes
 IT = RemoteInstructionTypes
+
+RPS = RemoteProgramState
 
 
 class RemoteInstruction(object):
@@ -303,40 +364,42 @@ class LambdaPackProgram(object):
         program_string = "\n".join([str(x) for x in self.inst_blocks])
         hashed = hashlib.sha1()
         hashed.update(program_string.encode())
+        hashed.update(str(time.time()).encode())
         self.hash = hashed.hexdigest()
-
-        self.ret_matrix = Scalar(self.hash, dtype=np.uint8)
-        self.ret_matrix.free()
-        self.ret_matrix.put(EC.NOT_STARTED.value)
+        self.ret_status = RPS(self.hash)
         self.children, self.parents = self._io_dependency_analyze(self.inst_blocks)
         self.starters = []
         self.terminators = []
-
         max_i_id = max([inst.id for inst_block in self.inst_blocks for inst in inst_block.instrs])
-        self.remote_return = RemoteReturn(max_i_id + 1, self.ret_matrix)
+        self.remote_return = RemoteReturn(max_i_id + 1, self.ret_status)
         self.return_block = InstructionBlock([self.remote_return], label="EXIT")
         self.inst_blocks.append(self.return_block)
 
         self.pc = max_i_id + 1
-        self.block_return_matrices = []
+        self.block_return_statuses = []
+        self.block_ready_statuses = []
         for i, (children, parents, inst_block) in enumerate(zip(self.children, self.parents, self.inst_blocks)):
             if len(children) == 0:
                 self.terminators.append(i)
             if len(parents) == 0:
                 self.starters.append(i)
             block_hash = hashlib.sha1((self.hash + str(i)).encode()).hexdigest()
-            block_ret_matrix  = Scalar(block_hash, dtype=np.uint8)
-            block_ret_matrix.free()
-            block_ret_matrix.put(EC.NOT_STARTED.value)
-            block_return = RemoteReturn(self.pc + 1, block_ret_matrix)
+            block_ret_status  = RPS(block_hash)
+            block_return = RemoteReturn(self.pc + 1, block_ret_status)
+            block_ready_hash = block_hash + "_ready"
+            block_ready_status = RPS(block_ready_hash)
             self.inst_blocks[i].instrs.append(block_return)
-            self.block_return_matrices.append(block_ret_matrix)
+            self.block_return_statuses.append(block_ret_status)
+            self.block_ready_statuses.append(block_ready_status)
 
         for i in self.terminators:
           self.children[i].append(len(self.inst_blocks) - 1)
         self.children.append([])
         self.parents.append(self.terminators)
-        self.block_return_matrices.append(self.ret_matrix)
+        self.block_return_statuses.append(self.ret_status)
+        self.ret_ready_status = RPS(self.hash + "_ready")
+        self.block_ready_statuses.append(self.ret_ready_status)
+
 
     def pywren_func(self, i):
         # 1. check if program has terminated
@@ -348,25 +411,25 @@ class LambdaPackProgram(object):
           children = self.children[i]
           parents = self.parents[i]
           program_status = self.program_status().value
-          parents_status = [self.inst_block_status(i).value for i in parents]
-          my_status = self.inst_block_status(i).value
           if (i == len(self.inst_blocks) - 1):
             # special case final block
             print("RETURN BLOCK")
             pass
-          elif (sum(parents_status) != EC.SUCCESS.value):
-              return i, self.inst_blocks[i], EC.RUNNING
-          elif (program_status != EC.RUNNING.value):
-              return i, self.inst_blocks[i], EC.EXCEPTION
-          elif (my_status != EC.NOT_STARTED.value):
-              return i, self.inst_blocks[i], EC.REPLAY
           self.set_inst_block_status(i, EC.RUNNING)
+          if (program_status != EC.RUNNING.value):
+            return i, self.inst_blocks[i], EC.EXCEPTION
+
           ret_code = self.inst_blocks[i]()
           self.set_inst_block_status(i, EC(ret_code))
           self.inst_blocks[i].clear()
           child_futures = []
           pwex = self.executor(config=self.pywren_config)
-          child_futures = pwex.map(self.pywren_func, children, extra_env={"OMP_NUM_THREADS": "1"})
+          ready_children = []
+          for child in children:
+            val = self.block_ready_statuses[child].incr()
+            if (val >= len(self.parents[child])):
+              ready_children.append(child)
+          child_futures = pwex.map(self.pywren_func, ready_children, extra_env={"OMP_NUM_THREADS": "1"})
           return i, self.inst_blocks[i], child_futures
         except Exception as e:
             print("EXCEPTION ", e)
@@ -374,17 +437,24 @@ class LambdaPackProgram(object):
             raise
 
     def start(self):
-        self.ret_matrix.put(EC.RUNNING)
+        self.ret_status.put(EC.RUNNING.value)
         pwex = self.executor(config=self.pywren_config)
+        print(pwex.config)
+        print(self.starters)
         self.futures = pwex.map(self.pywren_func, self.starters, extra_env={"OMP_NUM_THREADS": "1"})
         return self.futures
 
     def handle_exception(self, error):
         e = EC.EXCEPTION.value
-        self.ret_matrix.put(e)
+        self.ret_status.put(e)
 
     def program_status(self):
-        return EC(self.ret_matrix.get())
+      status = self.ret_status.get()
+      if (status == None):
+        return EC.NOT_STARTED
+      else:
+        return EC(status)
+
 
 
     def wait(self, sleep_time=1):
@@ -412,10 +482,14 @@ class LambdaPackProgram(object):
       return results
 
     def inst_block_status(self, i):
-        return EC(self.block_return_matrices[i].get())
+      status = self.block_return_statuses[i].get()
+      if (status == None):
+        return EC.NOT_STARTED
+      else:
+        return EC(status)
 
     def set_inst_block_status(self, i, status):
-        return self.block_return_matrices[i].put(status.value)
+        return self.block_return_statuses[i].put(status.value)
 
     def _io_dependency_analyze(self, instruction_blocks):
         all_forward_dependencies = [[] for i in range(len(instruction_blocks))]
@@ -517,7 +591,7 @@ def _chol(X, out_bucket=None):
         instructions, count = make_local_cholesky_and_inverse(pc, trailing[-1], L_inv, trailing[i], i, label="local")
         all_instructions.append(instructions)
         pc += count
-        par_count = 0 
+        par_count = 0
         parallel_block = []
         for j in block_idxs[i+1:]:
             instructions, count = make_column_update(pc, trailing[-1], trailing[i], L_inv, j, i, label="parallel_block_{0}_job_{1}".format(par_block, par_count))
@@ -526,7 +600,7 @@ def _chol(X, out_bucket=None):
             par_count += 1
         #all_instructions.append(PywrenInstructionBlock(pwex, parallel_block))
         par_block += 1
-        par_count = 0 
+        par_count = 0
         parallel_block = []
         for j in block_idxs[i+1:]:
             for k in block_idxs[i+1:]:

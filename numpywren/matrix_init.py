@@ -28,7 +28,7 @@ def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=Fal
     else:
         return bigm
 
-def empty_result_matrix(X_sharded, function, args, shape=None, shard_sizes=None, symmetric=False, dtype=None):
+def empty_result_matrix(X_sharded, function, args, shape=None, shard_sizes=None, symmetric=False, dtype=None, write_header=False):
     if (dtype == None):
         dtype = X_sharded.dtype
     if (shape == None):
@@ -41,9 +41,9 @@ def empty_result_matrix(X_sharded, function, args, shape=None, shard_sizes=None,
     args_hash = matrix_utils.hash_args(args)
     key = matrix_utils.hash_string(function_hash + key_hash + args_hash)
     if (not symmetric):
-        bigm = BigMatrix(key, shape=shape, shard_sizes=shard_sizes, dtype=dtype)
+        bigm = BigMatrix(key, shape=shape, shard_sizes=shard_sizes, dtype=dtype, write_header=write_header, bucket=X_sharded.bucket)
     else:
-        bigm = BigSymmetricMatrix(key, shape=shape, shard_sizes=shard_sizes, dtype=dtype)
+        bigm = BigSymmetricMatrix(key, shape=shape, shard_sizes=shard_sizes, dtype=dtype, write_header=write_header, bucket=X_sharded.bucket)
     return bigm
 
 def mmap_put_block(bigm, mmap_array, bidxs_blocks):

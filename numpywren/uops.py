@@ -106,10 +106,12 @@ def chol(pwex, X, out_bucket=None, tasks_per_job=1):
         executor = pywren.standalone_executor
     else:
         executor = pywren.lambda_executor
-    program = lp.LambdaPackProgram(instructions, executor=lp.LocalExecutor, pywren_config=config)
+    print(executor)
+    program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
     futures = program.start()
     program.wait()
     if (program.program_status() != lp.EC.SUCCESS):
+        program.unwind()
         raise Exception("Lambdapack Exception : {0}".format(program.program_status()))
 
     # delete all intermediate information
