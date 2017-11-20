@@ -554,6 +554,52 @@ def make_local_cholesky_and_inverse(pc, L_out, L_bb_inv_out, L_in, b0, label=Non
     pc += 1
     return InstructionBlock([block_load, cholesky, inverse, write_diag, write_inverse], label=label), 5
 
+
+def make_remote_gemm(pc, XY, X, Y, b0, b1, b2, label=None):
+    # download row_b0[b2]
+    # download col_b1[b2]
+    # compute row_b0[b2].T.dot(col_b1[b2])
+
+    block_0_load = RemoteLoad(pc, X, b0, b2)
+    pc += 1
+    block_1_load = RemoteLoad(pc, X, b1, b2)
+    pc += 1
+    matmul = RemoteGemm(pc, [block_0_load, block_1_load])
+    pc += 1
+    write_out = RemoteWrite(pc, XY, matmul, b0, b1)
+    pc += 1
+    return InstructionBlock([block_0_load, block_1_load, matmul, write_out], label=label), 4
+
+
+def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
+    reduce_idxs = Y._block_idxs(axis=1)
+    if (out_bucket == None):
+        out_bucket = X.bucket
+
+    root_key = generate_key_name_binop(X, Y, "gemm")
+
+    if (X.key == Y.key and (X.transposed ^ Y.transposed)):
+        XY = BigSymmetricMatrix(root_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]])
+    else:
+        XY = BigMatrix(root_key, shape=(X.shape[0], Y.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], Y.shard_sizes[0]])
+
+    num_out_blocks = len(XY.blocks)
+    num_jobs = int(num_out_blocks/float(tasks_per_job))
+    block_idxs_to_map = list(set(XY.block_idxs))
+    chunked_blocks = list(chunk(list(chunk(block_idxs_to_map, tasks_per_job)), num_jobs))
+    all_futures = []
+
+    for i, c in enumerate(chunked_blocks):
+        print("Submitting job for chunk {0} in axis 0".format(i))
+        s = time.time()
+        futures = pwex.map(pywren_run, c)
+        e = time.time()
+        print("Pwex Map Time {0}".format(e - s))
+        all_futures.append((i,futures))
+    return instruction_blocks
+
+
+
 def _chol(X, out_bucket=None):
     if (out_bucket == None):
         out_bucket = X.bucket
