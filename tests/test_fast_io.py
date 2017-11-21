@@ -6,6 +6,7 @@ import pytest
 import numpy as np
 import pywren
 import unittest
+import time
 
 class FastIOTestClass(unittest.TestCase):
     def test_sharded_matrix_row_get(self):
@@ -16,4 +17,35 @@ class FastIOTestClass(unittest.TestCase):
         print(X[0].shape)
         print(row_0.shape)
         assert(np.all(X[0] == row_0))
+
+    def test_sharded_matrix_row_get_big(self):
+        s = 8
+        X = np.arange(0,4096*4096*s).reshape(4096, 4096*s)
+        X_sharded = local_numpy_init(X, shard_sizes=[4096, 4096])
+        t = time.time()
+        row_0 = matrix_utils.get_row(X_sharded, 0)
+        e = time.time()
+        print(row_0.shape)
+        print("Effective GB/s", (4096*4096*s*8)/ (1e9*(e - t)))
+        print("Download Time", e - t)
+        X_sharded.free()
+        assert(np.all(X == row_0))
+
+    def test_sharded_matrix_row_put_big(self):
+        s = 8
+        X = np.arange(0,4096*4096*s).reshape(4096, 4096*s)
+        X_sharded = BigMatrix("row_put_test", shape=X.shape, shard_sizes=[4096, 4096])
+        t = time.time()
+        matrix_utils.put_row(X_sharded, X, 0)
+        e = time.time()
+        print(X.shape)
+        print("Effective GB/s", (4096*4096*s*8)/ (1e9*(e - t)))
+        print("Upload Time", e - t)
+
+        t = time.time()
+        row_0 = matrix_utils.get_row(X_sharded, 0)
+        e = time.time()
+        X_sharded.free()
+        assert(np.all(X == row_0))
+
 
