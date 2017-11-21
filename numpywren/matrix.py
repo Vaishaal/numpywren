@@ -5,6 +5,8 @@ import os
 import time
 
 import boto3
+import pickle
+import base64
 import cloudpickle
 import numpy as np
 import json
@@ -50,7 +52,7 @@ class BigMatrix(object):
         if not (header is None) and shape is None:
             self.shard_sizes = header['shard_sizes']
             self.shape = header['shape']
-            self.dtype = header['dtype']
+            self.dtype = self.__decode_dtype__(header['dtype'])
         else:
             self.shape = shape
             self.shard_sizes = shard_sizes
@@ -63,20 +65,31 @@ class BigMatrix(object):
         if (write_header):
             # write a header if you want to load this value later
             self.__write_header__()
-
     def __write_header__(self):
         key = self.key_base + "header"
         client = boto3.client('s3')
         header = {}
         header['shape'] = self.shape
         header['shard_sizes'] = self.shard_sizes
-        header['dtype'] = str(self.dtype)
+        header['dtype'] = self.__encode_dtype__(self.dtype)
         client.put_object(Key=key, Bucket = self.bucket, Body=json.dumps(header), ACL="bucket-owner-full-control")
         return 0
 
     @property
     def T(self):
         return self.__transpose__()
+
+    def __encode_dtype__(self, dtype):
+        dtype_pickle = pickle.dumps(dtype)
+        b64_str = base64.b64encode(dtype_pickle).decode('utf-8')
+        return b64_str
+
+    def __decode_dtype__(self, dtype_enc):
+        dtype_bytes = base64.b64decode(dtype_enc)
+        dtype = pickle.loads(dtype_bytes)
+        return dtype
+
+
 
     def __str__(self):
         rep = "{0}({1})".format(self.__class__.__name__, self.key)
