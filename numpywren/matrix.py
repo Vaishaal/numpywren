@@ -86,8 +86,8 @@ class BigMatrix(object):
 
     def __transpose__(self):
         transposed = self.__class__(key=self.key,
-                                   shape=self.shape,
-                                   shard_sizes=self.shard_sizes,
+                                   shape=self.shape[::-1],
+                                   shard_sizes=self.shard_sizes[::-1],
                                    bucket=self.bucket,
                                    prefix=self.prefix,
                                    dtype=self.dtype,
@@ -164,7 +164,12 @@ class BigMatrix(object):
 
     def __get_matrix_shard_key__(self, real_idxs):
             key_string = ""
-            for ((sidx, eidx), shard_size) in zip(real_idxs, self.shard_sizes):
+
+            shard_sizes = self.shard_sizes
+            if (self.transposed):
+                shard_sizes = reversed(shard_sizes)
+                real_idxs = reversed(real_idxs)
+            for ((sidx, eidx), shard_size) in zip(real_idxs, shard_sizes):
                 key_string += "{0}_{1}_{2}_".format(sidx, eidx, shard_size)
 
             return self.key_base + key_string
@@ -230,11 +235,11 @@ class BigMatrix(object):
     def get_block(self, *block_idx):
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
-        if (self.transposed):
-            block_idx = tuple(reversed(block_idx))
         key = self.__shard_idx_to_key__(block_idx)
         exists = key_exists(self.bucket, key)
         if (not exists and self.parent_fn == None):
+            print(self.bucket)
+            print(key)
             raise Exception("Key does not exist, and no parent function prescripted")
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx)
@@ -252,7 +257,6 @@ class BigMatrix(object):
         if (block.shape != current_shape):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
         if (self.transposed):
-            block_idx = tuple(reversed(block_idx))
             block = block.T
         key = self.__shard_idx_to_key__(block_idx)
         return self.__save_matrix_to_s3__(block, key)
