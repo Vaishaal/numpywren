@@ -135,7 +135,8 @@ def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
         mmap_loc = "/dev/shm/{0}".format(hash_key)
     executor = fs.ProcessPoolExecutor(max_workers=workers)
     blocks_to_get = [bigm._block_idxs(i) for i in range(len(bigm.shape))]
-    futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get)
+    big_axis = np.argmax(blocks_to_get)
+    futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=big_axis)
     fs.wait(futures)
     [f.result() for f in futures]
     return load_mmap(*futures[0].result())
@@ -145,14 +146,16 @@ def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
 # fast methods for matrices
 ## TODO: generalize for arbitrary MD arrays 
 
-def get_row(bigm, row, workers=20, mmap_loc=None, big_axis=0):
+def get_row(bigm, row, workers=20, mmap_loc=None):
     assert len(bigm.shape) == 2
     hash_key = hash_string(bigm.key)
     if (mmap_loc == None):
         mmap_loc = "/dev/shm/{0}".format(hash_key)
     executor = fs.ProcessPoolExecutor(max_workers=workers)
+    print(bigm.block_idxs)
     blocks_to_get = [[row], bigm._block_idxs(1)]
-    futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=big_axis)
+    print(blocks_to_get)
+    futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, executor=executor, big_axis=1)
     fs.wait(futures)
     [f.result() for f in futures]
     return load_mmap(*futures[0].result())
