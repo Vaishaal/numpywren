@@ -132,7 +132,7 @@ def get_blocks_mmap(bigm, block_idxs, local_idxs, mmap_loc, mmap_shape):
 def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
     hash_key = hash_string(bigm.key)
     if (mmap_loc == None):
-        mmap_loc = "/tmp/{0}".format(hash_key)
+        mmap_loc = "/dev/shm/{0}".format(hash_key)
     executor = fs.ProcessPoolExecutor(max_workers=workers)
     blocks_to_get = [bigm._block_idxs(i) for i in range(len(bigm.shape))]
     futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get)
@@ -140,6 +140,45 @@ def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
     [f.result() for f in futures]
     return load_mmap(*futures[0].result())
 
+
+
+# fast methods for matrices
+## TODO: generalize for arbitrary MD arrays 
+
+def get_row(bigm, row, workers=20, mmap_loc=None, big_axis=0):
+    assert len(bigm.shape) == 2
+    hash_key = hash_string(bigm.key)
+    if (mmap_loc == None):
+        mmap_loc = "/dev/shm/{0}".format(hash_key)
+    executor = fs.ProcessPoolExecutor(max_workers=workers)
+    blocks_to_get = [[row], bigm._block_idxs(1)]
+    futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=big_axis)
+    fs.wait(futures)
+    [f.result() for f in futures]
+    return load_mmap(*futures[0].result())
+
+def put_row_async(bigm, mmap_loc, shape, block, bidx):
+    X_memmap = np.memmap(mmap_loc, dtype=bigm.dtype, mode='r+', shape=shape)
+    block_data = X_memmap[block[0]:block[1]]
+    bigm.put_block(block_data, *bidx)
+    return 0
+
+def put_row(bigm, row, workers=20, mmap_loc=None, big_axis=0):
+    assert len(bigm.shape) == 2
+    hash_key = hash_string(bigm.key + str(row))
+    if (mmap_loc == None):
+        mmap_loc = "/dev/shm/{0}".format(hash_key)
+    executor = fs.ProcessPoolExecutor(max_workers=workers)
+    block_idx_blocks = list(zip(bigm.block_idxs, bigm.blocks))
+    blocks_to_put = [x for x in block_idx_blocks if x[0][0] == row]
+
+    X_memmap = np.memmap(mmap_loc, dtype=bigm.dtype, mode='w+', shape=row.shape)
+    futures = []
+    for block, bidx in blocks_to_put:
+        futures.append(executor.submit(put_row_async, bigm, mmap_loc, row.shape, block, bidx))
+    fs.wait(futures)
+    [f.result() for f in futures]
+    return
 
 def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, executor=None, workers=20):
     '''
