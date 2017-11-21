@@ -5,6 +5,8 @@ import os
 import time
 
 import boto3
+import pickle
+import base64
 import cloudpickle
 import numpy as np
 import json
@@ -28,7 +30,8 @@ class BigMatrix(object):
                  prefix='numpywren.objects/',
                  dtype=np.float64,
                  transposed=False,
-                 parent_fn=None):
+                 parent_fn=None,
+                 write_header=False):
 
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
@@ -49,7 +52,7 @@ class BigMatrix(object):
         if not (header is None) and shape is None:
             self.shard_sizes = header['shard_sizes']
             self.shape = header['shape']
-            self.dtype = eval(header['dtype'])
+            self.dtype = self.__decode_dtype__(header['dtype'])
         else:
             self.shape = shape
             self.shard_sizes = shard_sizes
@@ -59,21 +62,34 @@ class BigMatrix(object):
             raise Exception("shard_sizes should be same length as shape")
 
         self.symmetric = False
-        self.__write_header__()
-
+        if (write_header):
+            # write a header if you want to load this value later
+            self.__write_header__()
     def __write_header__(self):
         key = self.key_base + "header"
         client = boto3.client('s3')
         header = {}
         header['shape'] = self.shape
         header['shard_sizes'] = self.shard_sizes
-        header['dtype'] = str(self.dtype)
+        header['dtype'] = self.__encode_dtype__(self.dtype)
         client.put_object(Key=key, Bucket = self.bucket, Body=json.dumps(header), ACL="bucket-owner-full-control")
         return 0
 
     @property
     def T(self):
         return self.__transpose__()
+
+    def __encode_dtype__(self, dtype):
+        dtype_pickle = pickle.dumps(dtype)
+        b64_str = base64.b64encode(dtype_pickle).decode('utf-8')
+        return b64_str
+
+    def __decode_dtype__(self, dtype_enc):
+        dtype_bytes = base64.b64decode(dtype_enc)
+        dtype = pickle.loads(dtype_bytes)
+        return dtype
+
+
 
     def __str__(self):
         rep = "{0}({1})".format(self.__class__.__name__, self.key)
@@ -83,8 +99,8 @@ class BigMatrix(object):
 
     def __transpose__(self):
         transposed = self.__class__(key=self.key,
-                                   shape=self.shape,
-                                   shard_sizes=self.shard_sizes,
+                                   shape=self.shape[::-1],
+                                   shard_sizes=self.shard_sizes[::-1],
                                    bucket=self.bucket,
                                    prefix=self.prefix,
                                    dtype=self.dtype,
@@ -161,7 +177,12 @@ class BigMatrix(object):
 
     def __get_matrix_shard_key__(self, real_idxs):
             key_string = ""
-            for ((sidx, eidx), shard_size) in zip(real_idxs, self.shard_sizes):
+
+            shard_sizes = self.shard_sizes
+            if (self.transposed):
+                shard_sizes = reversed(shard_sizes)
+                real_idxs = reversed(real_idxs)
+            for ((sidx, eidx), shard_size) in zip(real_idxs, shard_sizes):
                 key_string += "{0}_{1}_{2}_".format(sidx, eidx, shard_size)
 
             return self.key_base + key_string
@@ -227,11 +248,11 @@ class BigMatrix(object):
     def get_block(self, *block_idx):
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
-        if (self.transposed):
-            block_idx = tuple(reversed(block_idx))
         key = self.__shard_idx_to_key__(block_idx)
         exists = key_exists(self.bucket, key)
         if (not exists and self.parent_fn == None):
+            print(self.bucket)
+            print(key)
             raise Exception("Key does not exist, and no parent function prescripted")
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx)
@@ -249,7 +270,6 @@ class BigMatrix(object):
         if (block.shape != current_shape):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
         if (self.transposed):
-            block_idx = tuple(reversed(block_idx))
             block = block.T
         key = self.__shard_idx_to_key__(block_idx)
         return self.__save_matrix_to_s3__(block, key)
@@ -262,12 +282,49 @@ class BigMatrix(object):
 
     def free(self):
         [self.delete_block(*x) for x in self.block_idxs_exist]
+        return 0
+
+    def delete(self):
+        self.free()
         self.__delete_header__()
         return 0
 
 
-    def numpy(self):
-        return matrix_utils.get_local_matrix(self)
+    def numpy(self, workers=16):
+        return matrix_utils.get_local_matrix(self, workers)
+
+class Scalar(BigMatrix):
+    def __init__(self, key,
+                 bucket=DEFAULT_BUCKET,
+                 prefix='numpywren.objects/',
+                 parent_fn=None, 
+                 dtype='float64'):
+        self.bucket = bucket
+        self.prefix = prefix
+        self.key = key
+        self.key_base = prefix + self.key + "/"
+        self.dtype = dtype
+        self.transposed = False
+        self.symmetric = True
+        self.parent_fn = parent_fn
+        self.shard_sizes = [1]
+        self.shape = [1]
+
+    def numpy(self, workers=1):
+        return BigMatrix.get_block(self, 0)[0]
+
+    def get(self, workers=1):
+        return BigMatrix.get_block(self, 0)[0]
+
+    def put(self, value):
+        value = np.array([value])
+        BigMatrix.put_block(self, value, 0)
+
+    def __str__(self):
+        rep = "Scalar({0})".format(self.key)
+        return rep
+
+
 
 
 class BigSymmetricMatrix(BigMatrix):
@@ -277,8 +334,10 @@ class BigSymmetricMatrix(BigMatrix):
                  shard_sizes=[],
                  bucket=DEFAULT_BUCKET,
                  prefix='numpywren.objects/',
-                 parent_fn=None):
-        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix, parent_fn)
+                 dtype=np.float64,
+                 parent_fn=None,
+                 write_header=False):
+        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix, dtype, parent_fn, write_header)
         self.symmetric = True
 
     @property
