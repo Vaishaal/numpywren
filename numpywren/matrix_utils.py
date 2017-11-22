@@ -135,7 +135,8 @@ def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
         mmap_loc = "/dev/shm/{0}".format(hash_key)
     executor = fs.ProcessPoolExecutor(max_workers=workers)
     blocks_to_get = [bigm._block_idxs(i) for i in range(len(bigm.shape))]
-    big_axis = np.argmax(blocks_to_get)
+    big_axis = np.argmax([len(bigm._block_idxs(i)) for i in range(len(bigm.shape))])
+    print("big axis", big_axis)
     futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=big_axis)
     fs.wait(futures)
     [f.result() for f in futures]
