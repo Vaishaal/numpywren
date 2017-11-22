@@ -3,6 +3,7 @@ import itertools
 import numpy as np
 from .matrix import BigSymmetricMatrix, BigMatrix
 from .matrix_utils import load_mmap, chunk, generate_key_name_binop, constant_zeros
+from . import matrix_utils
 from .matrix_init import local_numpy_init
 import concurrent.futures as fs
 import math
@@ -27,7 +28,17 @@ def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64):
                 XY_block += block1.dot(block2)
         XY.put_block(XY_block, bidx_0, bidx_1)
 
-def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.float64):
+def _gemm_remote_1(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64):
+    os.system("sudo mount -o remount,size=50g /dev/shm")
+    for bp in block_pairs:
+        bidx_0, bidx_1 = bp
+        block0 = matrix_utils.get_row(X, bidx_0, mmap_loc="/dev/shm/block_0")
+        block1 = matrix_utils.get_col(Y, bidx_1, mmap_loc="/dev/shm/block_1")
+        XY_block = block0.dot(block1)
+        XY.put_block(XY_block, bidx_0, bidx_1)
+
+
+def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.float64, overwrite=True):
 
     '''
         Compute XY return
@@ -62,11 +73,19 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     print("Total number of output blocks", len(XY.block_idxs))
     print("Total number of output blocks that exist", len(XY.blocks_exist))
 
-    block_idxs_to_map = list(set(XY.block_idxs))
+    if (overwrite):
+        block_idxs_to_map = list(set(XY.block_idxs))
+    else:
+        block_idxs_to_map = list(set(XY.block_idxs_not_exist))
+
     print("Number of output blocks to generate ", len(block_idxs_to_map))
     chunked_blocks = list(chunk(list(chunk(block_idxs_to_map, tasks_per_job)), num_jobs))
-    def pywren_run(x):
-        return _gemm_remote_0(x, XY, X, Y, reduce_idxs=reduce_idxs, dtype=dtype)
+    if (isinstance(pwex.invoker, pywren.queues.SQSInvoker)):
+        def pywren_run(x):
+            return _gemm_remote_1(x, XY, X, Y, reduce_idxs=reduce_idxs, dtype=dtype)
+    else:
+        def pywren_run(x):
+            return _gemm_remote_0(x, XY, X, Y, reduce_idxs=reduce_idxs, dtype=dtype)
 
     all_futures = []
     for i, c in enumerate(chunked_blocks):
