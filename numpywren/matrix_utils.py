@@ -133,6 +133,13 @@ def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
     hash_key = hash_string(bigm.key)
     if (mmap_loc == None):
         mmap_loc = "/dev/shm/{0}".format(hash_key)
+
+    print(mmap_loc)
+    print(bigm.shape)
+    print(bigm.dtype)
+    if (os.path.isfile(mmap_loc)):
+        return np.memmap(mmap_loc, dtype=bigm.dtype, mode="r+", shape=tuple(bigm.shape))
+
     executor = fs.ProcessPoolExecutor(max_workers=workers)
     blocks_to_get = [bigm._block_idxs(i) for i in range(len(bigm.shape))]
     big_axis = np.argmax(blocks_to_get)
