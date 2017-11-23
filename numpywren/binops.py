@@ -19,9 +19,11 @@ def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64):
     for bp in block_pairs:
         bidx_0, bidx_1 = bp
         XY_block = None
+        X.dtype = dtype
+        Y.dtype = dtype
         for r in reduce_idxs:
-            block1 = X.get_block(bidx_0, r).astype(dtype)
-            block2 = Y.get_block(r, bidx_1).astype(dtype)
+            block1 = X.get_block(bidx_0, r)
+            block2 = Y.get_block(r, bidx_1)
             if (XY_block is None):
                 XY_block = block1.dot(block2)
             else:
@@ -30,6 +32,8 @@ def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64):
 
 def _gemm_remote_1(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64):
     os.system("sudo mount -o remount,size=50g /dev/shm")
+    X.dtype = dtype
+    Y.dtype = dtype
     for bp in block_pairs:
         bidx_0, bidx_1 = bp
         block0 = matrix_utils.get_row(X, bidx_0, mmap_loc="/dev/shm/block_0")
