@@ -9,6 +9,7 @@ import unittest
 import concurrent.futures as fs
 import time
 import multiprocessing
+import os
 cpu_count = multiprocessing.cpu_count()
 
 
@@ -27,6 +28,7 @@ class CholeskyTestClass(unittest.TestCase):
         L_sharded_local = L_sharded.numpy()
         L = cholesky(A)
         assert(np.allclose(L,L_sharded_local))
+        os.system("rm -rf /dev/shm/*")
 
     def test_multiple_shard_cholesky(self):
         np.random.seed(1)
@@ -65,6 +67,7 @@ class CholeskyTestClass(unittest.TestCase):
         print(L)
         print("L_{infty} difference ", np.max(np.abs(L_sharded_local - L)))
         assert(np.allclose(L,L_sharded_local))
+        os.system("rm -rf /dev/shm/*")
 
 if __name__ == "__main__":
     tests = CholeskyTestClass()

@@ -7,6 +7,7 @@ import numpy as np
 import pywren
 import unittest
 import time
+import os
 
 class FastIOTestClass(unittest.TestCase):
     def test_sharded_matrix_row_get(self):
@@ -16,6 +17,7 @@ class FastIOTestClass(unittest.TestCase):
         X_sharded.free()
         print(X[0].shape)
         print(row_0.shape)
+        os.system("rm -rf /dev/shm/*")
         assert(np.all(X[0] == row_0))
 
     def test_sharded_matrix_row_get_big(self):
@@ -29,6 +31,7 @@ class FastIOTestClass(unittest.TestCase):
         print("Effective GB/s", (2048*2048*s*8)/ (1e9*(e - t)))
         print("Download Time", e - t)
         X_sharded.free()
+        os.system("rm -rf /dev/shm/*")
         assert(np.all(X == row_0))
 
     def test_sharded_matrix_row_put_big(self):
@@ -46,6 +49,7 @@ class FastIOTestClass(unittest.TestCase):
         row_0 = matrix_utils.get_row(X_sharded, 0)
         e = time.time()
         X_sharded.free()
+        os.system("rm -rf /dev/shm/*")
         assert(np.all(X == row_0))
 
 
