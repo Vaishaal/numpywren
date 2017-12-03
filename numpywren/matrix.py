@@ -15,8 +15,11 @@ from . import matrix_utils
 from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists
 import pywren.wrenconfig as wc
 import botocore
+import multiprocessing
 
+cpu_count = multiprocessing.cpu_count()
 logger = logging.getLogger(__name__)
+
 try:
     DEFAULT_BUCKET = wc.default()['s3']['bucket']
 except Exception as e:
@@ -258,7 +261,7 @@ class BigMatrix(object):
             X_block = self.parent_fn(self, *block_idx)
         else:
             bio = self.__s3_key_to_byte_io__(key)
-            X_block = np.load(bio)
+            X_block = np.load(bio).astype(self.dtype)
         if (self.transposed):
             X_block = X_block.T
         return X_block
@@ -271,6 +274,8 @@ class BigMatrix(object):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
         if (self.transposed):
             block = block.T
+
+        block = block.astype(self.dtype)
         key = self.__shard_idx_to_key__(block_idx)
         return self.__save_matrix_to_s3__(block, key)
 
@@ -290,7 +295,7 @@ class BigMatrix(object):
         return 0
 
 
-    def numpy(self, workers=16):
+    def numpy(self, workers=cpu_count):
         return matrix_utils.get_local_matrix(self, workers)
 
 class Scalar(BigMatrix):
@@ -386,7 +391,7 @@ class BigSymmetricMatrix(BigMatrix):
             X_block = self.parent_fn(self, *block_idx_sym)
         else:
             bio = self.__s3_key_to_byte_io__(key)
-            X_block = np.load(bio)
+            X_block = np.load(bio).astype(self.dtype)
         if (flipped):
             X_block = X_block.T
         return X_block
@@ -401,6 +406,7 @@ class BigSymmetricMatrix(BigMatrix):
         if (block.shape != current_shape):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
         key = self.__shard_idx_to_key__(block_idx)
+        block = block.astype(self.dtype)
         return self.__save_matrix_to_s3__(block, key)
 
 

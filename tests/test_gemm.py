@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import pywren
 import unittest
+import os
 
 class GemmTestClass(unittest.TestCase):
     def test_single_shard_matrix_multiply(self):
@@ -21,6 +22,7 @@ class GemmTestClass(unittest.TestCase):
         X_sharded.free()
         XXT_sharded.free()
         assert(np.all(np.isclose(XXT,XXT_sharded_local)))
+        os.system("rm -rf /dev/shm/*")
 
     def test_multiple_shard_matrix_multiply_symmetric(self):
         X = np.random.randn(16,16)
@@ -36,6 +38,7 @@ class GemmTestClass(unittest.TestCase):
         X_sharded.free()
         XXT_sharded.free()
         assert(np.all(np.isclose(XXT,XXT_sharded_local)))
+        os.system("rm -rf /dev/shm/*")
 
     def test_multiple_shard_matrix_multiply_symmetric_2(self):
         X = np.random.randn(16,16)
@@ -50,6 +53,7 @@ class GemmTestClass(unittest.TestCase):
         XTX_sharded.free()
         print(np.linalg.norm(XTX - XTX_sharded_local))
         assert(np.all(np.isclose(XTX,XTX_sharded_local)))
+        os.system("rm -rf /dev/shm/*")
 
 
     def test_multiple_shard_matrix_multiply(self):
@@ -68,3 +72,4 @@ class GemmTestClass(unittest.TestCase):
         Y_sharded.free()
         XY_sharded.free()
         assert(np.all(np.isclose(XY,XY_sharded_local)))
+        os.system("rm -rf /dev/shm/*")
