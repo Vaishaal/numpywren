@@ -12,6 +12,10 @@ import hashlib
 import pickle
 import pywren.serialize as serialize
 import inspect
+from . import matrix
+import multiprocessing
+
+cpu_count = multiprocessing.cpu_count()
 
 class MmapArray():
     def __init__(self, mmaped, mode=None,idxs=None):
@@ -129,7 +133,7 @@ def get_blocks_mmap(bigm, block_idxs, local_idxs, mmap_loc, mmap_shape):
     return (mmap_loc, mmap_shape, bigm.dtype)
 
 
-def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
+def get_local_matrix(bigm, workers=cpu_count, mmap_loc=None, big_axis=0):
     hash_key = hash_string(bigm.key)
     if (mmap_loc == None):
         mmap_loc = "/dev/shm/{0}".format(hash_key)
@@ -147,7 +151,7 @@ def get_local_matrix(bigm, workers=1, mmap_loc=None, big_axis=0):
     return load_mmap(*futures[0].result())
 
 ## TODO: generalize for arbitrary MD arrays 
-def get_col(bigm, col, workers=20, mmap_loc=None):
+def get_col(bigm, col, workers=cpu_count, mmap_loc=None):
     assert len(bigm.shape) == 2
     hash_key = hash_string(bigm.key)
     if (mmap_loc == None):
@@ -168,7 +172,7 @@ def put_col_async(bigm, mmap_loc, shape, block, bidx):
     bigm.put_block(block_data, *bidx)
     return 0
 
-def put_col(bigm, col, workers=20, mmap_loc=None, big_axis=0):
+def put_col(bigm, col, workers=cpu_count, mmap_loc=None, big_axis=0):
     assert len(bigm.shape) == 2
     hash_key = hash_string(bigm.key + str(col))
     if (mmap_loc == None):
@@ -188,7 +192,7 @@ def put_col(bigm, col, workers=20, mmap_loc=None, big_axis=0):
 
 
 ## TODO: generalize for arbitrary MD arrays 
-def get_row(bigm, row, workers=72, mmap_loc=None):
+def get_row(bigm, row, workers=cpu_count, mmap_loc=None):
     assert len(bigm.shape) == 2
     hash_key = hash_string(bigm.key)
     if (mmap_loc == None):
@@ -206,7 +210,7 @@ def put_row_async(bigm, mmap_loc, shape, block, bidx):
     bigm.put_block(block_data, *bidx)
     return 0
 
-def put_row(bigm, data, row, workers=72, mmap_loc=None, big_axis=0):
+def put_row(bigm, data, row, workers=cpu_count, mmap_loc=None, big_axis=0):
     assert len(bigm.shape) == 2
     hash_key = hash_string(bigm.key + str(row))
     if (mmap_loc == None):
@@ -224,7 +228,7 @@ def put_row(bigm, data, row, workers=72, mmap_loc=None, big_axis=0):
     [f.result() for f in futures]
     return
 
-def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, executor=None, workers=20):
+def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, executor=None, workers=cpu_count):
     '''
         Download blocks from bigm using multiprocess and memmap to maximize S3 bandwidth
         * blocks_to_get is a list equal in length to the number of dimensions of bigm

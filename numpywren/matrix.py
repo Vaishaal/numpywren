@@ -15,8 +15,11 @@ from . import matrix_utils
 from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists
 import pywren.wrenconfig as wc
 import botocore
+import multiprocessing
 
+cpu_count = multiprocessing.cpu_count()
 logger = logging.getLogger(__name__)
+
 try:
     DEFAULT_BUCKET = wc.default()['s3']['bucket']
 except Exception as e:
@@ -292,7 +295,7 @@ class BigMatrix(object):
         return 0
 
 
-    def numpy(self, workers=16):
+    def numpy(self, workers=cpu_count):
         return matrix_utils.get_local_matrix(self, workers)
 
 class Scalar(BigMatrix):

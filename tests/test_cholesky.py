@@ -8,6 +8,8 @@ import pywren
 import unittest
 import concurrent.futures as fs
 import time
+import multiprocessing
+cpu_count = multiprocessing.cpu_count()
 
 
 
@@ -32,7 +34,7 @@ class CholeskyTestClass(unittest.TestCase):
         shard_size = 64
         np.random.seed(1)
         print("Generating X")
-        executor = fs.ProcessPoolExecutor(16)
+        executor = fs.ProcessPoolExecutor(cpu_count)
         X = np.random.randn(size, 128)
         print("Generating A")
         A = X.dot(X.T) + np.eye(X.shape[0])
