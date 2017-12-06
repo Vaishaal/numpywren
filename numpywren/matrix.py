@@ -1,21 +1,22 @@
+import base64
 import concurrent.futures as fs
 import io
 import itertools
+import json
+import logging
+import multiprocessing
 import os
+import pickle
 import time
 
 import boto3
-import pickle
-import base64
+import botocore
 import cloudpickle
 import numpy as np
-import json
-import logging
+import pywren.wrenconfig as wc
+
 from . import matrix_utils
 from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists
-import pywren.wrenconfig as wc
-import botocore
-import multiprocessing
 
 cpu_count = multiprocessing.cpu_count()
 logger = logging.getLogger(__name__)
@@ -26,57 +27,92 @@ except Exception as e:
     DEFAULT_BUCKET = ""
 
 class BigMatrix(object):
-    def __init__(self, key,
+    """
+    A multidimensional array stored in S3, sharded in blocks of a given size.
+
+    Parameters
+    ----------
+    key : string
+        The S3 key to store this matrix at.
+    shape : tuple of int, optional
+        Shape of the array. If set to None, the array with the given key
+        must already exist in S3 with a valid header. 
+    shard_sizes : tuple of int, optional
+        Shape of the array blocks. If shape is not None this must be set,
+        otherwise it will be ignored.
+    bucket : string, optional
+        Name of the S3 bucket where the matrix will be stored.
+    prefix : string, optional
+        Prefix that will be appended to the key name.
+    dtype : data-type, optional
+        Any object that can be interpreted as a numpy data type. Determines
+        the type of the object stored in the array.
+    transposed : bool, optional
+        If transposed is True then the array object will behave like the
+        transposed version of the underlying S3 object.
+    parent_fn : function, optional
+        A function that gets called when a previously uninitialized block is
+        accessed. Gets passed the BigMatrix object and the relevant block index
+        and is expected to appropriately initialize the given block.
+    write_header : bool, optional
+        If write_header is True then a header will be stored alongside the array
+        to allow other BigMatrix objects to be initialized with the same key
+        and underlying S3 representation.
+    """
+    def __init__(self,
+                 key,
                  shape=None,
-                 shard_sizes=[],
+                 shard_sizes=None,
                  bucket=DEFAULT_BUCKET,
                  prefix='numpywren.objects/',
                  dtype=np.float64,
                  transposed=False,
                  parent_fn=None,
                  write_header=False):
-
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
             if bucket is None:
-                raise Exception("bucket not provided and environment variable \
-                        PYWREN_LINALG_BUCKET not provided")
+                raise Exception("Bucket not provided and environment variable " +
+                                "PYWREN_LINALG_BUCKET not provided.")
         self.bucket = bucket
         self.prefix = prefix
         self.key = key
-        self.key_base = prefix + self.key + "/"
+        self.key_base = os.path.join(prefix, self.key)
         self.dtype = dtype
         self.transposed = transposed
-        self.symmetric = False
         self.parent_fn = parent_fn
         header = self.__read_header__()
         if header is None and shape is None:
-            raise Exception("header doesn't exist and no shape provided")
-        if not (header is None) and shape is None:
+            raise Exception("Header doesn't exist and no shape provided.")
+        elif shape is None:
+            # Initialize the matrix parameters from S3.
             self.shard_sizes = header['shard_sizes']
             self.shape = header['shape']
             self.dtype = self.__decode_dtype__(header['dtype'])
         else:
+            # Initialize the matrix parameters from inputs.
             self.shape = shape
             self.shard_sizes = shard_sizes
             self.dtype = dtype
 
-        if (len(self.shape) != len(self.shard_sizes)):
-            raise Exception("shard_sizes should be same length as shape")
+        if (shard_sizes is None) or (len(self.shape) != len(self.shard_sizes)):
+            raise Exception("shard_sizes should be same length as shape.")
 
-        self.symmetric = False
-        if (write_header):
-            # write a header if you want to load this value later
+        if write_header:
+            # Write a header if you want to load this value later.
             self.__write_header__()
+
     def __write_header__(self):
-        key = self.key_base + "header"
+        key = os.path.join(self.key_base, "header")
         client = boto3.client('s3')
         header = {}
         header['shape'] = self.shape
         header['shard_sizes'] = self.shard_sizes
         header['dtype'] = self.__encode_dtype__(self.dtype)
-        client.put_object(Key=key, Bucket = self.bucket, Body=json.dumps(header), ACL="bucket-owner-full-control")
-        return 0
+        client.put_object(Key=key,
+                          Bucket=self.bucket,
+                          Body=json.dumps(header),
+                          ACL="bucket-owner-full-control")
 
     @property
     def T(self):
@@ -92,8 +128,6 @@ class BigMatrix(object):
         dtype = pickle.loads(dtype_bytes)
         return dtype
 
-
-
     def __str__(self):
         rep = "{0}({1})".format(self.__class__.__name__, self.key)
         if (self.transposed):
@@ -102,22 +136,18 @@ class BigMatrix(object):
 
     def __transpose__(self):
         transposed = self.__class__(key=self.key,
-                                   shape=self.shape[::-1],
-                                   shard_sizes=self.shard_sizes[::-1],
-                                   bucket=self.bucket,
-                                   prefix=self.prefix,
-                                   dtype=self.dtype,
-                                   transposed=True,
-                                   parent_fn=self.parent_fn)
+                                    shape=self.shape[::-1],
+                                    shard_sizes=self.shard_sizes[::-1],
+                                    bucket=self.bucket,
+                                    prefix=self.prefix,
+                                    dtype=self.dtype,
+                                    transposed=True,
+                                    parent_fn=self.parent_fn)
         return transposed
-
-
-
 
     @property
     def blocks_exist(self):
-        prefix = self.prefix + self.key
-        all_keys = list_all_keys(self.bucket, prefix)
+        all_keys = list_all_keys(self.bucket, self.key_base)
         return list(filter(lambda x: x != None, map(block_key_to_block, all_keys)))
 
     @property
@@ -154,7 +184,8 @@ class BigMatrix(object):
     def _blocks(self, axis=None):
         all_blocks = []
         for i in range(len(self.shape)):
-            blocks_axis = [(j, j + self.shard_sizes[i]) for j in range(0, self.shape[i], self.shard_sizes[i])]
+            blocks_axis = [(j, j + self.shard_sizes[i]) for j in
+                           range(0, self.shape[i], self.shard_sizes[i])]
             if blocks_axis[-1][1] > self.shape[i]:
                 blocks_axis.pop()
 
@@ -188,22 +219,21 @@ class BigMatrix(object):
             for ((sidx, eidx), shard_size) in zip(real_idxs, shard_sizes):
                 key_string += "{0}_{1}_{2}_".format(sidx, eidx, shard_size)
 
-            return self.key_base + key_string
+            return os.path.join(self.key_base, key_string)
 
     def __read_header__(self):
         client = boto3.client('s3')
         try:
-            key = self.key_base + "header"
+            key = os.path.join(self.key_base, "header")
             header = json.loads(client.get_object(Bucket=self.bucket, Key=key)['Body'].read())
         except:
             header = None
         return header
 
     def __delete_header__(self):
-        key = self.key_base + "header"
+        key = os.path.join(self.key_base, "header")
         client = boto3.client('s3')
         client.delete_object(Bucket=self.bucket, Key=key)
-
 
     def __block_idx_to_real_idx__(self, block_idx):
         starts = []
@@ -214,7 +244,6 @@ class BigMatrix(object):
             starts.append(start)
             ends.append(end)
         return tuple(zip(starts, ends))
-
 
     def __shard_idx_to_key__(self, block_idx):
 
@@ -242,7 +271,10 @@ class BigMatrix(object):
             client = boto3.client('s3')
         outb = io.BytesIO()
         np.save(outb, X)
-        response = client.put_object(Key=out_key, Bucket=self.bucket, Body=outb.getvalue(),ACL="bucket-owner-full-control")
+        response = client.put_object(Key=out_key,
+                                     Bucket=self.bucket,
+                                     Body=outb.getvalue(),
+                                     ACL="bucket-owner-full-control")
         return response
 
     def _register_parent(self, parent_fn):
@@ -279,7 +311,6 @@ class BigMatrix(object):
         key = self.__shard_idx_to_key__(block_idx)
         return self.__save_matrix_to_s3__(block, key)
 
-
     def delete_block(self, *block_idx):
         key = self.__shard_idx_to_key__(block_idx)
         client = boto3.client('s3')
@@ -294,9 +325,9 @@ class BigMatrix(object):
         self.__delete_header__()
         return 0
 
-
     def numpy(self, workers=cpu_count):
         return matrix_utils.get_local_matrix(self, workers)
+
 
 class Scalar(BigMatrix):
     def __init__(self, key,
@@ -310,7 +341,6 @@ class Scalar(BigMatrix):
         self.key_base = prefix + self.key + "/"
         self.dtype = dtype
         self.transposed = False
-        self.symmetric = True
         self.parent_fn = parent_fn
         self.shard_sizes = [1]
         self.shape = [1]
@@ -343,7 +373,6 @@ class BigSymmetricMatrix(BigMatrix):
                  parent_fn=None,
                  write_header=False):
         BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix, dtype, parent_fn, write_header)
-        self.symmetric = True
 
     @property
     def T(self):
