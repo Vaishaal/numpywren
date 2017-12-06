@@ -213,6 +213,19 @@ class BigMatrix(object):
         return self._block_idxs()
 
     def get_block(self, *block_idx):
+        """
+        Given a block index, get the contents of the block.
+
+        Parameters
+        ----------
+        block_idx : int or sequence of ints
+            The index of the block to retrieve.
+
+        Returns
+        -------
+        block : ndarray
+            The block at the given index as a numpy array.
+        """
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
         key = self.__shard_idx_to_key__(block_idx)
@@ -231,6 +244,27 @@ class BigMatrix(object):
         return X_block
 
     def put_block(self, block, *block_idx):
+        """
+        Given a block index, sets the contents of the block.
+
+        Parameters
+        ----------
+        block : ndarray
+            The array to set the block to.
+        block_idx : int or sequence of ints
+            The index of the block to set.
+
+        Returns
+        -------
+        response : dict
+            The response from S3 containing information on the status of
+            the put request.
+
+        Notes
+        -----
+        For details on the S3 response format see:
+        http://boto3.readthedocs.io/en/latest/reference/services/s3.html#S3.Client.put_object
+        """
         real_idxs = self.__block_idx_to_real_idx__(block_idx)
         current_shape = tuple([e - s for s,e in real_idxs])
 
@@ -244,20 +278,54 @@ class BigMatrix(object):
         return self.__save_matrix_to_s3__(block, key)
 
     def delete_block(self, *block_idx):
+        """
+        Delete the block at the given block index.
+
+        Parameters
+        ----------
+        block_idx : int or sequence of ints
+            The index of the block to delete.
+
+        Returns
+        -------
+        response : dict
+            The response from S3 containing information on the status of
+            the delete request.
+
+        Notes
+        -----
+        For details on the S3 response format see:
+        http://boto3.readthedocs.io/en/latest/reference/services/s3.html#S3.Client.delete_object
+        """
         key = self.__shard_idx_to_key__(block_idx)
         client = boto3.client('s3')
         return client.delete_object(Key=key, Bucket=self.bucket)
 
     def free(self):
+        """Delete all allocated blocks while leaving the matrix metadata intact."""
         [self.delete_block(*x) for x in self.block_idxs_exist]
         return 0
 
     def delete(self):
+        """Completely remove the matrix from S3."""
         self.free()
         self.__delete_header__()
         return 0
 
     def numpy(self, workers=cpu_count):
+        """
+        Convert the BigMatrix to a local numpy array.
+
+        Parameters
+        ----------
+        workers : int, optional
+            The number of local workers to use when converting the array.
+
+        Returns
+        -------
+        out : ndarray
+            The numpy version of the BigMatrix object.
+        """
         return matrix_utils.get_local_matrix(self, workers)
 
     def _blocks(self, axis=None):
