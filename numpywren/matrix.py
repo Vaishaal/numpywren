@@ -58,6 +58,12 @@ class BigMatrix(object):
         If write_header is True then a header will be stored alongside the array
         to allow other BigMatrix objects to be initialized with the same key
         and underlying S3 representation.
+
+    Notes
+    -----
+    BigMatrices deal with two types of indexing. Absolute and block indexing.
+    Absolute indexing is simply the standard method of indexing arrays by their
+    elements while block indexing accesses whole blocks.
     """
     def __init__(self,
                  key,
@@ -102,60 +108,71 @@ class BigMatrix(object):
             # Write a header if you want to load this value later.
             self.__write_header__()
 
-    def __write_header__(self):
-        key = os.path.join(self.key_base, "header")
-        client = boto3.client('s3')
-        header = {}
-        header['shape'] = self.shape
-        header['shard_sizes'] = self.shard_sizes
-        header['dtype'] = self.__encode_dtype__(self.dtype)
-        client.put_object(Key=key,
-                          Bucket=self.bucket,
-                          Body=json.dumps(header),
-                          ACL="bucket-owner-full-control")
-
     @property
     def T(self):
+        """Return the transpose with the same underlying representation."""
         return self.__transpose__()
-
-    def __encode_dtype__(self, dtype):
-        dtype_pickle = pickle.dumps(dtype)
-        b64_str = base64.b64encode(dtype_pickle).decode('utf-8')
-        return b64_str
-
-    def __decode_dtype__(self, dtype_enc):
-        dtype_bytes = base64.b64decode(dtype_enc)
-        dtype = pickle.loads(dtype_bytes)
-        return dtype
-
-    def __str__(self):
-        rep = "{0}({1})".format(self.__class__.__name__, self.key)
-        if (self.transposed):
-            rep += ".T"
-        return rep
-
-    def __transpose__(self):
-        transposed = self.__class__(key=self.key,
-                                    shape=self.shape[::-1],
-                                    shard_sizes=self.shard_sizes[::-1],
-                                    bucket=self.bucket,
-                                    prefix=self.prefix,
-                                    dtype=self.dtype,
-                                    transposed=True,
-                                    parent_fn=self.parent_fn)
-        return transposed
 
     @property
     def blocks_exist(self):
+        """
+        Return the absolute start and end indices of all initialized blocks.
+
+        Returns
+        -------
+        blocks : array_like of int
+            A list of block indices, where each block is represented by one
+            element in the list. Each block is itself a list of tuples, where
+            each tuple stores the start and end indices of the block along a
+            dimension.
+        """
         all_keys = list_all_keys(self.bucket, self.key_base)
-        return list(filter(lambda x: x != None, map(block_key_to_block, all_keys)))
+        return list(filter(lambda x: x is not None, map(block_key_to_block, all_keys)))
+
+    @property
+    def blocks_not_exist(self):
+        """
+        Return the absolute start and end indices of all uninitialized blocks.
+
+        Returns
+        -------
+        blocks : array_like of int
+            A list of block indices, where each block is represented by one
+            element in the list. Each block is itself a list of tuples, where
+            each tuple stores the start and end indices of the block along a
+            dimension.
+        """
+        blocks = set(self.blocks)
+        block_exist = set(self.blocks_exist)
+        return list(filter(lambda x: x, list(block_exist.symmetric_difference(blocks))))
 
     @property
     def blocks(self):
+        """
+        Return the absolute start and end indices of all blocks.
+
+        Returns
+        -------
+        blocks : array_like of int
+            A list of block indices, where each block is represented by one
+            element in the list. Each block is itself a list of tuples, where
+            each tuple stores the start and end indices of the block along a
+            dimension.
+        """
         return self._blocks()
 
     @property
     def block_idxs_exist(self):
+        """
+        Return the block indices of all initialized blocks.
+
+        Returns
+        -------
+        blocks : array_like of int
+            A list of block indices, where each block is represented by one
+            element in the list. Each block is itself a tuple, where
+            each tuple stores the block indices of the block.
+        """
         all_block_idxs = self.block_idxs
         all_blocks = self.blocks
         blocks_exist = set(self.blocks_exist)
@@ -166,20 +183,82 @@ class BigMatrix(object):
         return block_idxs_exist
 
     @property
-    def blocks_not_exist(self):
-        blocks = set(self.blocks)
-        block_exist = set(self.blocks_exist)
-        return list(filter(lambda x: x, list(block_exist.symmetric_difference(blocks))))
-
-    @property
     def block_idxs_not_exist(self):
+        """
+        Return the block indices of all uninitialized blocks.
+
+        Returns
+        -------
+        blocks : array_like of int
+            A list of block indices, where each block is represented by one
+            element in the list. Each block is itself a tuple, where
+            each tuple stores the block indices of the block.
+        """
         block_idxs = set(self.block_idxs)
         block_idxs_exist = set(self.block_idxs_exist)
         return list(filter(lambda x: x, list(block_idxs_exist.symmetric_difference(block_idxs))))
 
     @property
     def block_idxs(self):
+        """
+        Return the block indices of all blocks.
+
+        Returns
+        -------
+        blocks : array_like of int
+            A list of block indices, where each block is represented by one
+            element in the list. Each block is itself a tuple, where
+            each tuple stores the block indices of the block.
+        """
         return self._block_idxs()
+
+    def get_block(self, *block_idx):
+        if (len(block_idx) != len(self.shape)):
+            raise Exception("Get block query does not match shape")
+        key = self.__shard_idx_to_key__(block_idx)
+        exists = key_exists(self.bucket, key)
+        if (not exists and self.parent_fn == None):
+            print(self.bucket)
+            print(key)
+            raise Exception("Key does not exist, and no parent function prescripted")
+        elif (not exists and self.parent_fn != None):
+            X_block = self.parent_fn(self, *block_idx)
+        else:
+            bio = self.__s3_key_to_byte_io__(key)
+            X_block = np.load(bio).astype(self.dtype)
+        if (self.transposed):
+            X_block = X_block.T
+        return X_block
+
+    def put_block(self, block, *block_idx):
+        real_idxs = self.__block_idx_to_real_idx__(block_idx)
+        current_shape = tuple([e - s for s,e in real_idxs])
+
+        if (block.shape != current_shape):
+            raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
+        if (self.transposed):
+            block = block.T
+
+        block = block.astype(self.dtype)
+        key = self.__shard_idx_to_key__(block_idx)
+        return self.__save_matrix_to_s3__(block, key)
+
+    def delete_block(self, *block_idx):
+        key = self.__shard_idx_to_key__(block_idx)
+        client = boto3.client('s3')
+        return client.delete_object(Key=key, Bucket=self.bucket)
+
+    def free(self):
+        [self.delete_block(*x) for x in self.block_idxs_exist]
+        return 0
+
+    def delete(self):
+        self.free()
+        self.__delete_header__()
+        return 0
+
+    def numpy(self, workers=cpu_count):
+        return matrix_utils.get_local_matrix(self, workers)
 
     def _blocks(self, axis=None):
         all_blocks = []
@@ -195,10 +274,13 @@ class BigMatrix(object):
 
         if axis is None:
             return list(itertools.product(*all_blocks))
-        elif (type(axis) != int):
-            raise Exception("Axis must be integer")
+        elif type(axis) is not int:
+            raise Exception("Axis must be an integer.")
         else:
             return all_blocks[axis]
+
+    def _register_parent(self, parent_fn):
+        self.parent_fn = parent_fn
 
     def _block_idxs(self, axis=None):
         idxs = [list(range(len(self._blocks(axis=i)))) for i in range(len(self.shape))]
@@ -277,56 +359,44 @@ class BigMatrix(object):
                                      ACL="bucket-owner-full-control")
         return response
 
-    def _register_parent(self, parent_fn):
-        self.parent_fn = parent_fn
-
-    def get_block(self, *block_idx):
-        if (len(block_idx) != len(self.shape)):
-            raise Exception("Get block query does not match shape")
-        key = self.__shard_idx_to_key__(block_idx)
-        exists = key_exists(self.bucket, key)
-        if (not exists and self.parent_fn == None):
-            print(self.bucket)
-            print(key)
-            raise Exception("Key does not exist, and no parent function prescripted")
-        elif (not exists and self.parent_fn != None):
-            X_block = self.parent_fn(self, *block_idx)
-        else:
-            bio = self.__s3_key_to_byte_io__(key)
-            X_block = np.load(bio).astype(self.dtype)
-        if (self.transposed):
-            X_block = X_block.T
-        return X_block
-
-    def put_block(self, block, *block_idx):
-        real_idxs = self.__block_idx_to_real_idx__(block_idx)
-        current_shape = tuple([e - s for s,e in real_idxs])
-
-        if (block.shape != current_shape):
-            raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
-        if (self.transposed):
-            block = block.T
-
-        block = block.astype(self.dtype)
-        key = self.__shard_idx_to_key__(block_idx)
-        return self.__save_matrix_to_s3__(block, key)
-
-    def delete_block(self, *block_idx):
-        key = self.__shard_idx_to_key__(block_idx)
+    def __write_header__(self):
+        key = os.path.join(self.key_base, "header")
         client = boto3.client('s3')
-        return client.delete_object(Key=key, Bucket=self.bucket)
+        header = {}
+        header['shape'] = self.shape
+        header['shard_sizes'] = self.shard_sizes
+        header['dtype'] = self.__encode_dtype__(self.dtype)
+        client.put_object(Key=key,
+                          Bucket=self.bucket,
+                          Body=json.dumps(header),
+                          ACL="bucket-owner-full-control")
 
-    def free(self):
-        [self.delete_block(*x) for x in self.block_idxs_exist]
-        return 0
+    def __encode_dtype__(self, dtype):
+        dtype_pickle = pickle.dumps(dtype)
+        b64_str = base64.b64encode(dtype_pickle).decode('utf-8')
+        return b64_str
 
-    def delete(self):
-        self.free()
-        self.__delete_header__()
-        return 0
+    def __decode_dtype__(self, dtype_enc):
+        dtype_bytes = base64.b64decode(dtype_enc)
+        dtype = pickle.loads(dtype_bytes)
+        return dtype
 
-    def numpy(self, workers=cpu_count):
-        return matrix_utils.get_local_matrix(self, workers)
+    def __str__(self):
+        rep = "{0}({1})".format(self.__class__.__name__, self.key)
+        if (self.transposed):
+            rep += ".T"
+        return rep
+
+    def __transpose__(self):
+        transposed = self.__class__(key=self.key,
+                                    shape=self.shape[::-1],
+                                    shard_sizes=self.shard_sizes[::-1],
+                                    bucket=self.bucket,
+                                    prefix=self.prefix,
+                                    dtype=self.dtype,
+                                    transposed=True,
+                                    parent_fn=self.parent_fn)
+        return transposed
 
 
 class Scalar(BigMatrix):
