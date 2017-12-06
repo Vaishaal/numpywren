@@ -101,7 +101,7 @@ class BigMatrix(object):
             self.shard_sizes = shard_sizes
             self.dtype = dtype
 
-        if (shard_sizes is None) or (len(self.shape) != len(self.shard_sizes)):
+        if (self.shard_sizes is None) or (len(self.shape) != len(self.shard_sizes)):
             raise Exception("shard_sizes should be same length as shape.")
 
         if write_header:
@@ -375,8 +375,9 @@ class BigMatrix(object):
         client = boto3.client('s3')
         try:
             key = os.path.join(self.key_base, "header")
-            header = json.loads(client.get_object(Bucket=self.bucket, Key=key)['Body'].read())
-        except:
+            header = json.loads(client.get_object(Bucket=self.bucket,
+                                                  Key=key)['Body'].read().decode('utf-8'))
+        except Exception as e:
             header = None
         return header
 
