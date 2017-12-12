@@ -12,6 +12,8 @@ machines, host names, and processor grids numpywren works on the abstraction of 
 computation, and use Amazon S3 as a distributed memory abstraction. Even with this coarse abstraction, numpywren can achieve close to peak FLOPS and
 network IO for difficult workloads such as matrix multiply and cholesky decomposition.
 
+
+![](/Users/vaishaal/research/numpywren/imgs/numpywren_results.png)
 ## A brief primer on pywren
 
 Pywren is a stateless computation framework that leverages AWS Lambda to execute python functions remotely in parallel. A full description of the system can be found [here](https://arxiv.org/abs/1702.04024). Roughly it provides the following program model:
@@ -171,7 +173,87 @@ The public API consists solely of the following functions
         """ 
  
  
-The BigMatrix python object carries no state of its own allowing it to easily be serialized and sent across the wire to remote function exections. 
+The BigMatrix python object carries no state of its own allowing it to easily be serialized and sent across the wire to remote function exections. numpywren passes these objects into ```pwex.map(...)``` calls 
+
+
+####numpywren.executor
+
+numpywren.executor (or npwex) is the numpywren equivalent of pywren.executor (pwex), the pywren executor object. It wraps around the central execution state. It exposes userfacing numpy-like functions. Under the hood it calls internal lambdapack implementations of various algorithms 
+
+*TODO: This functionality is not yet implemented*
+
+
+####lambdapack
+
+lambdapack is the IR which underlying numpywren algorithms. It has an assembly-like syntax with a few quirks. The high level idea behind lambdapack code is that it treats S3 like memory, and local instance memory as registers. l Furthermore lambdapack programs have the following restrictions:
+
+* lambdapack programs have no control flow or looping mechanism. lambdapack is **not** turing complete. Instead it is designed to be a linearly executable sequence of instructions. 
+* lambdapack programs have size O(runtime). The input matrix must be blocked accordingly to make these programs tractable.
+* ```BigMatrix.put_block(X, i, j)``` can only be called once for a particular tuple (X, i, j). Within a lambdapack program matrices cannot be mutated.
+
+These restrictions (especially the last) makes lambdapack programs naturally SSA (static single assignment). This allows for easy dependency analysis of the program to build a DAG (directed acylic graph) that can be executed in parallel.
+
+Below is a simple lambdapack program to compute a block 2 x 2 cholesky decomposition. 
+
+```
+local
+        0 = S3_LOAD BigSymmetricMatrix(cholesky_test_A) 2
+        1 = CHOL 0
+        2 = INVRS 1
+        3 = S3_WRITE BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))) 2 0 0 1
+        4 = S3_WRITE BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))_(0,0)_inv) 2 0 0 2
+        20 = RET <numpywren.lambdapack.RemoteProgramState object at 0x7fad8c0e3ac8>
+
+parallel_block_0_job_0
+        5 = S3_LOAD BigSymmetricMatrix(cholesky_test_A) 2
+        6 = S3_LOAD BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))_(0,0)_inv) 2
+        7 = TRSM 5 6
+        8 = S3_WRITE BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))) 2 1 0 7
+        20 = RET <numpywren.lambdapack.RemoteProgramState object at 0x7fad8c0e3da0>
+
+parallel_block_1_job_0
+        9 = S3_LOAD BigSymmetricMatrix(cholesky_test_A) 2
+        10 = S3_LOAD BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))) 2
+        11 = S3_LOAD BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))) 2
+        12 = SYRK 9 10 11
+        13 = S3_WRITE BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))_0_trailing) 2 1 1 12
+        20 = RET <numpywren.lambdapack.RemoteProgramState object at 0x7fad8c0e3d30>
+
+local
+        14 = S3_LOAD BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))_0_trailing) 2
+        15 = CHOL 14
+        16 = INVRS 15
+        17 = S3_WRITE BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))) 2 1 1 15
+        18 = S3_WRITE BigMatrix(chol(BigSymmetricMatrix(cholesky_test_A))_(1,1)_inv) 2 0 0 16
+        20 = RET <numpywren.lambdapack.RemoteProgramState object at 0x7fad8c0e35f8>
+
+EXIT
+        19 = RET <numpywren.lambdapack.RemoteProgramState object at 0x7fac78f02ac8>
+        
+```
+
+Below is the dependency graph for the above program:
+
+![](/Users/vaishaal/research/numpywren/imgs/cholesky_2_2.png)
+
+Its evident that there is no parallelism to exploit in this graph, but thats because a 2 x 2 block cholesky decomposition emits almost no parallelism. Lets try the same thing with a 8 x 8 block cholesky decomposition. I won't paste the resulting lambdapack source. But here is a very zoomed out overhead glimpse of the execution DAG:
+
+![](/Users/vaishaal/research/numpywren/imgs/cholesky_8_8.png)
+
+The width of the DAG roughly corresponds to the amount of parallelism. numpywren passes the full execution dag along with every function execution, such that a job can be immediately scheduled the moment all of its parents have finished execution. Doing this requires an atomic increment primitive (the current implementation hacks Amazon DynamoDB for said purpose).
+
+
+
+TODOs:
+
+* Implement more lambdapack operations currently only a few primitive ones required for DGEMM and Cholesky are provided.
+* Hit peak FLOPS for Cholesky decomposition
+* Implement more algorithms on top of lambdapack (currently only DGEMM and Cholesky are supported)
+* Improve performance instrumentation
+* Much much more.
+
+
+
 
 
 
