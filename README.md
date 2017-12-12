@@ -176,14 +176,14 @@ The public API consists solely of the following functions
 The BigMatrix python object carries no state of its own allowing it to easily be serialized and sent across the wire to remote function exections. numpywren passes these objects into ```pwex.map(...)``` calls 
 
 
-####numpywren.executor
+#### numpywren.executor
 
 numpywren.executor (or npwex) is the numpywren equivalent of pywren.executor (pwex), the pywren executor object. It wraps around the central execution state. It exposes userfacing numpy-like functions. Under the hood it calls internal lambdapack implementations of various algorithms 
 
 *TODO: This functionality is not yet implemented*
 
 
-####lambdapack
+#### lambdapack
 
 lambdapack is the IR which underlying numpywren algorithms. It has an assembly-like syntax with a few quirks. The high level idea behind lambdapack code is that it treats S3 like memory, and local instance memory as registers. l Furthermore lambdapack programs have the following restrictions:
 
