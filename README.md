@@ -13,7 +13,7 @@ computation, and use Amazon S3 as a distributed memory abstraction. Even with th
 network IO for difficult workloads such as matrix multiply and cholesky decomposition.
 
 
-![](/Users/vaishaal/research/numpywren/imgs/numpywren_results.png)
+![](imgs/numpywren_results.png)
 ## A brief primer on pywren
 
 Pywren is a stateless computation framework that leverages AWS Lambda to execute python functions remotely in parallel. A full description of the system can be found [here](https://arxiv.org/abs/1702.04024). Roughly it provides the following program model:
@@ -234,11 +234,11 @@ EXIT
 
 Below is the dependency graph for the above program:
 
-![](/Users/vaishaal/research/numpywren/imgs/cholesky_2_2.png)
+![](imgs/cholesky_2_2.png)
 
 Its evident that there is no parallelism to exploit in this graph, but thats because a 2 x 2 block cholesky decomposition emits almost no parallelism. Lets try the same thing with a 8 x 8 block cholesky decomposition. I won't paste the resulting lambdapack source. But here is a very zoomed out overhead glimpse of the execution DAG:
 
-![](/Users/vaishaal/research/numpywren/imgs/cholesky_8_8.png)
+![](imgs/cholesky_8_8.png)
 
 The width of the DAG roughly corresponds to the amount of parallelism. numpywren passes the full execution dag along with every function execution, such that a job can be immediately scheduled the moment all of its parents have finished execution. Doing this requires an atomic increment primitive (the current implementation hacks Amazon DynamoDB for said purpose).
 
