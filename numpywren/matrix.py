@@ -36,6 +36,7 @@ class BigMatrix(object):
                  parent_fn=None,
                  write_header=False):
 
+        print("WRITE HEADER IN BIGMATRIX", write_header)
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
             if bucket is None:
@@ -67,6 +68,7 @@ class BigMatrix(object):
         self.symmetric = False
         if (write_header):
             # write a header if you want to load this value later
+            print("WRITING HEADER")
             self.__write_header__()
     def __write_header__(self):
         key = self.key_base + "header"
@@ -342,7 +344,8 @@ class BigSymmetricMatrix(BigMatrix):
                  dtype=np.float64,
                  parent_fn=None,
                  write_header=False):
-        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix, dtype, parent_fn, write_header)
+        print("WRITE HEADER", write_header)
+        BigMatrix.__init__(self, key=key, shape=shape, shard_sizes=shard_sizes, bucket=bucket, prefix=prefix, dtype=dtype, parent_fn=parent_fn, write_header=write_header)
         self.symmetric = True
 
     @property

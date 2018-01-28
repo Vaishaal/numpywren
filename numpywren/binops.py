@@ -64,9 +64,11 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     if (Y.shard_sizes[0] !=  X.shard_sizes[1]):
         raise Exception("X dim 1 shard size must match Y dim 0 shard size")
     if (X.key == Y.key and (X.transposed ^ Y.transposed)):
-        XY = BigSymmetricMatrix(root_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]], dtype=dtype)
+        XY = BigSymmetricMatrix(root_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]], dtype=dtype, write_header=True)
     else:
-        XY = BigMatrix(root_key, shape=(X.shape[0], Y.shape[1]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], Y.shard_sizes[1]], dtype=dtype)
+        XY = BigMatrix(root_key, shape=(X.shape[0], Y.shape[1]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], Y.shard_sizes[1]], dtype=dtype, write_header=True)
+    print(XY.key)
+
 
     num_out_blocks = len(XY.blocks)
     if (tasks_per_job > num_out_blocks):

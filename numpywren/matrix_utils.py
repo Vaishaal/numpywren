@@ -12,7 +12,6 @@ import hashlib
 import pickle
 import pywren.serialize as serialize
 import inspect
-from . import matrix
 import multiprocessing
 
 cpu_count = multiprocessing.cpu_count()
@@ -138,8 +137,10 @@ def get_local_matrix(bigm, workers=cpu_count, mmap_loc=None, big_axis=0):
     if (mmap_loc == None):
         mmap_loc = "/dev/shm/{0}".format(hash_key)
 
-    #if (os.path.isfile(mmap_loc)):
-    #    return np.memmap(mmap_loc, dtype=bigm.dtype, mode="r+", shape=tuple(bigm.shape))
+    '''
+    if (os.path.isfile(mmap_loc)):
+        return np.memmap(mmap_loc, dtype=bigm.dtype, mode="r+", shape=tuple(bigm.shape))
+    '''
 
     executor = fs.ProcessPoolExecutor(max_workers=workers)
     blocks_to_get = [bigm._block_idxs(i) for i in range(len(bigm.shape))]
