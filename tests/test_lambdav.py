@@ -17,6 +17,5 @@ class LambdavTest(unittest.TestCase):
         X += 7.0*np.eye(X.shape[0])
         X_local = X_sharded.numpy()
         X_sharded.free()
-        XXT_sharded.free()
         assert(np.all(np.isclose(X,X_local)))
         os.system("rm -rf /dev/shm/*")
