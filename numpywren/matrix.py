@@ -510,9 +510,12 @@ class BigSymmetricMatrix(BigMatrix):
                  prefix='numpywren.objects/',
                  dtype=np.float64,
                  parent_fn=None,
-                 write_header=False):
+                 write_header=False,
+                 lambdav = 0.0):
         BigMatrix.__init__(self, key=key, shape=shape, shard_sizes=shard_sizes, bucket=bucket, prefix=prefix, dtype=dtype, parent_fn=parent_fn, write_header=write_header)
         self.symmetric = True
+        self.lambdav = lambdav
+
     @property
     def T(self):
         return self
@@ -562,6 +565,9 @@ class BigSymmetricMatrix(BigMatrix):
             X_block = np.load(bio).astype(self.dtype)
         if (flipped):
             X_block = X_block.T
+        if (len(list(set(block_idx))) == 1):
+            idxs = np.diag_indices(X_block.shape[0])
+            X_block[idxs] += self.lambdav
         return X_block
 
     def put_block(self, block, *block_idx):
