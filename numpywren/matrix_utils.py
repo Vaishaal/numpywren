@@ -12,7 +12,6 @@ import hashlib
 import pickle
 import pywren.serialize as serialize
 import inspect
-from . import matrix
 import multiprocessing
 
 cpu_count = multiprocessing.cpu_count()
@@ -127,8 +126,12 @@ def get_blocks_mmap(bigm, block_idxs, local_idxs, mmap_loc, mmap_shape):
     X_full = np.memmap(mmap_loc, dtype=bigm.dtype, mode='r+', shape=mmap_shape)
     for block_idx, local_idx  in zip(block_idxs, local_idxs):
         local_idx_slices = [slice(s,e) for s,e in local_idx]
+        t = time.time()
         block_data = bigm.get_block(*block_idx)
+        e = time.time()
+        t = time.time()
         X_full[local_idx_slices] = block_data
+        e = time.time()
     X_full.flush()
     return (mmap_loc, mmap_shape, bigm.dtype)
 
@@ -138,8 +141,10 @@ def get_local_matrix(bigm, workers=cpu_count, mmap_loc=None, big_axis=0):
     if (mmap_loc == None):
         mmap_loc = "/dev/shm/{0}".format(hash_key)
 
-    #if (os.path.isfile(mmap_loc)):
-    #    return np.memmap(mmap_loc, dtype=bigm.dtype, mode="r+", shape=tuple(bigm.shape))
+    '''
+    if (os.path.isfile(mmap_loc)):
+        return np.memmap(mmap_loc, dtype=bigm.dtype, mode="r+", shape=tuple(bigm.shape))
+    '''
 
     executor = fs.ProcessPoolExecutor(max_workers=workers)
     blocks_to_get = [bigm._block_idxs(i) for i in range(len(bigm.shape))]
@@ -157,9 +162,7 @@ def get_col(bigm, col, workers=cpu_count, mmap_loc=None):
     if (mmap_loc == None):
         mmap_loc = "/dev/shm/{0}".format(hash_key)
     executor = fs.ProcessPoolExecutor(max_workers=workers)
-    print(bigm.block_idxs)
     blocks_to_get = [bigm._block_idxs(0), [col]]
-    print(blocks_to_get)
     futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, executor=executor, big_axis=0)
     fs.wait(futures)
     [f.result() for f in futures]
@@ -203,6 +206,19 @@ def get_row(bigm, row, workers=cpu_count, mmap_loc=None):
     fs.wait(futures)
     [f.result() for f in futures]
     return load_mmap(*futures[0].result())
+
+def get_rows(bigm, rows, workers=cpu_count, mmap_loc=None):
+    assert len(bigm.shape) == 2
+    hash_key = hash_string(bigm.key)
+    if (mmap_loc == None):
+        mmap_loc = "/dev/shm/{0}".format(hash_key)
+    executor = fs.ProcessPoolExecutor(max_workers=workers)
+    blocks_to_get = [rows, bigm._block_idxs(1)]
+    futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, executor=executor, big_axis=1)
+    fs.wait(futures)
+    [f.result() for f in futures]
+    return load_mmap(*futures[0].result())
+
 
 def put_row_async(bigm, mmap_loc, shape, block, bidx):
     X_memmap = np.memmap(mmap_loc, dtype=bigm.dtype, mode='r+', shape=shape)

@@ -103,7 +103,7 @@ class BigMatrix(object):
 
         if (self.shard_sizes is None) or (len(self.shape) != len(self.shard_sizes)):
             raise Exception("shard_sizes should be same length as shape.")
-
+        self.symmetric = False
         if write_header:
             # Write a header if you want to load this value later.
             self.__write_header__()
@@ -510,8 +510,12 @@ class BigSymmetricMatrix(BigMatrix):
                  prefix='numpywren.objects/',
                  dtype=np.float64,
                  parent_fn=None,
-                 write_header=False):
-        BigMatrix.__init__(self, key, shape, shard_sizes, bucket, prefix, dtype, parent_fn, write_header)
+                 write_header=False,
+                 lambdav = 0.0):
+        BigMatrix.__init__(self, key=key, shape=shape, shard_sizes=shard_sizes, bucket=bucket, prefix=prefix, dtype=dtype, parent_fn=parent_fn, write_header=write_header)
+        self.symmetric = True
+        self.lambdav = lambdav
+
 
     @property
     def T(self):
@@ -562,6 +566,9 @@ class BigSymmetricMatrix(BigMatrix):
             X_block = np.load(bio).astype(self.dtype)
         if (flipped):
             X_block = X_block.T
+        if (len(list(set(block_idx))) == 1):
+            idxs = np.diag_indices(X_block.shape[0])
+            X_block[idxs] += self.lambdav
         return X_block
 
     def put_block(self, block, *block_idx):
