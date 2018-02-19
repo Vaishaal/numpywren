@@ -168,6 +168,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         return XY
 
     for i, futures, in all_futures:
+        print("waiting")
         pywren.wait(futures)
         [f.result() for f in futures]
 

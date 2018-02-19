@@ -13,7 +13,6 @@ import pywren
 from scipy.linalg import cholesky, solve
 import time
 from . import lambdapack as lp
-from . import vis
 
 # this one is hard
 def reshard(pwex, X, new_shard_sizes, out_bucket=None, tasks_per_job=1):
@@ -107,10 +106,7 @@ def chol(pwex, X, out_bucket=None, tasks_per_job=1):
         executor = pywren.standalone_executor
     else:
         executor = pywren.lambda_executor
-    print(executor)
     program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
-    print(program)
-    vis.visualize_program("/tmp/cholesky", program)
     futures = program.start()
     [f.result() for f in futures]
     program.wait()
