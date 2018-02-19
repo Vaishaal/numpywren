@@ -516,6 +516,7 @@ class BigSymmetricMatrix(BigMatrix):
         self.symmetric = True
         self.lambdav = lambdav
 
+
     @property
     def T(self):
         return self
