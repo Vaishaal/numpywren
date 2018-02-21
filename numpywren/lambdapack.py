@@ -19,6 +19,7 @@ import copy
 import concurrent.futures as fs
 import sys
 import botocore
+import scipy.linalg
 
 try:
   DEFAULT_CONFIG = wc.default()
@@ -171,7 +172,7 @@ class RemoteLoad(RemoteInstruction):
         for x in self.bidxs:
             bidxs_str += str(x)
             bidxs_str += " "
-        return "{0} = S3_LOAD {1} {2}".format(self.id, self.matrix, len(self.bidxs), bidxs_str.strip())
+        return "{0} = S3_LOAD {1} {2} {3}".format(self.id, self.matrix, len(self.bidxs), bidxs_str.strip())
 
 class RemoteWrite(RemoteInstruction):
     def __init__(self, i_id, matrix, data_instr, *bidxs):
@@ -214,15 +215,12 @@ class RemoteSYRK(RemoteInstruction):
             old_block = self.argv[0].result
             block_2 = self.argv[1].result
             block_1 = self.argv[2].result
-            self.result = old_block - block_2.dot(block_1.T)
+            old_block -= block_2.dot(block_1.T)
+            self.result = old_block
             self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
             self.ret_code = 0
         self.end_time = time.time()
         return self.result
-
-    def clear(self):
-        self.result = None
-
 
     def __str__(self):
         return "{0} = SYRK {1} {2} {3}".format(self.id, self.argv[0].id,  self.argv[1].id,  self.argv[2].id)
@@ -237,10 +235,10 @@ class RemoteTRSM(RemoteInstruction):
     def __call__(self):
         self.start_time = time.time()
         if (self.result == None):
-            L_bb_inv = self.argv[1].result
+            L_bb = self.argv[1].result
             col_block = self.argv[0].result
-            self.result = col_block.dot(L_bb_inv.T)
-            self.flops = 2*col_block.shape[0]*col_block.shape[1]*L_bb_inv.shape[0]
+            self.result = scipy.linalg.blas.dtrsm(1.0, L_bb.T, col_block, side=1,lower=0)
+            self.flops =  col_block.shape[1] * L_bb.shape[0] * L_bb.shape[1]
             self.ret_code = 0
         self.end_time = time.time()
         return self.result
@@ -519,15 +517,15 @@ class LambdaPackProgram(object):
         return "\n".join([str(x) for x in self.inst_blocks])
 
 
-def make_column_update(pc, L_out, L_in, L_bb_inv, b0, b1, label=None):
+def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     L_load = RemoteLoad(pc, L_in, b0, b1)
     pc += 1
-    L_bb_inv_load = RemoteLoad(pc, L_bb_inv, 0, 0)
+    L_bb_load = RemoteLoad(pc, L_out, b1, b1)
     pc += 1
-    trsm = RemoteTRSM(pc, [L_load, L_bb_inv_load])
+    trsm = RemoteTRSM(pc, [L_load, L_bb_load])
     pc += 1
     write = RemoteWrite(pc, L_out, trsm, b0, b1)
-    return InstructionBlock([L_load, L_bb_inv_load, trsm, write], label=label), 4
+    return InstructionBlock([L_load, L_bb_load, trsm, write], label=label), 4
 
 def make_low_rank_update(pc, L_out, L_prev, L_final,  b0, b1, b2, label=None):
     old_block_load = RemoteLoad(pc, L_prev, b1, b2)
@@ -541,18 +539,14 @@ def make_low_rank_update(pc, L_out, L_prev, L_final,  b0, b1, b2, label=None):
     write = RemoteWrite(pc, L_out, syrk, b1, b2)
     return InstructionBlock([old_block_load, block_1_load, block_2_load, syrk, write], label=label), 5
 
-def make_local_cholesky_and_inverse(pc, L_out, L_bb_inv_out, L_in, b0, label=None):
+def make_local_cholesky(pc, L_out, L_in, b0, label=None):
     block_load = RemoteLoad(pc, L_in, b0, b0)
     pc += 1
     cholesky = RemoteCholesky(pc, [block_load])
     pc += 1
-    inverse = RemoteInverse(pc, [cholesky])
-    pc += 1
     write_diag = RemoteWrite(pc, L_out, cholesky, b0, b0)
     pc += 1
-    write_inverse = RemoteWrite(pc, L_bb_inv_out, inverse, 0, 0)
-    pc += 1
-    return InstructionBlock([block_load, cholesky, inverse, write_diag, write_inverse], label=label), 5
+    return InstructionBlock([block_load, cholesky, write_diag], label=label), 3
 
 
 def make_remote_gemm(pc, XY, X, Y, b0, b1, b2, label=None):
@@ -608,7 +602,6 @@ def _chol(X, out_bucket=None):
     L = BigMatrix(out_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]], parent_fn=constant_zeros, write_header=True)
     # generate intermediate matrices
     trailing = [X]
-    cholesky_diag_inverses = []
     all_blocks = list(L.block_idxs)
     block_idxs = sorted(X._block_idxs(0))
 
@@ -619,28 +612,20 @@ def _chol(X, out_bucket=None):
                        shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]],
                        parent_fn=constant_zeros)
         block_size =  min(X.shard_sizes[0], X.shape[0] - X.shard_sizes[0]*j0)
-        L_bb_inv = BigMatrix(out_key + "_({0},{0})_inv".format(i),
-                             shape=(block_size, block_size),
-                             bucket=out_bucket,
-                             shard_sizes=[block_size, block_size],
-                             parent_fn=constant_zeros)
-
         trailing.append(L_trailing)
-        cholesky_diag_inverses.append(L_bb_inv)
     trailing.append(L)
     all_instructions = []
 
     pc = 0
     par_block = 0
     for i in block_idxs:
-        L_inv = cholesky_diag_inverses[i]
-        instructions, count = make_local_cholesky_and_inverse(pc, trailing[-1], L_inv, trailing[i], i, label="local")
+        instructions, count = make_local_cholesky(pc, trailing[-1], trailing[i], i, label="local")
         all_instructions.append(instructions)
         pc += count
         par_count = 0
         parallel_block = []
         for j in block_idxs[i+1:]:
-            instructions, count = make_column_update(pc, trailing[-1], trailing[i], L_inv, j, i, label="parallel_block_{0}_job_{1}".format(par_block, par_count))
+            instructions, count = make_column_update(pc, trailing[-1], trailing[i], j, i, label="parallel_block_{0}_job_{1}".format(par_block, par_count))
             all_instructions.append(instructions)
             pc += count
             par_count += 1
