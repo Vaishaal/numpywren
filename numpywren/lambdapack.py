@@ -365,6 +365,9 @@ class LambdaPackProgram(object):
         hashed.update(str(time.time()).encode())
         self.hash = hashed.hexdigest()
         self.ret_status = RPS(self.hash)
+        client = boto3.client('sqs')
+        self.queue_url = client.create_queue(QueueName=self.hash)["QueueUrl"]
+        client.purge_queue(QueueUrl=self.queue_url)
         self.children, self.parents = self._io_dependency_analyze(self.inst_blocks)
         self.starters = []
         self.terminators = []
@@ -398,16 +401,13 @@ class LambdaPackProgram(object):
         self.ret_ready_status = RPS(self.hash + "_ready")
         self.block_ready_statuses.append(self.ret_ready_status)
 
-
-    def pywren_func(self, i):
+    def pre_op(self, i):
         # 1. check if program has terminated
         # 2. check if this instruction_block has executed successfully
         # 3. check if parents are not completed
         # if any of the above are False -> exit
         try:
           print("RUNNING " , i)
-          children = self.children[i]
-          parents = self.parents[i]
           program_status = self.program_status().value
           if (i == len(self.inst_blocks) - 1):
             # special case final block
@@ -416,19 +416,31 @@ class LambdaPackProgram(object):
           self.set_inst_block_status(i, EC.RUNNING)
           if (program_status != EC.RUNNING.value):
             return i, self.inst_blocks[i], EC.EXCEPTION
+        except Exception as e:
+            print("EXCEPTION ", e)
+            self.handle_exception(e)
+            raise
 
-          ret_code = self.inst_blocks[i]()
+
+
+    def post_op(self, i, ret_code):
+        try:
+          children = self.children[i]
+          parents = self.parents[i]
           self.set_inst_block_status(i, EC(ret_code))
           self.inst_blocks[i].clear()
           child_futures = []
-          pwex = self.executor(config=self.pywren_config)
           ready_children = []
           for child in children:
             val = self.block_ready_statuses[child].incr()
             if (val >= len(self.parents[child])):
               ready_children.append(child)
-          child_futures = pwex.map(self.pywren_func, ready_children, extra_env={"OMP_NUM_THREADS": "1"})
-          return i, self.inst_blocks[i], child_futures
+          sqs = boto3.resource('sqs')
+          queue = sqs.Queue(self.queue_url)
+          for child in ready_children:
+            print("Adding {0} to sqs queue".format(child))
+            queue.send_message(MessageBody=str(child))
+
         except Exception as e:
             print("EXCEPTION ", e)
             self.handle_exception(e)
@@ -436,11 +448,12 @@ class LambdaPackProgram(object):
 
     def start(self):
         self.ret_status.put(EC.RUNNING.value)
-        pwex = self.executor(config=self.pywren_config)
-        print(pwex.config)
-        print(self.starters)
-        self.futures = pwex.map(self.pywren_func, self.starters, extra_env={"OMP_NUM_THREADS": "1"})
-        return self.futures
+        sqs = boto3.resource('sqs')
+        queue = sqs.Queue(self.queue_url)
+        for starter in self.starters:
+          print("Enqueuing ", starter)
+          queue.send_message(MessageBody=str(starter))
+        return 0
 
     def handle_exception(self, error):
         e = EC.EXCEPTION.value
@@ -460,6 +473,10 @@ class LambdaPackProgram(object):
         while (status == EC.RUNNING):
             time.sleep(sleep_time)
             status = self.program_status()
+
+    def free(self):
+        client = boto3.client('sqs')
+        client.delete_queue(QueueUrl=self.queue_url)
 
 
     def unwind(self):
