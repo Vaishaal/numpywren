@@ -365,7 +365,7 @@ class LambdaPackProgram(object):
         hashed.update(str(time.time()).encode())
         self.hash = hashed.hexdigest()
         self.ret_status = RPS(self.hash)
-        client = boto3.client('sqs')
+        client = boto3.client('sqs', region_name='us-west-2')
         self.queue_url = client.create_queue(QueueName=self.hash)["QueueUrl"]
         client.purge_queue(QueueUrl=self.queue_url)
         self.children, self.parents = self._io_dependency_analyze(self.inst_blocks)
