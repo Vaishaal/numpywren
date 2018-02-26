@@ -49,8 +49,9 @@ class LambdaPackExecutor(object):
                 # by invariant inforced in push this should always be fine to run
                 if (len(self.instruction_queue) == 0):
                     time.sleep(0.1)
-                    if(self.program.program_status() != lp.EC.RUNNING):
-                        break
+                    if ((int(time.time()) % 5) == 0):
+                        if(program.program_status() != lp.EC.RUNNING):
+                            break
                     continue
                 instr = self.instruction_queue.pop(0)
                 if (instr.i_code == lp.OC.S3_WRITE):
