@@ -37,7 +37,7 @@ class LambdapackExecutorTest(unittest.TestCase):
         print("RUNNING MULTI")
         np.random.seed(1)
         size = 128
-        shard_size = 32
+        shard_size = 64
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -56,6 +56,8 @@ class LambdapackExecutorTest(unittest.TestCase):
         program.start()
         job_runner.lambdapack_run(program)
         program.wait()
-        program.free()
         print("Program status")
         print(program.program_status())
+        program.free()
+        profiled_blocks = program.get_all_profiling_info()
+        print(lp.perf_profile(profiled_blocks))

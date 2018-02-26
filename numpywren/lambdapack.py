@@ -4,6 +4,7 @@ from .matrix import BigMatrix, BigSymmetricMatrix, Scalar
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, constant_zeros
 import numpy as np
 import pywren
+from pywren.serialize import serialize
 from numpywren import matrix_utils, uops
 import pytest
 import numpy as np
@@ -20,6 +21,9 @@ import concurrent.futures as fs
 import sys
 import botocore
 import scipy.linalg
+import traceback
+import pickle
+from collections import defaultdict
 
 try:
   DEFAULT_CONFIG = wc.default()
@@ -414,11 +418,13 @@ class LambdaPackProgram(object):
             print("RETURN BLOCK")
             pass
           self.set_inst_block_status(i, EC.RUNNING)
+          self.inst_blocks[i].start_time = time.time()
           if (program_status != EC.RUNNING.value):
             return i, self.inst_blocks[i], EC.EXCEPTION
         except Exception as e:
             print("EXCEPTION ", e)
             self.handle_exception(e)
+            traceback.print_exc()
             raise
 
 
@@ -440,10 +446,13 @@ class LambdaPackProgram(object):
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
             queue.send_message(MessageBody=str(child))
+          self.inst_blocks[i].end_time = time.time()
+          self.set_profiling_info(i)
 
         except Exception as e:
             print("EXCEPTION ", e)
             self.handle_exception(e)
+            traceback.print_exc()
             raise
 
     def start(self):
@@ -478,23 +487,22 @@ class LambdaPackProgram(object):
         client = boto3.client('sqs')
         client.delete_queue(QueueUrl=self.queue_url)
 
+    def get_all_profiling_info(self):
+        client = boto3.client('s3')
+        return [self.get_profiling_info(i) for i in range(len(self.inst_blocks))]
 
-    def unwind(self):
-      if (self.program_status() != EC.SUCCESS):
-        raise Exception("Unwind can only be called when program has succeeded")
-      results = []
-      for f in self.futures:
-        results += self.__unwind_recursive(f)
-      return sorted(results, key=lambda x: x[0])
+    def get_profiling_info(self, pc):
+        client = boto3.client('s3')
+        byte_string = client.get_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc))["Body"].read()
+        return pickle.loads(byte_string)
 
-    def __unwind_recursive(self, future):
-      index, inst_block, children = future.result()
-      if (isinstance(children, RemoteInstructionExitCodes)):
-        return []
-      results = [(index, inst_block)]
-      for c in children:
-        results += self.__unwind_recursive(c)
-      return results
+    def set_profiling_info(self, pc):
+        inst_block = self.inst_blocks[pc]
+        serializer = serialize.SerializeIndependent()
+        byte_string = serializer([inst_block])[0][0]
+        client = boto3.client('s3')
+        print("TYPE IS ", type(byte_string))
+        client.put_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc), Body=byte_string)
 
     def inst_block_status(self, i):
       status = self.block_return_statuses[i].get()
@@ -659,6 +667,69 @@ def _chol(X, out_bucket=None):
                 par_count += 1
         #all_instructions.append(PywrenInstructionBlock(pwex, parallel_block))
     return all_instructions, trailing[-1], trailing[:-1]
+
+
+def perf_profile(blocks, num_bins=100):
+    READ_INSTRUCTIONS = [OC.S3_LOAD, OC.S3_WRITE, OC.RET]
+    WRITE_INSTRUCTIONS = [OC.S3_WRITE, OC.RET]
+    COMPUTE_INSTRUCTIONS = [OC.SYRK, OC.TRSM, OC.INVRS, OC.CHOL]
+    # first flatten into a single instruction list
+    instructions = [inst for block in blocks for inst in block.instrs]
+    start_times = [inst.start_time for inst in instructions]
+    end_times = [inst.end_time for inst in instructions]
+
+    abs_start = min(start_times)
+    last_end = max(end_times)
+    tot_time = (last_end - abs_start)
+    bins = np.linspace(0, tot_time, tot_time)
+    total_flops_per_sec = np.zeros(len(bins))
+    read_bytes_per_sec = np.zeros(len(bins))
+    write_bytes_per_sec = np.zeros(len(bins))
+    runtimes = []
+
+    for i,inst in enumerate(instructions):
+        duration = inst.end_time - inst.start_time
+        if (inst.i_code in READ_INSTRUCTIONS):
+            start_time = inst.start_time - abs_start
+            end_time = inst.end_time - abs_start
+            start_bin, end_bin = np.searchsorted(bins, [start_time, end_time])
+            size = inst.size
+            bytes_per_sec = size/duration
+            gb_per_sec = bytes_per_sec/1e9
+            read_bytes_per_sec[start_bin:end_bin]  += gb_per_sec
+
+        if (inst.i_code in WRITE_INSTRUCTIONS):
+            start_time = inst.start_time - abs_start
+            end_time = inst.end_time - abs_start
+            start_bin, end_bin = np.searchsorted(bins, [start_time, end_time])
+            size = inst.size
+            bytes_per_sec = size/duration
+            gb_per_sec = bytes_per_sec/1e9
+            write_bytes_per_sec[start_bin:end_bin]  += gb_per_sec
+
+        if (inst.i_code in COMPUTE_INSTRUCTIONS):
+            start_time = inst.start_time - abs_start
+            end_time = inst.end_time - abs_start
+            start_bin, end_bin = np.searchsorted(bins, [start_time, end_time])
+            flops = inst.flops
+            flops_per_sec = flops/duration
+            gf_per_sec = flops_per_sec/1e9
+            total_flops_per_sec[start_bin:end_bin]  += gf_per_sec
+        runtimes.append(end_time - start_time)
+    optimes = defaultdict(int)
+    opcounts = defaultdict(int)
+    for inst, t in zip(instructions, runtimes):
+      opcounts[inst.i_code] += 1
+      optimes[inst.i_code] += t
+      IO_INSTRUCTIONS = [OC.S3_LOAD, OC.S3_WRITE, OC.RET]
+      if (inst.i_code not in IO_INSTRUCTIONS):
+        flops = inst.flops/1e9
+      else:
+        flops = None
+      print("{0}  {1}s {2} gigaflops".format(str(inst), t, flops))
+    for k in optimes.keys():
+      print("{0}: {1}s".format(k, optimes[k]/opcounts[k]))
+    return read_bytes_per_sec, write_bytes_per_sec, total_flops_per_sec, bins , instructions, runtimes
 
 
 

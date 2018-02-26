@@ -116,7 +116,6 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=2):
             continue
         msg = messages[0]
         pc = int(msg.body)
-        print(pc)
         local_ret_status = [1]
         reset_thread.submit(reset_msg_visibility, msg, local_ret_status, msg_vis_timeout)
         executor.push(pc, local_ret_status)

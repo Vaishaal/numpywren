@@ -572,6 +572,7 @@ class BigSymmetricMatrix(BigMatrix):
         return X_block
 
     def put_block(self, block, *block_idx):
+        print("PUT_BLOCK ", block_idx)
         block_idx_sym = self._symmetrize_idx(block_idx)
         if block_idx_sym != block_idx:
             flipped = True
