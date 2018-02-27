@@ -39,7 +39,7 @@ class LambdapackExecutorTest(unittest.TestCase):
         print("RUNNING MULTI")
         np.random.seed(1)
         size = 128
-        shard_size = 64
+        shard_size = 32
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -63,6 +63,12 @@ class LambdapackExecutorTest(unittest.TestCase):
         program.free()
         profiled_blocks = program.get_all_profiling_info()
         print(lp.perf_profile(profiled_blocks))
+        for pc,profiled_block in enumerate(profiled_blocks):
+            total_time = 0
+            actual_time = profiled_block.end_time - profiled_block.start_time
+            for instr in profiled_block.instrs:
+                total_time += instr.end_time - instr.start_time
+            print("Block {0} total_time {1} pipelined time {2}".format(pc, total_time, actual_time))
 
     def test_cholesky_lambda_single(self): 
         print("RUNNING single lambda")

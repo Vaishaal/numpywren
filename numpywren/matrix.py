@@ -17,6 +17,7 @@ import pywren.wrenconfig as wc
 
 from . import matrix_utils
 from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists
+import asyncio
 
 cpu_count = multiprocessing.cpu_count()
 logger = logging.getLogger(__name__)
@@ -212,7 +213,12 @@ class BigMatrix(object):
         """
         return self._block_idxs()
 
-    def get_block(self, *block_idx):
+    def get_block_async(self, *block_idx):
+        loop = asyncio.get_event_loop()
+        get_block_async_coro = self.get_block_async(loop, *block_idx)
+        return loop.run_until_complete(asyncio.ensure_future(get_block_async_coro))
+
+    async def get_block_async(self, loop, *block_idx):
         """
         Given a block index, get the contents of the block.
 
@@ -226,6 +232,9 @@ class BigMatrix(object):
         block : ndarray
             The block at the given index as a numpy array.
         """
+        if (loop == None):
+            loop = asyncio.get_event_loop()
+
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
         key = self.__shard_idx_to_key__(block_idx)
@@ -243,7 +252,7 @@ class BigMatrix(object):
             X_block = X_block.T
         return X_block
 
-    def put_block(self, block, *block_idx):
+    async def put_block_async(self, block, *block_idx):
         """
         Given a block index, sets the contents of the block.
 
@@ -277,7 +286,7 @@ class BigMatrix(object):
         key = self.__shard_idx_to_key__(block_idx)
         return self.__save_matrix_to_s3__(block, key)
 
-    def delete_block(self, *block_idx):
+    async def delete_block_async(self, loop=None, *block_idx):
         """
         Delete the block at the given block index.
 
@@ -297,7 +306,11 @@ class BigMatrix(object):
         For details on the S3 response format see:
         http://boto3.readthedocs.io/en/latest/reference/services/s3.html#S3.Client.delete_object
         """
+        if (loop == None):
+            loop = asyncio.get_event_loop()
         key = self.__shard_idx_to_key__(block_idx)
+        session = aiobotocore.get_session(loop=loop)
+        client = session.create_client('s3')
         client = boto3.client('s3')
         return client.delete_object(Key=key, Bucket=self.bucket)
 

@@ -120,16 +120,9 @@ class RemoteProgramState(object):
 
 
 
-
-
-
-
-
-
 EC = RemoteInstructionExitCodes
 OC = RemoteInstructionOpCodes
 IT = RemoteInstructionTypes
-
 RPS = RemoteProgramState
 
 
@@ -157,10 +150,10 @@ class RemoteLoad(RemoteInstruction):
         self.bidxs = bidxs
         self.result = None
 
-    def __call__(self):
+    async def __call__(self, loop):
         self.start_time = time.time()
         if (self.result == None):
-            self.result = self.matrix.get_block(*self.bidxs)
+            self.result = self.matrix.get_block_async(loop, *self.bidxs)
             self.size = sys.getsizeof(self.result)
 
         self.end_time = time.time()
@@ -187,10 +180,10 @@ class RemoteWrite(RemoteInstruction):
         self.data_instr = data_instr
         self.result = None
 
-    def __call__(self):
+    async def __call__(self, loop):
         self.start_time = time.time()
         if (self.result == None):
-            self.result = self.matrix.put_block(self.data_instr.result, *self.bidxs)
+            self.result = self.matrix.put_block_async(loop, self.data_instr.result, *self.bidxs)
             self.size = sys.getsizeof(self.data_instr.result)
             self.ret_code = 0
         self.end_time = time.time()
@@ -443,11 +436,11 @@ class LambdaPackProgram(object):
               ready_children.append(child)
           sqs = boto3.resource('sqs')
           queue = sqs.Queue(self.queue_url)
+          self.set_profiling_info(i)
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
             queue.send_message(MessageBody=str(child))
           self.inst_blocks[i].end_time = time.time()
-          self.set_profiling_info(i)
 
         except Exception as e:
             print("EXCEPTION ", e)
