@@ -13,6 +13,7 @@ import pickle
 import pywren.serialize as serialize
 import inspect
 import multiprocessing
+import aiobotocore
 
 cpu_count = multiprocessing.cpu_count()
 
@@ -97,6 +98,18 @@ def key_exists(bucket, key):
     client = boto3.client('s3')
     try:
         obj = client.head_object(Bucket=bucket, Key=key)
+        return True
+    except botocore.exceptions.ClientError as exc:
+        if exc.response['Error']['Code'] != '404':
+            raise
+        return False
+
+async def key_exists_async(bucket, key, loop=None):
+    '''Return true if a key exists in s3 bucket'''
+    session = aiobotocore.get_session(loop=loop)
+    client = session.create_client('s3', use_ssl=False, verify=False)
+    try:
+        obj = await client.head_object(Bucket=bucket, Key=key)
         return True
     except botocore.exceptions.ClientError as exc:
         if exc.response['Error']['Code'] != '404':

@@ -16,8 +16,9 @@ import numpy as np
 import pywren.wrenconfig as wc
 
 from . import matrix_utils
-from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists
+from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists_async
 import asyncio
+import aiobotocore
 
 cpu_count = multiprocessing.cpu_count()
 logger = logging.getLogger(__name__)
@@ -213,8 +214,10 @@ class BigMatrix(object):
         """
         return self._block_idxs()
 
-    def get_block_async(self, *block_idx):
-        loop = asyncio.get_event_loop()
+    def get_block(self, *block_idx):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
         get_block_async_coro = self.get_block_async(loop, *block_idx)
         return loop.run_until_complete(asyncio.ensure_future(get_block_async_coro))
 
@@ -238,7 +241,7 @@ class BigMatrix(object):
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
         key = self.__shard_idx_to_key__(block_idx)
-        exists = key_exists(self.bucket, key)
+        exists = await key_exists_async(self.bucket, key, loop)
         if (not exists and self.parent_fn == None):
             print(self.bucket)
             print(key)
@@ -246,13 +249,20 @@ class BigMatrix(object):
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx)
         else:
-            bio = self.__s3_key_to_byte_io__(key)
+            bio = await self.__s3_key_to_byte_io__(key, loop=loop)
             X_block = np.load(bio).astype(self.dtype)
         if (self.transposed):
             X_block = X_block.T
         return X_block
 
-    async def put_block_async(self, block, *block_idx):
+    def put_block(self, block, *block_idx):
+        loop = asyncio.new_event_loop()
+        print("LOOP IS ", loop)
+        asyncio.set_event_loop(loop)
+        put_block_async_coro = self.put_block_async(block, loop, *block_idx)
+        return loop.run_until_complete(asyncio.ensure_future(put_block_async_coro))
+
+    async def put_block_async(self, block, loop=None, *block_idx):
         """
         Given a block index, sets the contents of the block.
 
@@ -274,6 +284,9 @@ class BigMatrix(object):
         For details on the S3 response format see:
         http://boto3.readthedocs.io/en/latest/reference/services/s3.html#S3.Client.put_object
         """
+        if (loop == None):
+            loop = asyncio.get_event_loop()
+
         real_idxs = self.__block_idx_to_real_idx__(block_idx)
         current_shape = tuple([e - s for s,e in real_idxs])
 
@@ -284,7 +297,13 @@ class BigMatrix(object):
 
         block = block.astype(self.dtype)
         key = self.__shard_idx_to_key__(block_idx)
-        return self.__save_matrix_to_s3__(block, key)
+        return await self.__save_matrix_to_s3__(block, key, loop)
+
+    def delete_block(self, block, *block_idx):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        delete_block_async_coro = self.delete_block_async(loop, block, *block_idx)
+        return loop.run_until_complete(asyncio.ensure_future(delete_block_async_coro))
 
     async def delete_block_async(self, loop=None, *block_idx):
         """
@@ -307,11 +326,11 @@ class BigMatrix(object):
         http://boto3.readthedocs.io/en/latest/reference/services/s3.html#S3.Client.delete_object
         """
         if (loop == None):
-            loop = asyncio.get_event_loop()
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         key = self.__shard_idx_to_key__(block_idx)
         session = aiobotocore.get_session(loop=loop)
-        client = session.create_client('s3')
-        client = boto3.client('s3')
+        client = session.create_client('s3', use_ssl=False, verify=False)
         return client.delete_object(Key=key, Bucket=self.bucket)
 
     def free(self):
@@ -415,14 +434,21 @@ class BigMatrix(object):
         key = self.__get_matrix_shard_key__(real_idxs)
         return key
 
-    def __s3_key_to_byte_io__(self, key):
+    async def __s3_key_to_byte_io__(self, key, loop=None):
+        if (loop == None):
+            loop = asyncio.get_event_loop()
+
+        session = aiobotocore.get_session(loop=loop)
+        client = session.create_client('s3', use_ssl=False, verify=False)
         n_tries = 0
         max_n_tries = 5
         bio = None
-        client = boto3.client('s3')
         while bio is None and n_tries <= max_n_tries:
             try:
-                bio = io.BytesIO(client.get_object(Bucket=self.bucket, Key=key)['Body'].read())
+                resp = await client.get_object(Bucket=self.bucket, Key=key)
+                async with resp['Body'] as stream:
+                    matrix_bytes = await stream.read()
+                bio = io.BytesIO(matrix_bytes)
             except Exception as e:
                 raise
                 n_tries += 1
@@ -430,12 +456,15 @@ class BigMatrix(object):
             raise Exception("S3 Read Failed")
         return bio
 
-    def __save_matrix_to_s3__(self, X, out_key, client=None):
-        if (client == None):
-            client = boto3.client('s3')
+    async def __save_matrix_to_s3__(self, X, out_key, loop, client=None):
+        if (loop == None):
+            loop = asyncio.get_event_loop()
+
+        session = aiobotocore.get_session(loop=loop)
+        client = session.create_client('s3', use_ssl=False, verify=False)
         outb = io.BytesIO()
         np.save(outb, X)
-        response = client.put_object(Key=out_key,
+        response = await client.put_object(Key=out_key,
                                      Bucket=self.bucket,
                                      Body=outb.getvalue(),
                                      ACL="bucket-owner-full-control")
@@ -562,21 +591,23 @@ class BigSymmetricMatrix(BigMatrix):
         else:
             return all_block_idxs
 
-    def get_block(self, *block_idx):
+    async def get_block_async(self, loop=None, *block_idx):
+        if (loop == None):
+            loop = asyncio.get_event_loop()
         # For symmetric matrices it suffices to only read from lower triangular
         flipped = False
         block_idx_sym = self._symmetrize_idx(block_idx)
         if block_idx_sym != block_idx:
             flipped = True
         key = self.__shard_idx_to_key__(block_idx_sym)
-        exists = key_exists(self.bucket, key)
+        exists = await key_exists_async(self.bucket, key)
         if (not exists and self.parent_fn == None):
             raise Exception("Key does not exist, and no parent function prescripted")
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx_sym)
         else:
-            bio = self.__s3_key_to_byte_io__(key)
-            X_block = np.load(bio).astype(self.dtype)
+            bio = await self.__s3_key_to_byte_io__(key, loop=loop)
+            X_block = np.load(bio).astype(self.dtype, loop)
         if (flipped):
             X_block = X_block.T
         if (len(list(set(block_idx))) == 1):
@@ -584,8 +615,9 @@ class BigSymmetricMatrix(BigMatrix):
             X_block[idxs] += self.lambdav
         return X_block
 
-    def put_block(self, block, *block_idx):
-        print("PUT_BLOCK ", block_idx)
+    async def put_block_async(self, block, loop=None, *block_idx):
+        if (loop == None):
+            loop = asyncio.get_event_loop()
         block_idx_sym = self._symmetrize_idx(block_idx)
         if block_idx_sym != block_idx:
             flipped = True
@@ -596,16 +628,17 @@ class BigSymmetricMatrix(BigMatrix):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
         key = self.__shard_idx_to_key__(block_idx)
         block = block.astype(self.dtype)
-        return self.__save_matrix_to_s3__(block, key)
+        return await self.__save_matrix_to_s3__(block, key, loop)
 
 
-    def delete_block(self, *block_idx):
-        client = boto3.client('s3')
+    async def delete_block_async(self, loop, *block_idx):
+        if (loop == None):
+            loop = asyncio.get_event_loop()
         block_idx_sym = self._symmetrize_idx(block_idx)
         if block_idx_sym != block_idx:
             flipped = True
         key = self.__shard_idx_to_key__(block_idx_sym)
-        client = boto3.client('s3')
+        session = aiobotocore.get_session(loop=loop)
+        client = session.create_client('s3', use_ssl=False, verify=False)
         return client.delete_object(Key=key, Bucket=self.bucket)
-
 

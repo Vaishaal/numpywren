@@ -43,6 +43,7 @@ class LambdaPackExecutor(object):
                 elif (instr.i_code == lp.OC.S3_LOAD):
                     print("Waiting on read")
                     res = await self.loop.run_in_executor(self.reader, instr)
+                    print(res)
                     print("Read done")
                 elif (instr.i_code == lp.OC.RET):
                     print("Waiting on return")
