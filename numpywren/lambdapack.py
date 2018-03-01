@@ -24,6 +24,8 @@ import scipy.linalg
 import traceback
 import pickle
 from collections import defaultdict
+import aiobotocore
+import asyncio
 
 try:
   DEFAULT_CONFIG = wc.default()
@@ -81,6 +83,14 @@ class RemoteProgramState(object):
     client = boto3.client('dynamodb', region_name='us-west-2')
     client.put_item(TableName=self.table_name, Item=item)
 
+  async def put_async(self, value, loop):
+    assert isinstance(value, int)
+    item = self.key.copy()
+    item["val"] = {"N": str(value)}
+    session = aiobotocore.get_session(loop=loop)
+    client = session.create_client('dynamodb', region_name='us-west-2', use_ssl=False)
+    await client.put_item(TableName=self.table_name, Item=item)
+
   def get(self):
     client = boto3.client('dynamodb', region_name='us-west-2')
     resp = client.get_item(TableName=self.table_name, Key=self.key, ConsistentRead=True)
@@ -89,7 +99,49 @@ class RemoteProgramState(object):
     else:
       return None
 
+  async def get_async(self, loop):
+    session = aiobotocore.get_session(loop=loop)
+    client = session.create_client('dynamodb', region_name='us-west-2', use_ssl=False)
+    resp = await client.get_item(TableName=self.table_name, Key=self.key, ConsistentRead=True)
+    if "Item" in resp.keys():
+      return int(resp["Item"]["val"]["N"])
+    else:
+      return None
+
+  async def incr_async(self, loop, inc=1):
+    t = time.time()
+    session = aiobotocore.get_session(loop=loop)
+    client = session.create_client('dynamodb', region_name='us-west-2', use_ssl=False)
+    assert isinstance(inc, int)
+    done = False
+    while (not done):
+      try:
+        old_val = await self.get_async(loop)
+        if (old_val is None):
+          update_value = {":newval":{"N":str(inc)}}
+          update = "ADD val :newval"
+          cond = "attribute_not_exists(Id)"
+          await client.update_item(TableName=self.table_name, Key=self.key, UpdateExpression=update, ExpressionAttributeValues=update_value, ConditionExpression=cond)
+          final_val = inc
+          done = True
+        else:
+          update_value = {":newval":{"N":str(old_val+inc)}, ":oldval":{"N":str(old_val)}}
+          update = "SET val = :newval"
+          cond = "val = :oldval"
+          await client.update_item(TableName=self.table_name, Key=self.key, UpdateExpression=update, ExpressionAttributeValues=update_value, ConditionExpression=cond)
+          done = True
+          final_val = old_val + inc
+      except botocore.exceptions.ClientError as e:
+        # Ignore the ConditionalCheckFailedException, bubble up
+        # other exceptions.
+        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
+          raise
+    e = time.time()
+    print("{0} took {1}".format(self.key, e - t))
+    return final_val
+
   def incr(self, inc=1):
+    t = time.time()
     client = boto3.client('dynamodb', region_name='us-west-2')
     assert isinstance(inc, int)
     done = False
@@ -115,6 +167,8 @@ class RemoteProgramState(object):
         # other exceptions.
         if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
           raise
+    e = time.time()
+    print("{0} took {1}".format(self.key, e - t))
     return final_val
 
 
@@ -133,14 +187,13 @@ class RemoteInstruction(object):
         self.start_time = None
         self.end_time = None
         self.type = None
-
+        self.executor = None
 
     def clear(self):
         self.result = None
 
     def __deep_copy__(self, memo):
         return self
-
 
 class RemoteLoad(RemoteInstruction):
     def __init__(self, i_id, matrix, *bidxs):
@@ -150,16 +203,16 @@ class RemoteLoad(RemoteInstruction):
         self.bidxs = bidxs
         self.result = None
 
-    def __call__(self):
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result == None):
-            self.result = self.matrix.get_block(*self.bidxs)
+            self.result = await self.matrix.get_block_async(loop, *self.bidxs)
             self.size = sys.getsizeof(self.result)
-
         self.end_time = time.time()
         return self.result
-
-
 
     def clear(self):
         self.result = None
@@ -180,10 +233,13 @@ class RemoteWrite(RemoteInstruction):
         self.data_instr = data_instr
         self.result = None
 
-    def __call__(self):
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result == None):
-            self.result = self.matrix.put_block(self.data_instr.result, *self.bidxs)
+            self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
             self.size = sys.getsizeof(self.data_instr.result)
             self.ret_code = 0
         self.end_time = time.time()
@@ -199,6 +255,7 @@ class RemoteWrite(RemoteInstruction):
             bidxs_str += " "
         return "{0} = S3_WRITE {1} {2} {3} {4}".format(self.id, self.matrix, len(self.bidxs), bidxs_str.strip(), self.data_instr.id)
 
+
 class RemoteSYRK(RemoteInstruction):
     def __init__(self, i_id, argv_instr):
         super().__init__(i_id)
@@ -206,18 +263,23 @@ class RemoteSYRK(RemoteInstruction):
         assert len(argv_instr) == 3
         self.argv = argv_instr
         self.result = None
-    def __call__(self):
-        self.start_time = time.time()
-        if (self.result == None):
-            old_block = self.argv[0].result
-            block_2 = self.argv[1].result
-            block_1 = self.argv[2].result
-            old_block -= block_2.dot(block_1.T)
-            self.result = old_block
-            self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
-            self.ret_code = 0
-        self.end_time = time.time()
-        return self.result
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
+        def compute():
+          self.start_time = time.time()
+          if (self.result == None):
+              old_block = self.argv[0].result
+              block_2 = self.argv[1].result
+              block_1 = self.argv[2].result
+              old_block -= block_2.dot(block_1.T)
+              self.result = old_block
+              self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
+              self.ret_code = 0
+          self.end_time = time.time()
+          return self.result
+        return await loop.run_in_executor(self.executor, compute)
 
     def __str__(self):
         return "{0} = SYRK {1} {2} {3}".format(self.id, self.argv[0].id,  self.argv[1].id,  self.argv[2].id)
@@ -229,16 +291,21 @@ class RemoteTRSM(RemoteInstruction):
         assert len(argv_instr) == 2
         self.argv = argv_instr
         self.result = None
-    def __call__(self):
-        self.start_time = time.time()
-        if (self.result == None):
-            L_bb = self.argv[1].result
-            col_block = self.argv[0].result
-            self.result = scipy.linalg.blas.dtrsm(1.0, L_bb.T, col_block, side=1,lower=0)
-            self.flops =  col_block.shape[1] * L_bb.shape[0] * L_bb.shape[1]
-            self.ret_code = 0
-        self.end_time = time.time()
-        return self.result
+    async def __call__(self, prev=None):
+      if (prev != None):
+        await prev
+      loop = asyncio.get_event_loop()
+      def compute():
+          self.start_time = time.time()
+          if (self.result == None):
+              L_bb = self.argv[1].result
+              col_block = self.argv[0].result
+              self.result = scipy.linalg.blas.dtrsm(1.0, L_bb.T, col_block, side=1,lower=0)
+              self.flops =  col_block.shape[1] * L_bb.shape[0] * L_bb.shape[1]
+              self.ret_code = 0
+          self.end_time = time.time()
+          return self.ret_code
+      return await loop.run_in_executor(self.executor, compute)
 
     def clear(self):
         self.result = None
@@ -253,17 +320,22 @@ class RemoteCholesky(RemoteInstruction):
         assert len(argv_instr) == 1
         self.argv = argv_instr
         self.result = None
-    def __call__(self):
-        self.start_time = time.time()
-        s = time.time()
-        if (self.result == None):
-            L_bb = self.argv[0].result
-            self.result = np.linalg.cholesky(L_bb)
-            self.flops = 1.0/3.0*(L_bb.shape[0]**3) + 2.0/3.0*(L_bb.shape[0])
-            self.ret_code = 0
-        e = time.time()
-        self.end_time = time.time()
-        return self.result
+    async def __call__(self, prev=None):
+      if (prev != None):
+          await prev
+      loop = asyncio.get_event_loop()
+      def compute():
+          self.start_time = time.time()
+          s = time.time()
+          if (self.result == None):
+              L_bb = self.argv[0].result
+              self.result = np.linalg.cholesky(L_bb)
+              self.flops = 1.0/3.0*(L_bb.shape[0]**3) + 2.0/3.0*(L_bb.shape[0])
+              self.ret_code = 0
+          e = time.time()
+          self.end_time = time.time()
+          return self.result
+      return await loop.run_in_executor(self.executor, compute)
 
     def clear(self):
         self.result = None
@@ -278,15 +350,21 @@ class RemoteInverse(RemoteInstruction):
         assert len(argv_instr) == 1
         self.argv = argv_instr
         self.result = None
-    def __call__(self):
-        self.start_time = time.time()
-        if (self.result == None):
-            L_bb = self.argv[0].result
-            self.result = np.linalg.inv(L_bb)
-            self.flops = 2.0/3.0*(L_bb.shape[0]**3)
-            self.ret_code = 0
-        self.end_time  = time.time()
-        return self.result
+    async def __call__(self, prev=None):
+      if (prev != None):
+          await prev
+      loop = asyncio.get_event_loop()
+      def compute():
+          self.start_time = time.time()
+          if (self.result == None):
+              L_bb = self.argv[0].result
+              self.result = np.linalg.inv(L_bb)
+              self.flops = 2.0/3.0*(L_bb.shape[0]**3)
+              self.ret_code = 0
+          self.end_time  = time.time()
+          return self.result
+      return await loop.run_in_executor(self.executor, compute)
+
 
     def clear(self):
         self.result = None
@@ -301,13 +379,16 @@ class RemoteReturn(RemoteInstruction):
         self.i_code = OC.RET
         self.return_loc = return_loc
         self.result = None
-    def __call__(self):
-        self.start_time = time.time()
-        if (self.result == None):
-          self.return_loc.put(EC.SUCCESS.value)
-          self.size = sys.getsizeof(EC.SUCCESS.value)
-        self.end_time = time.time()
-        return self.result
+    async def __call__(self, prev=None):
+      if (prev != None):
+          await prev
+      loop = asyncio.get_event_loop()
+      self.start_time = time.time()
+      if (self.result == None):
+        self.return_loc.put_async(EC.SUCCESS.value, loop=loop)
+        self.size = sys.getsizeof(EC.SUCCESS.value)
+      self.end_time = time.time()
+      return self.result
 
     def clear(self):
         self.result = None
@@ -420,8 +501,6 @@ class LambdaPackProgram(object):
             traceback.print_exc()
             raise
 
-
-
     def post_op(self, i, ret_code):
         try:
           children = self.children[i]
@@ -438,9 +517,47 @@ class LambdaPackProgram(object):
           queue = sqs.Queue(self.queue_url)
           self.inst_blocks[i].end_time = time.time()
           self.set_profiling_info(i)
+          self.inst_blocks[i].end_time = time.time()
+          inst_block = self.inst_blocks[i]
+          pipelined_time = inst_block.end_time - inst_block.start_time
+          full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
+
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
             queue.send_message(MessageBody=str(child))
+            pass
+        except Exception as e:
+            print("EXCEPTION ", e)
+            self.handle_exception(e)
+            traceback.print_exc()
+            raise
+
+    async def post_op_async(self, i, ret_code, loop=None):
+        if (loop == None):
+          loop = asyncio.get_event_loop()
+        try:
+          children = self.children[i]
+          parents = self.parents[i]
+          await self.set_inst_block_status_async(i, EC(ret_code), loop=loop)
+          self.inst_blocks[i].clear()
+          child_futures = []
+          ready_children = []
+          for child in children:
+            val = await self.block_ready_statuses[child].incr_async(loop=loop)
+            if (val >= len(self.parents[child])):
+              ready_children.append(child)
+          session = aiobotocore.get_session(loop=loop)
+          sqs_client = session.create_client('sqs', use_ssl=False)
+          self.inst_blocks[i].end_time = time.time()
+          inst_block = self.inst_blocks[i]
+          pipelined_time = inst_block.end_time - inst_block.start_time
+          full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
+
+          print("BLOCK {0} DONE BLOCK TOOK {1} seconds wall clock for {2} seconds of compute".format(i, pipelined_time, np.sum(full_times)))
+          await self.set_profiling_info(i, loop)
+          for child in ready_children:
+            print("Adding {0} to sqs queue".format(child))
+            await sqs_client.send_message(QueueUrl=self.queue_url, MessageBody=str(child))
 
         except Exception as e:
             print("EXCEPTION ", e)
@@ -455,6 +572,7 @@ class LambdaPackProgram(object):
         for starter in self.starters:
           print("Enqueuing ", starter)
           queue.send_message(MessageBody=str(starter))
+
         return 0
 
     def handle_exception(self, error):
@@ -497,6 +615,19 @@ class LambdaPackProgram(object):
         print("TYPE IS ", type(byte_string))
         client.put_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc), Body=byte_string)
 
+
+    async def set_profiling_info_async(self, pc, loop=None):
+        if (loop == None):
+          loop = asyncio.get_event_loop()
+        inst_block = self.inst_blocks[pc]
+        serializer = serialize.SerializeIndependent()
+        byte_string = serializer([inst_block])[0][0]
+        session = aiobotocore.get_session(loop=loop)
+        client = session.create_client('s3', use_ssl=False)
+        client = boto3.client('s3')
+        print("TYPE IS ", type(byte_string))
+        client.put_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc), Body=byte_string)
+
     def inst_block_status(self, i):
       status = self.block_return_statuses[i].get()
       if (status == None):
@@ -507,6 +638,9 @@ class LambdaPackProgram(object):
     def set_inst_block_status(self, i, status):
         return self.block_return_statuses[i].put(status.value)
 
+    async def set_inst_block_status_async(self, i, status, loop):
+        return await self.block_return_statuses[i].put_async(status.value, loop)
+
     def _io_dependency_analyze(self, instruction_blocks):
         all_forward_dependencies = [[] for i in range(len(instruction_blocks))]
         all_backward_dependencies = [[] for i in range(len(instruction_blocks))]
@@ -514,12 +648,12 @@ class LambdaPackProgram(object):
             # find all places inst_0 reads
             deps = []
             for inst in inst_0.instrs:
-                if isinstance(inst, RemoteLoad):
+              if isinstance(inst, RemoteLoad) or isinstance(inst, RemoteLoad):
                     deps.append(inst)
             deps_managed = set()
             for j, inst_1 in enumerate(instruction_blocks):
                  for inst in inst_1.instrs:
-                    if isinstance(inst, RemoteWrite):
+                    if isinstance(inst, RemoteWrite) or isinstance(inst, RemoteWrite):
                         for d in deps:
                             if (d.matrix == inst.matrix and d.bidxs == inst.bidxs):
                                 # this is a dependency
@@ -663,7 +797,7 @@ def _chol(X, out_bucket=None):
 
 
 def perf_profile(blocks, num_bins=100):
-    READ_INSTRUCTIONS = [OC.S3_LOAD, OC.S3_WRITE, OC.RET]
+    READ_INSTRUCTIONS = [OC.S3_LOAD]
     WRITE_INSTRUCTIONS = [OC.S3_WRITE, OC.RET]
     COMPUTE_INSTRUCTIONS = [OC.SYRK, OC.TRSM, OC.INVRS, OC.CHOL]
     # first flatten into a single instruction list
@@ -711,6 +845,7 @@ def perf_profile(blocks, num_bins=100):
         runtimes.append(end_time - start_time)
     optimes = defaultdict(int)
     opcounts = defaultdict(int)
+    offset = instructions[0].start_time
     for inst, t in zip(instructions, runtimes):
       opcounts[inst.i_code] += 1
       optimes[inst.i_code] += t
@@ -719,7 +854,7 @@ def perf_profile(blocks, num_bins=100):
         flops = inst.flops/1e9
       else:
         flops = None
-      print("{0}  {1}s {2} gigaflops".format(str(inst), t, flops))
+      print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset, flops))
     for k in optimes.keys():
       print("{0}: {1}s".format(k, optimes[k]/opcounts[k]))
     return read_bytes_per_sec, write_bytes_per_sec, total_flops_per_sec, bins , instructions, runtimes

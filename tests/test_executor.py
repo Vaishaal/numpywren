@@ -14,7 +14,7 @@ import time
 import os
 import boto3
 
-class LambdapackExecutorT(unittest.TestCase):
+class LambdapackExecutorTest(unittest.TestCase):
     def test_cholesky_single(self):
         X = np.random.randn(4,4)
         A = X.dot(X.T) + np.eye(X.shape[0])
@@ -56,6 +56,7 @@ class LambdapackExecutorT(unittest.TestCase):
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
         print(program)
         program.start()
+        #job_runner.main(program, program.queue_url)
         job_runner.lambdapack_run(program)
         program.wait()
         print("Program status")
@@ -71,7 +72,6 @@ class LambdapackExecutorT(unittest.TestCase):
             print("Block {0} total_time {1} pipelined time {2}".format(pc, total_time, actual_time))
 
     def test_cholesky_lambda_single(self): 
-        return
         print("RUNNING single lambda")
         np.random.seed(1)
         size = 128
@@ -93,24 +93,33 @@ class LambdapackExecutorT(unittest.TestCase):
         print(program)
         program.start()
         num_cores = 1
-        while (program.program_status() == lp.EC.RUNNING):
-            futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores))
-            pywren.wait(futures)
-            [f.result() for f in futures]
-        job_runner.lambdapack_run(program)
+        print("Mapping...")
+        print("NOP MAP")
+        print(program.queue_url)
+        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores))
+
+        futures[0].result()
+        print("Waiting...")
+        pywren.wait(futures)
+        [f.result() for f in futures]
         program.wait()
         print("Program status")
         print(program.program_status())
         program.free()
         profiled_blocks = program.get_all_profiling_info()
         print(lp.perf_profile(profiled_blocks))
+        for pc,profiled_block in enumerate(profiled_blocks):
+            total_time = 0
+            actual_time = profiled_block.end_time - profiled_block.start_time
+            for instr in profiled_block.instrs:
+                total_time += instr.end_time - instr.start_time
+            print("Block {0} total_time {1} end to end time {2}".format(pc, total_time, actual_time))
 
-    def test_cholesky_lambda_multi(self): 
-        return
+    def test_cholesky_lambda_multi(self):
         print("RUNNING many lambda")
         np.random.seed(1)
         size = 128
-        shard_size = 128
+        shard_size = 32
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -127,27 +136,25 @@ class LambdapackExecutorT(unittest.TestCase):
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
         print(program)
         program.start()
-        num_cores = 1000
-        print("Spinning up {0} workers and pre-provisioning DynamoDB".format(num_cores))
-        client = boto3.client('dynamodb')
-        #client.update_table(TableName='lambdapack', ProvisionedThroughput={ 'ReadCapacityUnits': min(num_cores*2, int(1e4)), 'WriteCapacityUnits': min(num_cores*2, int(1e4))})
-        #print("Sleeping while update propagates")
-        #time.sleep(10)
-
+        num_cores = 100
         all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores))
-        while (program.program_status() == lp.EC.RUNNING):
-            dones, not_dones = numpywren.wait.wait(all_futures, numpywren.wait.ALWAYS)
-            [f.result() for f in dones]
-            if (num_cores - len(not_dones) > 0):
-                futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores - len(not_dones)))
-                all_futures += futures
-            time.sleep(5)
+        pywren.wait(all_futures)
+        [f.result() for f in  all_futures]
         program.wait()
         print("Program status")
         print(program.program_status())
         program.free()
         profiled_blocks = program.get_all_profiling_info()
         print(lp.perf_profile(profiled_blocks))
-        #client.update_table(TableName='lambdapack', ProvisionedThroughput={ 'ReadCapacityUnits':100, 'WriteCapacityUnits':100})
-        #time.sleep(10)
-        print("Sleeping while update propagates")
+        for pc,profiled_block in enumerate(profiled_blocks):
+            total_time = 0
+            actual_time = profiled_block.end_time - profiled_block.start_time
+            for instr in profiled_block.instrs:
+                total_time += instr.end_time - instr.start_time
+            print("Block {0} total_time {1} end to end time {2}".format(pc, total_time, actual_time))
+
+
+if __name__ == "__main__":
+    tests = LambdapackExecutorTest()
+    tests.test_cholesky_multi()
+
