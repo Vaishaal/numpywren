@@ -26,6 +26,7 @@ import pickle
 from collections import defaultdict
 import aiobotocore
 import asyncio
+import redis
 
 try:
   DEFAULT_CONFIG = wc.default()
@@ -36,7 +37,7 @@ except:
 class LocalExecutor(object):
   def __init__(self, procs=32, config=DEFAULT_CONFIG):
     self.procs = procs
-    self.executor = fs.ThreadPoolExecutor(max_workers=procs)
+    self.executor = fs.ProcessPoolExecutor(max_workers=procs)
     self.config = DEFAULT_CONFIG
 
   def call_async(self, f, *args, **kwargs):
@@ -72,101 +73,27 @@ class RemoteInstructionTypes(Enum):
 
 class RemoteProgramState(object):
   ''' Host integers on dynamodb '''
-  def __init__(self, key, table_name="lambdapack"):
-    self.key = {"id": {"S":key}}
-    self.table_name = table_name
+  def __init__(self, key, ip="54.213.108.80"):
+    self.key = key
+    self.ip = ip
 
   def put(self, value):
     assert isinstance(value, int)
-    item = self.key.copy()
-    item["val"] = {"N": str(value)}
-    client = boto3.client('dynamodb', region_name='us-west-2')
-    client.put_item(TableName=self.table_name, Item=item)
+    redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
+    redis_client.set(self.key, value)
 
-  async def put_async(self, value, loop):
-    assert isinstance(value, int)
-    item = self.key.copy()
-    item["val"] = {"N": str(value)}
-    session = aiobotocore.get_session(loop=loop)
-    client = session.create_client('dynamodb', region_name='us-west-2', use_ssl=False)
-    await client.put_item(TableName=self.table_name, Item=item)
+  def clear_all(self):
+    redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
+    redis_client.flushall()
 
   def get(self):
-    client = boto3.client('dynamodb', region_name='us-west-2')
-    resp = client.get_item(TableName=self.table_name, Key=self.key, ConsistentRead=True)
-    if "Item" in resp.keys():
-      return int(resp["Item"]["val"]["N"])
-    else:
-      return None
-
-  async def get_async(self, loop):
-    session = aiobotocore.get_session(loop=loop)
-    client = session.create_client('dynamodb', region_name='us-west-2', use_ssl=False)
-    resp = await client.get_item(TableName=self.table_name, Key=self.key, ConsistentRead=True)
-    if "Item" in resp.keys():
-      return int(resp["Item"]["val"]["N"])
-    else:
-      return None
-
-  async def incr_async(self, loop, inc=1):
-    t = time.time()
-    session = aiobotocore.get_session(loop=loop)
-    client = session.create_client('dynamodb', region_name='us-west-2', use_ssl=False)
-    assert isinstance(inc, int)
-    done = False
-    while (not done):
-      try:
-        old_val = await self.get_async(loop)
-        if (old_val is None):
-          update_value = {":newval":{"N":str(inc)}}
-          update = "ADD val :newval"
-          cond = "attribute_not_exists(Id)"
-          await client.update_item(TableName=self.table_name, Key=self.key, UpdateExpression=update, ExpressionAttributeValues=update_value, ConditionExpression=cond)
-          final_val = inc
-          done = True
-        else:
-          update_value = {":newval":{"N":str(old_val+inc)}, ":oldval":{"N":str(old_val)}}
-          update = "SET val = :newval"
-          cond = "val = :oldval"
-          await client.update_item(TableName=self.table_name, Key=self.key, UpdateExpression=update, ExpressionAttributeValues=update_value, ConditionExpression=cond)
-          done = True
-          final_val = old_val + inc
-      except botocore.exceptions.ClientError as e:
-        # Ignore the ConditionalCheckFailedException, bubble up
-        # other exceptions.
-        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
-          raise
-    e = time.time()
-    print("{0} took {1}".format(self.key, e - t))
-    return final_val
+    redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
+    return int(redis_client.get(self.key))
 
   def incr(self, inc=1):
     t = time.time()
-    client = boto3.client('dynamodb', region_name='us-west-2')
-    assert isinstance(inc, int)
-    done = False
-    while (not done):
-      try:
-        old_val = self.get()
-        if (old_val is None):
-          update_value = {":newval":{"N":str(inc)}}
-          update = "ADD val :newval"
-          cond = "attribute_not_exists(Id)"
-          client.update_item(TableName=self.table_name, Key=self.key, UpdateExpression=update, ExpressionAttributeValues=update_value, ConditionExpression=cond)
-          final_val = inc
-          done = True
-        else:
-          update_value = {":newval":{"N":str(old_val+inc)}, ":oldval":{"N":str(old_val)}}
-          update = "SET val = :newval"
-          cond = "val = :oldval"
-          client.update_item(TableName=self.table_name, Key=self.key, UpdateExpression=update, ExpressionAttributeValues=update_value, ConditionExpression=cond)
-          done = True
-          final_val = old_val + inc
-      except botocore.exceptions.ClientError as e:
-        # Ignore the ConditionalCheckFailedException, bubble up
-        # other exceptions.
-        if e.response['Error']['Code'] != 'ConditionalCheckFailedException':
-          raise
+    redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
+    final_val = redis_client.incr(self.key)
     e = time.time()
     print("{0} took {1}".format(self.key, e - t))
     return final_val
@@ -385,7 +312,7 @@ class RemoteReturn(RemoteInstruction):
       loop = asyncio.get_event_loop()
       self.start_time = time.time()
       if (self.result == None):
-        self.return_loc.put_async(EC.SUCCESS.value, loop=loop)
+        self.return_loc.put(EC.SUCCESS.value)
         self.size = sys.getsizeof(EC.SUCCESS.value)
       self.end_time = time.time()
       return self.result
@@ -443,6 +370,7 @@ class LambdaPackProgram(object):
         hashed.update(str(time.time()).encode())
         self.hash = hashed.hexdigest()
         self.ret_status = RPS(self.hash)
+        self.ret_status.clear_all()
         client = boto3.client('sqs', region_name='us-west-2')
         self.queue_url = client.create_queue(QueueName=self.hash)["QueueUrl"]
         client.purge_queue(QueueUrl=self.queue_url)
@@ -472,8 +400,8 @@ class LambdaPackProgram(object):
             self.block_ready_statuses.append(block_ready_status)
 
         for i in self.terminators:
-          self.children[i].append(len(self.inst_blocks) - 1)
-        self.children.append([])
+          self.children[i].add(len(self.inst_blocks) - 1)
+        self.children.append(set())
         self.parents.append(self.terminators)
         self.block_return_statuses.append(self.ret_status)
         self.ret_ready_status = RPS(self.hash + "_ready")
@@ -511,6 +439,8 @@ class LambdaPackProgram(object):
           ready_children = []
           for child in children:
             val = self.block_ready_statuses[child].incr()
+            print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
+            print(self.block_ready_statuses[child].key)
             if (val >= len(self.parents[child])):
               ready_children.append(child)
           sqs = boto3.resource('sqs')
@@ -521,13 +451,13 @@ class LambdaPackProgram(object):
           inst_block = self.inst_blocks[i]
           pipelined_time = inst_block.end_time - inst_block.start_time
           full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
-
+          print("Finished {0}, all children are {1}, ready children are {2}".format(i, children, ready_children))
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
             queue.send_message(MessageBody=str(child))
             pass
         except Exception as e:
-            print("EXCEPTION ", e)
+            print("POST OP EXCEPTION ", e)
             self.handle_exception(e)
             traceback.print_exc()
             raise
@@ -642,8 +572,8 @@ class LambdaPackProgram(object):
         return await self.block_return_statuses[i].put_async(status.value, loop)
 
     def _io_dependency_analyze(self, instruction_blocks):
-        all_forward_dependencies = [[] for i in range(len(instruction_blocks))]
-        all_backward_dependencies = [[] for i in range(len(instruction_blocks))]
+        all_forward_dependencies = [set() for i in range(len(instruction_blocks))]
+        all_backward_dependencies = [set() for i in range(len(instruction_blocks))]
         for i, inst_0 in enumerate(instruction_blocks):
             # find all places inst_0 reads
             deps = []
@@ -660,13 +590,13 @@ class LambdaPackProgram(object):
                                 if d in deps_managed:
                                     raise Exception("Each load should correspond to exactly one write")
                                 deps_managed.add(d)
-                                all_forward_dependencies[j].append(i)
-                                all_backward_dependencies[i].append(j)
+                                all_forward_dependencies[j].add(i)
+                                all_backward_dependencies[i].add(j)
         return all_forward_dependencies, all_backward_dependencies
 
 
     def __str__(self):
-        return "\n".join([str(x) for x in self.inst_blocks])
+      return "\n".join([str(i) + "\n" + str(x) + "children: \n" + str(self.children[i]) + "\n parents: \n" + str(self.parents[i]) for i,x in enumerate(self.inst_blocks)])
 
 
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):

@@ -131,9 +131,9 @@ class LambdaPackExecutor(object):
             raise
         e = time.time()
 
-def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=2):
-    loop = asyncio.get_event_loop()
-    print("running loop")
+def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     loop.create_task(check_program_state(program, loop))
     def wrapper(coro, loop):
         future = asyncio.run_coroutine_threadsafe(coro, loop)
@@ -154,10 +154,7 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
         sqs_client = session.create_client('sqs', use_ssl=False)
         while(lock.locked()):
             receipt_handle = msg["ReceiptHandle"]
-            res = await sqs_client.change_message_visibility(VisibilityTimeout=timeout*2, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-        receipt_handle = msg["ReceiptHandle"]
-        print("Deleting message ", msg["Body"])
-        await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            res = await sqs_client.change_message_visibility(VisibilityTimeout=30, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
     except Exception as e:
         print(e)
     return 0
@@ -175,7 +172,6 @@ async def check_program_state(program, loop):
     loop.stop()
 
 async def lambdapack_run_async(loop, program, computer, pipeline_width=1, msg_vis_timeout=10):
-    print("RUN LAMBDA RUN ASYNC")
     session = aiobotocore.get_session(loop=loop)
     sqs_client = session.create_client('sqs', use_ssl=False)
     lmpk_executor = LambdaPackExecutor(program, loop)
@@ -186,6 +182,7 @@ async def lambdapack_run_async(loop, program, computer, pipeline_width=1, msg_vi
             if ("Messages" not in messages):
                 continue
             msg = messages["Messages"][0]
+            receipt_handle = msg["ReceiptHandle"]
             pc = int(msg["Body"])
             lock = asyncio.Lock()
             await lock.acquire()
@@ -193,6 +190,7 @@ async def lambdapack_run_async(loop, program, computer, pipeline_width=1, msg_vi
             loop.create_task(coro)
             z = await lmpk_executor.run(pc, computer=computer)
             lock.release()
+            await sqs_client.delete_message(QueueUrl=program.queue_url, ReceiptHandle=receipt_handle)
     except Exception as e:
         print(e)
         traceback.print_exc()
