@@ -126,7 +126,8 @@ class LambdaPackExecutor(object):
             post_op_time = end - start
         except Exception as e:
             traceback.print_exc()
-            self.program.post_op(pc, lp.EC.EXCEPTION)
+            tb = traceback.format_exc()
+            self.program.post_op(pc, lp.EC.EXCEPTION, tb=tb)
             self.loop.stop()
             raise
         e = time.time()

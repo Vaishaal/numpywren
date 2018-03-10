@@ -1,4 +1,3 @@
-import numpywren
 import numpywren.matrix
 from .matrix import BigMatrix, BigSymmetricMatrix, Scalar
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, constant_zeros
@@ -491,12 +490,15 @@ class LambdaPackProgram(object):
             return i, self.inst_blocks[i], EC.EXCEPTION
         except Exception as e:
             print("EXCEPTION ", e)
-            self.handle_exception(e)
+            tb = traceback.format_exc()
+            self.handle_exception(e, tb=tb, block=i)
             traceback.print_exc()
             raise
 
-    def post_op(self, i, ret_code):
+    def post_op(self, i, ret_code, tb=None):
         try:
+          if (ret_code == EC.EXCEPTION and tb != None):
+            self.handle_exception(e, tb=tb, block=i)
           children = self.children[i]
           parents = self.parents[i]
           self.set_inst_block_status(i, EC(ret_code))
@@ -524,7 +526,8 @@ class LambdaPackProgram(object):
             pass
         except Exception as e:
             print("POST OP EXCEPTION ", e)
-            self.handle_exception(e)
+            tb = traceback.format_exc()
+            self.handle_exception(e, tb=tb, block=i)
             traceback.print_exc()
             raise
 
@@ -557,7 +560,8 @@ class LambdaPackProgram(object):
 
         except Exception as e:
             print("EXCEPTION ", e)
-            self.handle_exception(e)
+            tb = traceback.format_exc()
+            self.handle_exception(e, tb=tb, block=i)
             traceback.print_exc()
             raise
 
@@ -571,7 +575,9 @@ class LambdaPackProgram(object):
 
         return 0
 
-    def handle_exception(self, error):
+    def handle_exception(self, error, tb, block):
+        client = boto3.client('s3')
+        client.put_object(Key=program.hash + "/EXCEPTION.{0}".format(block), Bucket=program.bucket, Body=tb)
         e = EC.EXCEPTION.value
         self.ret_status.put(e)
 
