@@ -32,11 +32,19 @@ def program_state_inspect(program):
 
 def num_running_program_state(program):
     return sum([1 for i in range(len(program.inst_blocks)) if program.inst_block_status(i) == lp.EC.RUNNING] + [0])
-
+X = np.random.randn(16384, 1)
+print("Generating X")
+shard_size = 1024
+shard_sizes = (shard_size, 1)
+X_sharded = BigMatrix("cholesky_test_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
+shard_matrix(X_sharded, X)
+pwex = pywren.default_executor()
+print("Generating matrix")
+XXT_sharded = binops.gemm(pwex, X_sharded, X_sharded.T, overwrite=False)
 XXT_sharded = BigSymmetricMatrix("gemm(BigMatrix(cholesky_test_X), BigMatrix(cholesky_test_X).T)")
 XXT_sharded.lambdav = 1
 instructions,L_sharded,trailing = lp._chol(XXT_sharded)
-instructions  = instructions[:20000]
+instructions  = instructions[:4000]
 
 print(L_sharded.key)
 print(L_sharded.bucket)
@@ -46,6 +54,7 @@ pwex = pywren.default_executor()
 executor = pywren.lambda_executor
 config = pwex.config
 program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+print("LONGEST PATH ", program.longest_path)
 t = time.time()
 program.start()
 #num_cores = 64
@@ -59,13 +68,13 @@ x = 0
 while(program.program_status() == lp.EC.RUNNING):
     x += 1
     time.sleep(5)
-    queue_url = program.queue_url
-    client = boto3.client('sqs')
-    print("Queue Attributes")
-    attrs = client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'])['Attributes']
-    print(attrs)
-    waiting = int(attrs["ApproximateNumberOfMessages"])
-    running = int(attrs["ApproximateNumberOfMessagesNotVisible"])
+    for i, queue_url in enumerate(program.queue_urls):
+        client = boto3.client('sqs')
+        print("Priority {0}".format(i))
+        attrs = client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'])['Attributes']
+        print(attrs)
+        waiting = int(attrs["ApproximateNumberOfMessages"])
+        running = int(attrs["ApproximateNumberOfMessagesNotVisible"])
 e = time.time()
 print(program.program_status())
 print("PROGRAM STATUS ", program.program_status())

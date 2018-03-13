@@ -374,9 +374,10 @@ class RemoteReturn(RemoteInstruction):
 
 class InstructionBlock(object):
     block_count = 0
-    def __init__(self, instrs, label=None):
+    def __init__(self, instrs, label=None, priority=0):
         self.instrs = instrs
         self.label = label
+        self.priority = priority
         if (self.label == None):
             self.label = "%{0}".format(InstructionBlock.block_count)
         InstructionBlock.block_count += 1
@@ -406,7 +407,7 @@ class LambdaPackProgram(object):
        Maintains global state information
     '''
 
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG):
+    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2):
         t = time.time()
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
@@ -423,8 +424,11 @@ class LambdaPackProgram(object):
         self.ret_status.clear_all()
         self.ret_status.put(EC.NOT_STARTED.value)
         client = boto3.client('sqs', region_name='us-west-2')
-        self.queue_url = client.create_queue(QueueName=self.hash)["QueueUrl"]
-        client.purge_queue(QueueUrl=self.queue_url)
+        self.queue_urls = []
+        for i in range(num_priorities):
+          queue_url = client.create_queue(QueueName=self.hash + str(i))["QueueUrl"]
+          self.queue_urls.append(queue_url)
+          client.purge_queue(QueueUrl=queue_url)
         e = time.time()
         print("Pre depedency analyze {0}".format(e - t))
         t = time.time()
@@ -467,6 +471,10 @@ class LambdaPackProgram(object):
         self.block_return_statuses.append(self.ret_status)
         self.ret_ready_status = RPS(self.hash + "_ready", default=0)
         self.block_ready_statuses.append(self.ret_ready_status)
+        longest_path = self._find_critical_path()
+        self.longest_path = longest_path
+        for l in longest_path:
+          self.inst_blocks[l].priority = min(self.inst_blocks[l].priority+1, num_priorities - 1)
         e = time.time()
         for s in self.starters:
           print(self.inst_blocks[s])
@@ -499,6 +507,7 @@ class LambdaPackProgram(object):
         try:
           if (ret_code == EC.EXCEPTION and tb != None):
             self.handle_exception(e, tb=tb, block=i)
+          inst_block = self.inst_blocks[i]
           children = self.children[i]
           parents = self.parents[i]
           self.set_inst_block_status(i, EC(ret_code))
@@ -512,11 +521,10 @@ class LambdaPackProgram(object):
             if (val >= len(self.parents[child])):
               ready_children.append(child)
           sqs = boto3.resource('sqs')
-          queue = sqs.Queue(self.queue_url)
+          queue = sqs.Queue(self.queue_urls[inst_block.priority])
           self.inst_blocks[i].end_time = time.time()
           self.set_profiling_info(i)
           self.inst_blocks[i].end_time = time.time()
-          inst_block = self.inst_blocks[i]
           pipelined_time = inst_block.end_time - inst_block.start_time
           full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
           print("Finished {0}, all children are {1}, ready children are {2}".format(i, children, ready_children))
@@ -551,12 +559,13 @@ class LambdaPackProgram(object):
           inst_block = self.inst_blocks[i]
           pipelined_time = inst_block.end_time - inst_block.start_time
           full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
-
           print("BLOCK {0} DONE BLOCK TOOK {1} seconds wall clock for {2} seconds of compute".format(i, pipelined_time, np.sum(full_times)))
           await self.set_profiling_info(i, loop)
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
-            await sqs_client.send_message(QueueUrl=self.queue_url, MessageBody=str(child))
+            priority = inst_block.priority
+            queue_url = self.queue_url[priority]
+            await sqs_client.send_message(QueueUrl=queue_url, MessageBody=str(child))
 
         except Exception as e:
             print("EXCEPTION ", e)
@@ -568,9 +577,11 @@ class LambdaPackProgram(object):
     def start(self):
         self.ret_status.put(EC.RUNNING.value)
         sqs = boto3.resource('sqs')
-        queue = sqs.Queue(self.queue_url)
         for starter in self.starters:
           print("Enqueuing ", starter)
+          inst_block = self.inst_blocks[starter]
+          priority = inst_block.priority
+          queue = sqs.Queue(self.queue_urls[priority])
           queue.send_message(MessageBody=str(starter))
 
         return 0
@@ -597,8 +608,9 @@ class LambdaPackProgram(object):
             status = self.program_status()
 
     def free(self):
-        client = boto3.client('sqs')
-        client.delete_queue(QueueUrl=self.queue_url)
+        for queue_url in self.queue_urls:
+          client = boto3.client('sqs')
+          client.delete_queue(QueueUrl=queue_url)
 
     def get_all_profiling_info(self):
         return [self.get_profiling_info(i) for i in range(len(self.inst_blocks))]
@@ -675,6 +687,48 @@ class LambdaPackProgram(object):
               if inst.i_code == OC.S3_WRITE:
                 children[i].update(read_edges[(inst.matrix,inst.bidxs)])
         return children, parents
+
+    def _find_critical_path(self):
+      ''' Find the longest path in dag '''
+      longest_paths = {i:-1 for i in range(len(self.inst_blocks))}
+      distances = {}
+      # assume dag is topologically sorted
+      for s in self.starters:
+        distances[s] = 0
+
+      for i,inst_block in enumerate(self.inst_blocks):
+        parents = list(self.parents[i])
+        parent_distances = [distances[p] for p in parents]
+        if (len(parents) == 0): continue
+        furthest_parent = parents[max(range(len(parents)), key=lambda x: parent_distances[x])]
+        distances[i] = max(parent_distances) + 1
+        longest_paths[i] = furthest_parent
+      print(distances)
+
+      furthest_node = max(distances.items(), key=lambda x: x[1])[0]
+      print("Furthest Node ", furthest_node)
+      print(self.inst_blocks[furthest_node])
+      longest_path = [furthest_node]
+      current_node = longest_paths[furthest_node]
+      while(current_node != -1):
+        longest_path.insert(0, current_node)
+        current_node = longest_paths[current_node]
+      return longest_path
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     def __str__(self):
