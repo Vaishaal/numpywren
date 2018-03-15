@@ -475,6 +475,10 @@ class LambdaPackProgram(object):
         self.longest_path = longest_path
         for l in longest_path:
           self.inst_blocks[l].priority = min(self.inst_blocks[l].priority+1, num_priorities - 1)
+          for p in self.parents[l]:
+            parent_block = self.inst_blocks[p]
+            parent_block.priority = min(parent_block.priority+1, num_priorities - 1)
+
         e = time.time()
         for s in self.starters:
           print(self.inst_blocks[s])
