@@ -1,7 +1,7 @@
 import numpywren
 import numpywren.matrix
 from .matrix import BigMatrix, BigSymmetricMatrix, Scalar
-from .matrix_utils import load_mmap, chunk, generate_key_name_uop, constant_zeros
+from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
 import numpy as np
 import pywren
 from pywren.serialize import serialize
@@ -54,10 +54,13 @@ class RemoteInstructionOpCodes(Enum):
     S3_WRITE = 1
     SYRK = 2
     TRSM = 3
-    CHOL = 4
-    INVRS = 5
-    RET = 6
-    EXIT = 7
+    GEMM = 4 
+    ADD = 4 
+    SUB = 5 
+    CHOL = 6 
+    INVRS = 7 
+    RET = 8 
+    EXIT = 9 
 
 
 class RemoteInstructionExitCodes(Enum):
@@ -73,7 +76,7 @@ class RemoteInstructionTypes(Enum):
 
 class RemoteProgramState(object):
   ''' Host integers on dynamodb '''
-  def __init__(self, key, ip="54.213.108.80"):
+  def __init__(self, key, ip="127.0.0.1"):
     self.key = key
     self.ip = ip
 
@@ -211,13 +214,68 @@ class RemoteSYRK(RemoteInstruction):
     def __str__(self):
         return "{0} = SYRK {1} {2} {3}".format(self.id, self.argv[0].id,  self.argv[1].id,  self.argv[2].id)
 
-class RemoteTRSM(RemoteInstruction):
+class RemoteSub(RemoteInstruction):
     def __init__(self, i_id, argv_instr):
+        super().__init__(i_id)
+        self.i_code = OC.GEMM
+        assert len(argv_instr) == 2 
+        self.argv = argv_instr
+        self.result = None
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
+        def compute():
+          self.start_time = time.time()
+          if (self.result == None):
+              block_1 = self.argv[0].result
+              block_2 = self.argv[1].result
+              self.result = block_1 - block_2 
+              self.flops = block_1.shape[0]*block_1.shape[1]
+              self.ret_code = 0
+          self.end_time = time.time()
+          return self.result
+        return await loop.run_in_executor(self.executor, compute)
+
+    def __str__(self):
+        return "{0} = SUB {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
+
+
+class RemoteGemm(RemoteInstruction):
+    def __init__(self, i_id, argv_instr):
+        super().__init__(i_id)
+        self.i_code = OC.GEMM
+        assert len(argv_instr) == 2 
+        self.argv = argv_instr
+        self.result = None
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
+        def compute():
+          self.start_time = time.time()
+          if (self.result == None):
+              block_1 = self.argv[0].result
+              block_2 = self.argv[1].result
+              self.result = block_1.dot(block_2) 
+              self.flops = 2*block_1.shape[0]*block_1.shape[1]*block_2.shape[1]
+              self.ret_code = 0
+          self.end_time = time.time()
+          return self.result
+        return await loop.run_in_executor(self.executor, compute)
+
+    def __str__(self):
+        return "{0} = GEMM {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
+
+class RemoteTRSM(RemoteInstruction):
+    def __init__(self, i_id, argv_instr, lower=False, right=False):
         super().__init__(i_id)
         self.i_code = OC.TRSM
         assert len(argv_instr) == 2
         self.argv = argv_instr
         self.result = None
+        self.lower = lower
+        self.right = right
     async def __call__(self, prev=None):
       if (prev != None):
         await prev
@@ -225,10 +283,10 @@ class RemoteTRSM(RemoteInstruction):
       def compute():
           self.start_time = time.time()
           if (self.result == None):
-              L_bb = self.argv[1].result
-              col_block = self.argv[0].result
-              self.result = scipy.linalg.blas.dtrsm(1.0, L_bb.T, col_block, side=1,lower=0)
-              self.flops =  col_block.shape[1] * L_bb.shape[0] * L_bb.shape[1]
+              A_block = self.argv[0].result
+              B_block = self.argv[1].result
+              self.result = scipy.linalg.blas.dtrsm(1.0, A_block, B_block, side=int(self.right),lower=int(self.lower))
+              self.flops =  A_block.shape[0] * B_block.shape[0] * B_block.shape[1]
               self.ret_code = 0
           self.end_time = time.time()
           return self.ret_code
@@ -238,7 +296,7 @@ class RemoteTRSM(RemoteInstruction):
         self.result = None
 
     def __str__(self):
-        return "{0} = TRSM {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
+        return "{0} = TRSM {1} {2} {3} {4}".format(self.id, self.argv[0].id,  self.argv[1].id, self.lower, self.right)
 
 class RemoteCholesky(RemoteInstruction):
     def __init__(self, i_id, argv_instr):
@@ -602,9 +660,9 @@ class LambdaPackProgram(object):
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     L_load = RemoteLoad(pc, L_in, b0, b1)
     pc += 1
-    L_bb_load = RemoteLoad(pc, L_out, b1, b1)
+    L_bb_load = RemoteLoad(pc, L_out.T, b1, b1)
     pc += 1
-    trsm = RemoteTRSM(pc, [L_load, L_bb_load])
+    trsm = RemoteTRSM(pc, [L_bb_load, L_load], lower=False, right=True)
     pc += 1
     write = RemoteWrite(pc, L_out, trsm, b0, b1)
     return InstructionBlock([L_load, L_bb_load, trsm, write], label=label), 4
@@ -621,6 +679,17 @@ def make_low_rank_update(pc, L_out, L_prev, L_final,  b0, b1, b2, label=None):
     write = RemoteWrite(pc, L_out, syrk, b1, b2)
     return InstructionBlock([old_block_load, block_1_load, block_2_load, syrk, write], label=label), 5
 
+def make_remote_trisolve(pc, X, A, B, b0, b1, lower=False, label=None): 
+    block_A = RemoteLoad(pc, A, b0, b0)
+    pc += 1
+    block_B = RemoteLoad(pc, B, b0, b0)
+    pc += 1
+    trsm = RemoteTRSM(pc, [block_A, block_B], lower=lower, right=False)
+    pc += 1
+    write_trisolve = RemoteWrite(pc, X, trsm, b0, b1)
+    pc += 1
+    return InstructionBlock([block_A, block_B, trsm, write_trisolve], label=label), 4 
+
 def make_local_cholesky(pc, L_out, L_in, b0, label=None):
     block_load = RemoteLoad(pc, L_in, b0, b0)
     pc += 1
@@ -636,9 +705,9 @@ def make_remote_gemm(pc, XY, X, Y, b0, b1, b2, label=None):
     # download col_b1[b2]
     # compute row_b0[b2].T.dot(col_b1[b2])
 
-    block_0_load = RemoteLoad(pc, X, b0, b2)
+    block_0_load = RemoteLoad(pc, X, b0, b1)
     pc += 1
-    block_1_load = RemoteLoad(pc, X, b1, b2)
+    block_1_load = RemoteLoad(pc, Y, b1, b2)
     pc += 1
     matmul = RemoteGemm(pc, [block_0_load, block_1_load])
     pc += 1
@@ -674,6 +743,65 @@ def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
         all_futures.append((i,futures))
     return instruction_blocks
 
+
+
+def _trisolve(A, B, lower=False, out_bucket=None):
+    if out_bucket is None:
+        out_bucket = A.bucket
+    out_key = generate_key_name_binop(A, B, "trisolve")
+    # generate output matrix
+    X = BigMatrix(out_key,
+                  shape=(B.shape[0], B.shape[1]),
+                  bucket=out_bucket,
+                  shard_sizes=[B.shard_sizes[0], B.shard_sizes[1]],
+                  parent_fn=constant_zeros,
+                  write_header=True)
+
+    scratch = []
+    for i,j0 in enumerate(B._block_idxs(1)):
+        col_size = min(B.shard_sizes[1], B.shape[1] - B.shard_sizes[1]*j0)
+        scratch.append(BigMatrix(out_key + "_{0}_scratch".format(i),
+                       shape=[A.shape[0], col_size * len(B._block_idxs(0))],
+                       bucket=out_bucket,
+                       shard_sizes=[A.shard_sizes[0], col_size],
+                       parent_fn=constant_zeros,
+                       write_header=True))
+    pc = 0
+    all_instructions = []
+    for i in B._block_idxs(1):
+        block_idxs = A._block_idxs(0) 
+        if not lower:
+            block_idxs = reversed(block_idxs) 
+        for j in block_idxs:
+            if lower:
+                start = 0
+                end = j
+            else:
+                start = j + 1
+                end = len(A._block_idxs(1))
+            for k in A._block_idxs(1)[start:end]:
+                instructions, count = make_remote_gemm(pc, scratch[i], A, X, j, k, i,
+                                                       label="gemm_{0}_{1}_{2}".format(i, j, k))
+                all_instructions.append(instructions)
+                pc += count
+
+            acc_load = RemoteLoad(pc, B, j, i)
+            pc += 1
+            sub_instructions = [acc_load]
+            for k in A._block_idxs(1)[start:end]:
+                block_load = RemoteLoad(pc, scratch[i], j, k)
+                pc += 1
+                acc_load = RemoteSub(pc, [acc_load, block_load])
+                pc += 1
+                sub_instructions += [block_load, acc_load]
+            write_out = RemoteWrite(pc, scratch[i], acc_load, j, j)
+            pc += 1
+            sub_instructions.append(write_out)
+            all_instructions.append(InstructionBlock(sub_instructions, label="sub_{0}_{1}".format(i, j)))
+            instructions, count = make_remote_trisolve(pc, X, A, scratch[i], j, i, lower=lower, label="trisolve") 
+            all_instructions.append(instructions)
+            pc += count
+    return all_instructions, X, scratch 
 
 
 def _chol(X, out_bucket=None):
