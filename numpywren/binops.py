@@ -59,11 +59,12 @@ def gemm_with_prefetch(X, Y, bidx0, bidx1, block_chunk_size=16):
     # prefetch first 16 columns 
     parity = 0
     executor = fs.ProcessPoolExecutor(32)
+    block_chunk_size = min(block_chunk_size, len(X._block_idxs(1)))
+    chunked_blocks = list(matrix_utils.chunk(X._block_idxs(1), block_chunk_size))
+    assert(chunked_blocks[0] == list(range(block_chunk_size)))
     futures0 = matrix_utils.get_matrix_blocks_full_async(X, "/dev/shm/block0_{0}".format(parity), [bidx0], list(range(block_chunk_size)), big_axis=1, executor=executor)
     futures1 = matrix_utils.get_matrix_blocks_full_async(Y, "/dev/shm/block1_{0}".format(parity), list(range(block_chunk_size)), [bidx1], big_axis=0, executor=executor)
     assert X._block_idxs(1) == Y._block_idxs(0)
-    chunked_blocks = list(matrix_utils.chunk(X._block_idxs(1), block_chunk_size))
-    assert(chunked_blocks[0] == list(range(block_chunk_size)))
     chunked_blocks = chunked_blocks[1:]
     start_x, end_x = X._blocks(0)[bidx0]
     start_y, end_y = Y._blocks(1)[bidx1]
