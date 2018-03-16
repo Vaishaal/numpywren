@@ -39,7 +39,7 @@ class LambdapackExecutorTest(unittest.TestCase):
         print("RUNNING MULTI")
         np.random.seed(1)
         size = 128
-        shard_size = 32
+        shard_size = 64
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -54,7 +54,6 @@ class LambdapackExecutorTest(unittest.TestCase):
         executor = pywren.lambda_executor
         config = pwex.config
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
-        print(program)
         program.start()
         #job_runner.main(program, program.queue_url)
         job_runner.lambdapack_run(program)
@@ -70,6 +69,9 @@ class LambdapackExecutorTest(unittest.TestCase):
             for instr in profiled_block.instrs:
                 total_time += instr.end_time - instr.start_time
             print("Block {0} total_time {1} pipelined time {2}".format(pc, total_time, actual_time))
+
+
+
 
     def test_cholesky_lambda_single(self): 
         print("RUNNING single lambda")
@@ -114,11 +116,16 @@ class LambdapackExecutorTest(unittest.TestCase):
             for instr in profiled_block.instrs:
                 total_time += instr.end_time - instr.start_time
             print("Block {0} total_time {1} end to end time {2}".format(pc, total_time, actual_time))
+        L_npw = L_sharded.numpy()
+        L = np.linalg.cholesky(A)
+        print(L_npw)
+        print(L)
+        assert(np.allclose(L_npw, L))
 
     def test_cholesky_multi_process(self):
         print("RUNNING many process")
         np.random.seed(1)
-        size = 256
+        size = 128
         shard_size = 32
         np.random.seed(1)
         print("Generating X")
@@ -156,6 +163,11 @@ class LambdapackExecutorTest(unittest.TestCase):
             for instr in profiled_block.instrs:
                 total_time += instr.end_time - instr.start_time
             print("Block {0} total_time {1} end to end time {2}".format(pc, total_time, actual_time))
+        L_npw = L_sharded.numpy()
+        L = np.linalg.cholesky(A)
+        print(L_npw)
+        print(L)
+        assert(np.allclose(L_npw, L))
 
     def test_cholesky_multi_lambda(self):
         print("RUNNING many lambda")
@@ -192,6 +204,11 @@ class LambdapackExecutorTest(unittest.TestCase):
             for instr in profiled_block.instrs:
                 total_time += instr.end_time - instr.start_time
             print("Instruction Block {0} operation_time {1} end_to_end time {2}".format(pc, total_time, actual_time))
+        L_npw = L_sharded.numpy()
+        L = np.linalg.cholesky(A)
+        print(L_npw)
+        print(L)
+        assert(np.allclose(L_npw, L))
 
 
 

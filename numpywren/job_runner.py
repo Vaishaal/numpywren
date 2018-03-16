@@ -101,6 +101,7 @@ class LambdaPackExecutor(object):
         self.block_ends= set()
 
     async def run(self, pc, computer=None):
+        print("STARTING INSTRUCTION")
         t = time.time()
         self.program.pre_op(pc)
         instrs = self.program.inst_blocks[pc].instrs
@@ -126,7 +127,8 @@ class LambdaPackExecutor(object):
             post_op_time = end - start
         except Exception as e:
             traceback.print_exc()
-            self.program.post_op(pc, lp.EC.EXCEPTION)
+            tb = traceback.format_exc()
+            self.program.post_op(pc, lp.EC.EXCEPTION, tb=tb)
             self.loop.stop()
             raise
         e = time.time()
@@ -177,20 +179,32 @@ async def lambdapack_run_async(loop, program, computer, pipeline_width=1, msg_vi
     lmpk_executor = LambdaPackExecutor(program, loop)
     try:
         while(True):
-            asyncio.sleep(1)
-            messages = await sqs_client.receive_message(QueueUrl=program.queue_url, MaxNumberOfMessages=1)
+            await asyncio.sleep(0)
+            # go from high priority -> low priority
+            for queue_url in program.queue_urls[::-1]:
+                messages = await sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
+                if ("Messages" not in messages):
+                    continue
+                else:
+                    # note for loops in python leak scope so when this breaks
+                    # messages = messages
+                    # queue_url= messages
+                    break
             if ("Messages" not in messages):
                 continue
             msg = messages["Messages"][0]
             receipt_handle = msg["ReceiptHandle"]
             pc = int(msg["Body"])
+            print("creating lock")
             lock = asyncio.Lock()
             await lock.acquire()
-            coro = reset_msg_visibility(msg, program.queue_url, loop, msg_vis_timeout, lock)
+            print("got locklock")
+            coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, lock)
             loop.create_task(coro)
             z = await lmpk_executor.run(pc, computer=computer)
             lock.release()
-            await sqs_client.delete_message(QueueUrl=program.queue_url, ReceiptHandle=receipt_handle)
+            print("releasing lock")
+            await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
     except Exception as e:
         print(e)
         traceback.print_exc()

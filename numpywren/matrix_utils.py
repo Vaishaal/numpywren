@@ -81,7 +81,7 @@ def load_mmap(mmap_loc, mmap_shape, mmap_dtype):
 
 def list_all_keys(bucket, prefix):
     client = boto3.client('s3')
-    objects = client.list_objects(Bucket=bucket, Prefix=prefix, Delimiter=prefix)
+    objects = client.list_objects(Bucket=bucket, Prefix=prefix + "/", Delimiter=prefix)
     if (objects.get('Contents') == None):
         return []
     keys = list(map(lambda x: x['Key'], objects.get('Contents', [] )))

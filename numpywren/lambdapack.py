@@ -1,4 +1,3 @@
-import numpywren
 import numpywren.matrix
 from .matrix import BigMatrix, BigSymmetricMatrix, Scalar
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
@@ -27,11 +26,15 @@ from collections import defaultdict
 import aiobotocore
 import asyncio
 import redis
+import os
 
 try:
   DEFAULT_CONFIG = wc.default()
 except:
   DEFAULT_CONFIG = {}
+
+
+REDIS_IP = os.environ.get("REDIS_IP", "")
 
 
 class LocalExecutor(object):
@@ -55,12 +58,14 @@ class RemoteInstructionOpCodes(Enum):
     SYRK = 2
     TRSM = 3
     GEMM = 4 
-    ADD = 4 
-    SUB = 5 
-    CHOL = 6 
-    INVRS = 7 
-    RET = 8 
-    EXIT = 9 
+    ADD = 5 
+    SUB = 6 
+    CHOL = 7 
+    INVRS = 8 
+    RET = 9
+    BARRIER = 10
+    EXIT = 11
+
 
 
 class RemoteInstructionExitCodes(Enum):
@@ -76,9 +81,11 @@ class RemoteInstructionTypes(Enum):
 
 class RemoteProgramState(object):
   ''' Host integers on dynamodb '''
-  def __init__(self, key, ip="127.0.0.1"):
+
+  def __init__(self, key, ip=REDIS_IP, default=0):
     self.key = key
     self.ip = ip
+    self.default = default
 
   def put(self, value):
     assert isinstance(value, int)
@@ -91,7 +98,10 @@ class RemoteProgramState(object):
 
   def get(self):
     redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
-    return int(redis_client.get(self.key))
+    res = redis_client.get(self.key)
+    if (res == None):
+      return self.default
+    return int(res)
 
   def incr(self, inc=1):
     t = time.time()
@@ -124,6 +134,47 @@ class RemoteInstruction(object):
 
     def __deep_copy__(self, memo):
         return self
+
+class Barrier(RemoteInstruction):
+  def __init__(self, i_id):
+        super().__init__(i_id)
+        self.i_code = OC.BARRIER
+  def __str__(self):
+        return "BARRIER"
+  async def __call__(self):
+        return 0
+
+class RemoteWrite(RemoteInstruction):
+    def __init__(self, i_id, matrix, data_instr, *bidxs):
+        super().__init__(i_id)
+        self.i_code = OC.S3_WRITE
+        self.matrix = matrix
+        self.bidxs = bidxs
+        self.data_instr = data_instr
+        self.result = None
+
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
+        self.start_time = time.time()
+        if (self.result == None):
+            self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
+            self.size = sys.getsizeof(self.data_instr.result)
+            self.ret_code = 0
+        self.end_time = time.time()
+        return self.result
+
+    def clear(self):
+        self.result = None
+
+    def __str__(self):
+        bidxs_str = ""
+        for x in self.bidxs:
+            bidxs_str += str(x)
+            bidxs_str += " "
+        return "{0} = S3_WRITE {1} {2} {3} {4}".format(self.id, self.matrix, len(self.bidxs), bidxs_str.strip(), self.data_instr.id)
+
 
 class RemoteLoad(RemoteInstruction):
     def __init__(self, i_id, matrix, *bidxs):
@@ -383,9 +434,10 @@ class RemoteReturn(RemoteInstruction):
 
 class InstructionBlock(object):
     block_count = 0
-    def __init__(self, instrs, label=None):
+    def __init__(self, instrs, label=None, priority=0):
         self.instrs = instrs
         self.label = label
+        self.priority = priority
         if (self.label == None):
             self.label = "%{0}".format(InstructionBlock.block_count)
         InstructionBlock.block_count += 1
@@ -415,7 +467,8 @@ class LambdaPackProgram(object):
        Maintains global state information
     '''
 
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG):
+    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2):
+        t = time.time()
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
         self.executor = executor
@@ -427,43 +480,69 @@ class LambdaPackProgram(object):
         hashed.update(program_string.encode())
         hashed.update(str(time.time()).encode())
         self.hash = hashed.hexdigest()
-        self.ret_status = RPS(self.hash)
+        self.ret_status = RPS(self.hash, default=EC.NOT_STARTED.value)
         self.ret_status.clear_all()
+        self.ret_status.put(EC.NOT_STARTED.value)
         client = boto3.client('sqs', region_name='us-west-2')
-        self.queue_url = client.create_queue(QueueName=self.hash)["QueueUrl"]
-        client.purge_queue(QueueUrl=self.queue_url)
+        self.queue_urls = []
+        for i in range(num_priorities):
+          queue_url = client.create_queue(QueueName=self.hash + str(i))["QueueUrl"]
+          self.queue_urls.append(queue_url)
+          client.purge_queue(QueueUrl=queue_url)
+        e = time.time()
+        print("Pre depedency analyze {0}".format(e - t))
+        t = time.time()
         self.children, self.parents = self._io_dependency_analyze(self.inst_blocks)
+        e = time.time()
+        print("Dependency analyze ", e - t)
+        t = time.time()
         self.starters = []
         self.terminators = []
         max_i_id = max([inst.id for inst_block in self.inst_blocks for inst in inst_block.instrs])
-        self.remote_return = RemoteReturn(max_i_id + 1, self.ret_status)
-        self.return_block = InstructionBlock([self.remote_return], label="EXIT")
-        self.inst_blocks.append(self.return_block)
-
-        self.pc = max_i_id + 1
         self.block_return_statuses = []
         self.block_ready_statuses = []
-        for i, (children, parents, inst_block) in enumerate(zip(self.children, self.parents, self.inst_blocks)):
+        self.pc = max_i_id + 1
+        for i in range(len(self.inst_blocks)):
+            children = self.children[i]
+            parents = self.parents[i]
             if len(children) == 0:
                 self.terminators.append(i)
             if len(parents) == 0:
                 self.starters.append(i)
             block_hash = hashlib.sha1((self.hash + str(i)).encode()).hexdigest()
-            block_ret_status  = RPS(block_hash)
+            block_ret_status  = RPS(block_hash, default=EC.NOT_STARTED.value)
             block_return = RemoteReturn(self.pc + 1, block_ret_status)
             block_ready_hash = block_hash + "_ready"
-            block_ready_status = RPS(block_ready_hash)
+            block_ready_status = RPS(block_ready_hash, default=0)
             self.inst_blocks[i].instrs.append(block_return)
             self.block_return_statuses.append(block_ret_status)
             self.block_ready_statuses.append(block_ready_status)
 
+        self.remote_return = RemoteReturn(max_i_id + 1, self.ret_status)
+        self.return_block = InstructionBlock([self.remote_return], label="EXIT")
+        self.inst_blocks.append(self.return_block)
+
         for i in self.terminators:
           self.children[i].add(len(self.inst_blocks) - 1)
-        self.children.append(set())
-        self.parents.append(self.terminators)
+
+        print("TERMINATORS", self.terminators)
+        self.children[len(self.inst_blocks) - 1] = set()
+        self.parents[len(self.inst_blocks) - 1] = self.terminators
         self.block_return_statuses.append(self.ret_status)
-        self.ret_ready_status = RPS(self.hash + "_ready")
+        self.ret_ready_status = RPS(self.hash + "_ready", default=0)
         self.block_ready_statuses.append(self.ret_ready_status)
+        longest_path = self._find_critical_path()
+        self.longest_path = longest_path
+        for l in longest_path:
+          self.inst_blocks[l].priority = min(self.inst_blocks[l].priority+1, num_priorities - 1)
+          for p in self.parents[l]:
+            parent_block = self.inst_blocks[p]
+            parent_block.priority = min(parent_block.priority+1, num_priorities - 1)
+
+        e = time.time()
+        for s in self.starters:
+          print(self.inst_blocks[s])
+        print("Post io dependency analyze took {0}".format(e - t))
 
     def pre_op(self, i):
         # 1. check if program has terminated
@@ -483,12 +562,16 @@ class LambdaPackProgram(object):
             return i, self.inst_blocks[i], EC.EXCEPTION
         except Exception as e:
             print("EXCEPTION ", e)
-            self.handle_exception(e)
+            tb = traceback.format_exc()
+            self.handle_exception(e, tb=tb, block=i)
             traceback.print_exc()
             raise
 
-    def post_op(self, i, ret_code):
+    def post_op(self, i, ret_code, tb=None):
         try:
+          if (ret_code == EC.EXCEPTION and tb != None):
+            self.handle_exception(e, tb=tb, block=i)
+          inst_block = self.inst_blocks[i]
           children = self.children[i]
           parents = self.parents[i]
           self.set_inst_block_status(i, EC(ret_code))
@@ -502,11 +585,10 @@ class LambdaPackProgram(object):
             if (val >= len(self.parents[child])):
               ready_children.append(child)
           sqs = boto3.resource('sqs')
-          queue = sqs.Queue(self.queue_url)
+          queue = sqs.Queue(self.queue_urls[inst_block.priority])
           self.inst_blocks[i].end_time = time.time()
           self.set_profiling_info(i)
           self.inst_blocks[i].end_time = time.time()
-          inst_block = self.inst_blocks[i]
           pipelined_time = inst_block.end_time - inst_block.start_time
           full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
           print("Finished {0}, all children are {1}, ready children are {2}".format(i, children, ready_children))
@@ -516,7 +598,8 @@ class LambdaPackProgram(object):
             pass
         except Exception as e:
             print("POST OP EXCEPTION ", e)
-            self.handle_exception(e)
+            tb = traceback.format_exc()
+            self.handle_exception(e, tb=tb, block=i)
             traceback.print_exc()
             raise
 
@@ -540,30 +623,36 @@ class LambdaPackProgram(object):
           inst_block = self.inst_blocks[i]
           pipelined_time = inst_block.end_time - inst_block.start_time
           full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
-
           print("BLOCK {0} DONE BLOCK TOOK {1} seconds wall clock for {2} seconds of compute".format(i, pipelined_time, np.sum(full_times)))
           await self.set_profiling_info(i, loop)
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
-            await sqs_client.send_message(QueueUrl=self.queue_url, MessageBody=str(child))
+            priority = inst_block.priority
+            queue_url = self.queue_url[priority]
+            await sqs_client.send_message(QueueUrl=queue_url, MessageBody=str(child))
 
         except Exception as e:
             print("EXCEPTION ", e)
-            self.handle_exception(e)
+            tb = traceback.format_exc()
+            self.handle_exception(e, tb=tb, block=i)
             traceback.print_exc()
             raise
 
     def start(self):
         self.ret_status.put(EC.RUNNING.value)
         sqs = boto3.resource('sqs')
-        queue = sqs.Queue(self.queue_url)
         for starter in self.starters:
           print("Enqueuing ", starter)
+          inst_block = self.inst_blocks[starter]
+          priority = inst_block.priority
+          queue = sqs.Queue(self.queue_urls[priority])
           queue.send_message(MessageBody=str(starter))
 
         return 0
 
-    def handle_exception(self, error):
+    def handle_exception(self, error, tb, block):
+        client = boto3.client('s3')
+        client.put_object(Key=program.hash + "/EXCEPTION.{0}".format(block), Bucket=program.bucket, Body=tb)
         e = EC.EXCEPTION.value
         self.ret_status.put(e)
 
@@ -583,17 +672,27 @@ class LambdaPackProgram(object):
             status = self.program_status()
 
     def free(self):
-        client = boto3.client('sqs')
-        client.delete_queue(QueueUrl=self.queue_url)
+        for queue_url in self.queue_urls:
+          client = boto3.client('sqs')
+          client.delete_queue(QueueUrl=queue_url)
 
     def get_all_profiling_info(self):
-        client = boto3.client('s3')
         return [self.get_profiling_info(i) for i in range(len(self.inst_blocks))]
 
     def get_profiling_info(self, pc):
         client = boto3.client('s3')
         byte_string = client.get_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc))["Body"].read()
         return pickle.loads(byte_string)
+
+    async def get_profiling_info_async(self, pc, loop=None):
+        session = aiobotocore.get_session(loop=loop)
+        client = session.create_client('s3', use_ssl=False)
+        client = boto3.client('s3')
+        obj = await client.get_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc))
+        async with obj['Body'] as stream:
+            byte_string = await stream.read()
+        return pickle.loads(byte_string)
+
 
     def set_profiling_info(self, pc):
         inst_block = self.inst_blocks[pc]
@@ -629,28 +728,71 @@ class LambdaPackProgram(object):
     async def set_inst_block_status_async(self, i, status, loop):
         return await self.block_return_statuses[i].put_async(status.value, loop)
 
-    def _io_dependency_analyze(self, instruction_blocks):
-        all_forward_dependencies = [set() for i in range(len(instruction_blocks))]
-        all_backward_dependencies = [set() for i in range(len(instruction_blocks))]
+    def _io_dependency_analyze(self, instruction_blocks, barrier_look_ahead=2):
+        print("Starting IO dependency")
+        parents = defaultdict(set)
+        children = defaultdict(set)
+        read_edges = defaultdict(set)
+        write_edges = defaultdict(set)
         for i, inst_0 in enumerate(instruction_blocks):
             # find all places inst_0 reads
-            deps = []
             for inst in inst_0.instrs:
-              if isinstance(inst, RemoteLoad) or isinstance(inst, RemoteLoad):
-                    deps.append(inst)
-            deps_managed = set()
-            for j, inst_1 in enumerate(instruction_blocks):
-                 for inst in inst_1.instrs:
-                    if isinstance(inst, RemoteWrite) or isinstance(inst, RemoteWrite):
-                        for d in deps:
-                            if (d.matrix == inst.matrix and d.bidxs == inst.bidxs):
-                                # this is a dependency
-                                if d in deps_managed:
-                                    raise Exception("Each load should correspond to exactly one write")
-                                deps_managed.add(d)
-                                all_forward_dependencies[j].add(i)
-                                all_backward_dependencies[i].add(j)
-        return all_forward_dependencies, all_backward_dependencies
+              if inst.i_code == OC.S3_LOAD:
+                read_edges[(inst.matrix,inst.bidxs)].add(i)
+              if inst.i_code == OC.S3_WRITE:
+                write_edges[(inst.matrix,inst.bidxs)].add(i)
+                assert len(write_edges[(inst.matrix,inst.bidxs)]) == 1
+
+        for i, inst_0 in enumerate(instruction_blocks):
+            # find all places inst_0 reads
+            for inst in inst_0.instrs:
+              if inst.i_code == OC.S3_LOAD:
+                parents[i].update(write_edges[(inst.matrix,inst.bidxs)])
+              if inst.i_code == OC.S3_WRITE:
+                children[i].update(read_edges[(inst.matrix,inst.bidxs)])
+        return children, parents
+
+    def _find_critical_path(self):
+      ''' Find the longest path in dag '''
+      longest_paths = {i:-1 for i in range(len(self.inst_blocks))}
+      distances = {}
+      # assume dag is topologically sorted
+      for s in self.starters:
+        distances[s] = 0
+
+      for i,inst_block in enumerate(self.inst_blocks):
+        parents = list(self.parents[i])
+        parent_distances = [distances[p] for p in parents]
+        if (len(parents) == 0): continue
+        furthest_parent = parents[max(range(len(parents)), key=lambda x: parent_distances[x])]
+        distances[i] = max(parent_distances) + 1
+        longest_paths[i] = furthest_parent
+      print(distances)
+
+      furthest_node = max(distances.items(), key=lambda x: x[1])[0]
+      print("Furthest Node ", furthest_node)
+      print(self.inst_blocks[furthest_node])
+      longest_path = [furthest_node]
+      current_node = longest_paths[furthest_node]
+      while(current_node != -1):
+        longest_path.insert(0, current_node)
+        current_node = longest_paths[current_node]
+      return longest_path
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     def __str__(self):
@@ -697,7 +839,7 @@ def make_local_cholesky(pc, L_out, L_in, b0, label=None):
     pc += 1
     write_diag = RemoteWrite(pc, L_out, cholesky, b0, b0)
     pc += 1
-    return InstructionBlock([block_load, cholesky, write_diag], label=label), 3
+    return InstructionBlock([block_load, cholesky, write_diag], label=label), 4
 
 
 def make_remote_gemm(pc, XY, X, Y, b0, b1, b2, label=None):
@@ -832,6 +974,7 @@ def _chol(X, out_bucket=None):
         instructions, count = make_local_cholesky(pc, trailing[-1], trailing[i], i, label="local")
         all_instructions.append(instructions)
         pc += count
+
         par_count = 0
         parallel_block = []
         for j in block_idxs[i+1:]:
@@ -851,6 +994,7 @@ def _chol(X, out_bucket=None):
                 pc += count
                 par_count += 1
         #all_instructions.append(PywrenInstructionBlock(pwex, parallel_block))
+    # return all_instructions, intermediate_matrices, final result, barrier_look_ahead
     return all_instructions, trailing[-1], trailing[:-1]
 
 
@@ -900,7 +1044,7 @@ def perf_profile(blocks, num_bins=100):
             flops_per_sec = flops/duration
             gf_per_sec = flops_per_sec/1e9
             total_flops_per_sec[start_bin:end_bin]  += gf_per_sec
-        runtimes.append(end_time - start_time)
+        runtimes.append(duration)
     optimes = defaultdict(int)
     opcounts = defaultdict(int)
     offset = instructions[0].start_time
@@ -909,6 +1053,8 @@ def perf_profile(blocks, num_bins=100):
       optimes[inst.i_code] += t
       IO_INSTRUCTIONS = [OC.S3_LOAD, OC.S3_WRITE, OC.RET]
       if (inst.i_code not in IO_INSTRUCTIONS):
+        print(inst.i_code)
+        print(IO_INSTRUCTIONS)
         flops = inst.flops/1e9
       else:
         flops = None
