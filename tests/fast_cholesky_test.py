@@ -32,38 +32,39 @@ def program_state_inspect(program):
 
 def num_running_program_state(program):
     return sum([1 for i in range(len(program.inst_blocks)) if program.inst_block_status(i) == lp.EC.RUNNING] + [0])
-X = np.random.randn(16384, 1)
+
+X = np.random.randn(65536, 1)
 print("Generating X")
 shard_size = 1024
 shard_sizes = (shard_size, 1)
 X_sharded = BigMatrix("cholesky_test_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
 shard_matrix(X_sharded, X)
-pwex = pywren.default_executor()
+pwex = pywren.standalone_executor(job_max_runtime=3600)
 print("Generating matrix")
 XXT_sharded = binops.gemm(pwex, X_sharded, X_sharded.T, overwrite=False)
 XXT_sharded = BigSymmetricMatrix("gemm(BigMatrix(cholesky_test_X), BigMatrix(cholesky_test_X).T)")
 XXT_sharded.lambdav = 1
 instructions,L_sharded,trailing = lp._chol(XXT_sharded)
-instructions  = instructions[:4000]
+instructions  = instructions[:8192*4]
 
 print(L_sharded.key)
 print(L_sharded.bucket)
 print("Block idxs exist total", len(L_sharded.block_idxs))
 print("Block idxs exist not before", len(L_sharded.block_idxs_not_exist))
-pwex = pywren.default_executor()
-executor = pywren.lambda_executor
+executor = pywren.standalone_executor
 config = pwex.config
-program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, num_priorities=1)
 print("LONGEST PATH ", program.longest_path)
 t = time.time()
 program.start()
-#num_cores = 64
-#executor = fs.ProcessPoolExecutor(num_cores)
-#all_futures  = []
-#for c in range(num_cores):
-#    all_futures.append(executor.submit(job_runner.lambdapack_run, program, 3))
-
-all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3), range(2000))
+num_cores = 18
+'''
+executor = fs.ProcessPoolExecutor(num_cores)
+all_futures  = []
+for c in range(num_cores):
+    all_futures.append(executor.submit(job_runner.lambdapack_run, program, 3))
+'''
+all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=1), range(180+18))
 x = 0
 while(program.program_status() == lp.EC.RUNNING):
     x += 1
@@ -82,5 +83,6 @@ print("PROGRAM HASH", program.hash)
 print("PROGRAM Current Status", program.ret_status.get())
 print("Block idxs exist after", len(L_sharded.block_idxs_exist))
 print("Took {0} seconds".format(e - t))
+print([f.result() for f in all_futures])
 
 
