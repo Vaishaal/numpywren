@@ -78,6 +78,8 @@ class LambdapackExecutorTest(unittest.TestCase):
         np.random.seed(1)
         size = 128
         shard_size = 128
+        num_cores = 1
+        pwex = pywren.default_executor()
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -88,7 +90,6 @@ class LambdapackExecutorTest(unittest.TestCase):
         A_sharded.free()
         shard_matrix(A_sharded, A)
         instructions,L_sharded,trailing = lp._chol(A_sharded)
-        pwex = pywren.default_executor()
         executor = pywren.lambda_executor
         config = pwex.config
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
@@ -96,9 +97,7 @@ class LambdapackExecutorTest(unittest.TestCase):
         program.start()
         num_cores = 1
         print("Mapping...")
-        print("NOP MAP")
-        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores))
-
+        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"])
         futures[0].result()
         print("Waiting...")
         pywren.wait(futures)
@@ -190,7 +189,7 @@ class LambdapackExecutorTest(unittest.TestCase):
         print(program)
         program.start()
         num_cores = 100
-        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores))
+        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"])
         program.wait()
         print("Program status")
         print(program.program_status())

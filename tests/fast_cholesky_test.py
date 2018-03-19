@@ -64,7 +64,7 @@ all_futures  = []
 for c in range(num_cores):
     all_futures.append(executor.submit(job_runner.lambdapack_run, program, 3))
 '''
-all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=1), range(180+18))
+all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=1), range(1))
 x = 0
 while(program.program_status() == lp.EC.RUNNING):
     x += 1
