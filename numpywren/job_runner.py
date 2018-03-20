@@ -79,7 +79,7 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
             receipt_handle = msg["ReceiptHandle"]
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
                 res = await sqs_client.change_message_visibility(VisibilityTimeout=30, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-                await asyncio.sleep(10)
+            await asyncio.sleep(10)
     except Exception as e:
         print(e)
     return 0
@@ -101,7 +101,7 @@ async def lambdapack_run_async(loop, program, computer, pipeline_width=1, msg_vi
     lmpk_executor = LambdaPackExecutor(program, loop)
     try:
         while(True):
-            await asyncio.sleep(1)
+            await asyncio.sleep(0)
             # go from high priority -> low priority
             for queue_url in program.queue_urls[::-1]:
                 async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:

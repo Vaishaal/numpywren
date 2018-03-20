@@ -415,6 +415,7 @@ class LambdaPackProgram(object):
         self.bucket = pywren_config['s3']['bucket']
         self.inst_blocks = [copy.copy(x) for x in inst_blocks]
         self.program_string = "\n".join([str(x) for x in inst_blocks])
+        self.max_priority = num_priorities - 1
         program_string = "\n".join([str(x) for x in self.inst_blocks])
         hashed = hashlib.sha1()
         hashed.update(program_string.encode())
@@ -473,11 +474,10 @@ class LambdaPackProgram(object):
         self.block_ready_statuses.append(self.ret_ready_status)
         longest_path = self._find_critical_path()
         self.longest_path = longest_path
-        for l in longest_path:
-          self.inst_blocks[l].priority = min(self.inst_blocks[l].priority+1, num_priorities - 1)
-          for p in self.parents[l]:
-            parent_block = self.inst_blocks[p]
-            parent_block.priority = min(parent_block.priority+1, num_priorities - 1)
+        self._recursive_priority_donate(self.longest_path, self.max_priority)
+
+
+
 
         e = time.time()
         for s in self.starters:
@@ -638,6 +638,17 @@ class LambdaPackProgram(object):
               if inst.i_code == OC.S3_WRITE:
                 children[i].update(read_edges[(inst.matrix,inst.bidxs)])
         return children, parents
+
+
+
+    def _recursive_priority_donate(self, nodes, priority):
+      if (priority == 0):
+        return
+      for node in nodes:
+         self.inst_blocks[node].priority = max(min(priority, self.max_priority), self.inst_blocks[node].priority)
+         self._recursive_priority_donate(self.parents[node], priority - 1)
+
+
 
     def _find_critical_path(self):
       ''' Find the longest path in dag '''
