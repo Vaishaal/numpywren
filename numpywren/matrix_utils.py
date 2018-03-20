@@ -109,14 +109,16 @@ def key_exists(bucket, key):
 async def key_exists_async(bucket, key, loop=None):
     '''Return true if a key exists in s3 bucket'''
     session = aiobotocore.get_session(loop=loop)
-    client = session.create_client('s3', use_ssl=False, verify=False)
-    try:
-        obj = await client.head_object(Bucket=bucket, Key=key)
-        return True
-    except botocore.exceptions.ClientError as exc:
-        if exc.response['Error']['Code'] != '404':
-            raise
-        return False
+    async with session.create_client('s3', use_ssl=False, verify=False) as client:
+        try:
+            obj = await client.head_object(Bucket=bucket, Key=key)
+            resp = True
+        except botocore.exceptions.ClientError as exc:
+            if exc.response['Error']['Code'] != '404':
+                raise
+            else:
+                resp = False
+    return resp
 
 def block_key_to_block(key):
     try:
@@ -267,6 +269,10 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
     '''
     mmap_shape = []
     local_idxs = []
+    print(bigm.shape)
+    print(bigm.shard_sizes)
+    print(blocks_to_get)
+
     matrix_locations = [{} for _ in range(len(bigm.shape))]
     matrix_maxes = [0 for _ in range(len(bigm.shape))]
     current_local_idx = np.zeros(len(bigm.shape), np.int)
@@ -286,6 +292,9 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
     mmap_shape = tuple(mmap_shape)
     if (executor == None):
         executor = fs.ProcessPoolExecutor(max_workers=workers)
+    print(mmap_shape)
+    print(bigm.dtype)
+    print(mmap_loc)
     np.memmap(mmap_loc, dtype=bigm.dtype, mode='w+', shape=mmap_shape)
     futures = []
 

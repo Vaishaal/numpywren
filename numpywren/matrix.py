@@ -331,8 +331,9 @@ class BigMatrix(object):
             asyncio.set_event_loop(loop)
         key = self.__shard_idx_to_key__(block_idx)
         session = aiobotocore.get_session(loop=loop)
-        client = session.create_client('s3', use_ssl=False, verify=False)
-        return client.delete_object(Key=key, Bucket=self.bucket)
+        async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
+            resp = client.delete_object(Key=key, Bucket=self.bucket)
+        return resp
 
     def free(self):
         """Delete all allocated blocks while leaving the matrix metadata intact."""
@@ -440,19 +441,19 @@ class BigMatrix(object):
             loop = asyncio.get_event_loop()
 
         session = aiobotocore.get_session(loop=loop)
-        client = session.create_client('s3', use_ssl=False, verify=False)
-        n_tries = 0
-        max_n_tries = 5
-        bio = None
-        while bio is None and n_tries <= max_n_tries:
-            try:
-                resp = await client.get_object(Bucket=self.bucket, Key=key)
-                async with resp['Body'] as stream:
-                    matrix_bytes = await stream.read()
-                bio = io.BytesIO(matrix_bytes)
-            except Exception as e:
-                raise
-                n_tries += 1
+        async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
+            n_tries = 0
+            max_n_tries = 5
+            bio = None
+            while bio is None and n_tries <= max_n_tries:
+                try:
+                    resp = await client.get_object(Bucket=self.bucket, Key=key)
+                    async with resp['Body'] as stream:
+                        matrix_bytes = await stream.read()
+                    bio = io.BytesIO(matrix_bytes)
+                except Exception as e:
+                    raise
+                    n_tries += 1
         if bio is None:
             raise Exception("S3 Read Failed")
         return bio
@@ -462,13 +463,13 @@ class BigMatrix(object):
             loop = asyncio.get_event_loop()
 
         session = aiobotocore.get_session(loop=loop)
-        client = session.create_client('s3', use_ssl=False, verify=False)
-        outb = io.BytesIO()
-        np.save(outb, X)
-        response = await client.put_object(Key=out_key,
-                                     Bucket=self.bucket,
-                                     Body=outb.getvalue(),
-                                     ACL="bucket-owner-full-control")
+        async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
+            outb = io.BytesIO()
+            np.save(outb, X)
+            response = await client.put_object(Key=out_key,
+                                         Bucket=self.bucket,
+                                         Body=outb.getvalue(),
+                                         ACL="bucket-owner-full-control")
         return response
 
     def __write_header__(self):
@@ -639,7 +640,8 @@ class BigSymmetricMatrix(BigMatrix):
         if block_idx_sym != block_idx:
             flipped = True
         key = self.__shard_idx_to_key__(block_idx_sym)
-        session = aiobotocore.get_session(loop=loop)
-        client = session.create_client('s3', use_ssl=False, verify=False)
-        return client.delete_object(Key=key, Bucket=self.bucket)
+        aiobotocore.get_session(loop=loop)
+        async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
+            resp = client.delete_object(Key=key, Bucket=self.bucket)
+        return resp
 

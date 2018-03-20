@@ -475,6 +475,7 @@ class LambdaPackProgram(object):
         self.bucket = pywren_config['s3']['bucket']
         self.inst_blocks = [copy.copy(x) for x in inst_blocks]
         self.program_string = "\n".join([str(x) for x in inst_blocks])
+        self.max_priority = num_priorities - 1
         program_string = "\n".join([str(x) for x in self.inst_blocks])
         hashed = hashlib.sha1()
         hashed.update(program_string.encode())
@@ -533,11 +534,10 @@ class LambdaPackProgram(object):
         self.block_ready_statuses.append(self.ret_ready_status)
         longest_path = self._find_critical_path()
         self.longest_path = longest_path
-        for l in longest_path:
-          self.inst_blocks[l].priority = min(self.inst_blocks[l].priority+1, num_priorities - 1)
-          for p in self.parents[l]:
-            parent_block = self.inst_blocks[p]
-            parent_block.priority = min(parent_block.priority+1, num_priorities - 1)
+        self._recursive_priority_donate(self.longest_path, self.max_priority)
+
+
+
 
         e = time.time()
         for s in self.starters:
@@ -569,9 +569,11 @@ class LambdaPackProgram(object):
 
     def post_op(self, i, ret_code, tb=None):
         try:
-          if (ret_code == EC.EXCEPTION and tb != None):
-            self.handle_exception(e, tb=tb, block=i)
           inst_block = self.inst_blocks[i]
+          if (ret_code == EC.EXCEPTION and tb != None):
+            print("EXCEPTION ")
+            print(inst_block)
+            self.handle_exception(" EXCEPTION", tb=tb, block=i)
           children = self.children[i]
           parents = self.parents[i]
           self.set_inst_block_status(i, EC(ret_code))
@@ -584,7 +586,7 @@ class LambdaPackProgram(object):
             print(self.block_ready_statuses[child].key)
             if (val >= len(self.parents[child])):
               ready_children.append(child)
-          sqs = boto3.resource('sqs')
+          sqs = boto3.resource('sqs', region_name='us-west-2')
           queue = sqs.Queue(self.queue_urls[inst_block.priority])
           self.inst_blocks[i].end_time = time.time()
           self.set_profiling_info(i)
@@ -603,40 +605,6 @@ class LambdaPackProgram(object):
             traceback.print_exc()
             raise
 
-    async def post_op_async(self, i, ret_code, loop=None):
-        if (loop == None):
-          loop = asyncio.get_event_loop()
-        try:
-          children = self.children[i]
-          parents = self.parents[i]
-          await self.set_inst_block_status_async(i, EC(ret_code), loop=loop)
-          self.inst_blocks[i].clear()
-          child_futures = []
-          ready_children = []
-          for child in children:
-            val = await self.block_ready_statuses[child].incr_async(loop=loop)
-            if (val >= len(self.parents[child])):
-              ready_children.append(child)
-          session = aiobotocore.get_session(loop=loop)
-          sqs_client = session.create_client('sqs', use_ssl=False)
-          self.inst_blocks[i].end_time = time.time()
-          inst_block = self.inst_blocks[i]
-          pipelined_time = inst_block.end_time - inst_block.start_time
-          full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
-          print("BLOCK {0} DONE BLOCK TOOK {1} seconds wall clock for {2} seconds of compute".format(i, pipelined_time, np.sum(full_times)))
-          await self.set_profiling_info(i, loop)
-          for child in ready_children:
-            print("Adding {0} to sqs queue".format(child))
-            priority = inst_block.priority
-            queue_url = self.queue_url[priority]
-            await sqs_client.send_message(QueueUrl=queue_url, MessageBody=str(child))
-
-        except Exception as e:
-            print("EXCEPTION ", e)
-            tb = traceback.format_exc()
-            self.handle_exception(e, tb=tb, block=i)
-            traceback.print_exc()
-            raise
 
     def start(self):
         self.ret_status.put(EC.RUNNING.value)
@@ -652,7 +620,7 @@ class LambdaPackProgram(object):
 
     def handle_exception(self, error, tb, block):
         client = boto3.client('s3')
-        client.put_object(Key=program.hash + "/EXCEPTION.{0}".format(block), Bucket=program.bucket, Body=tb)
+        client.put_object(Key=self.hash + "/EXCEPTION.{0}".format(block), Bucket=self.bucket, Body=tb + str(error))
         e = EC.EXCEPTION.value
         self.ret_status.put(e)
 
@@ -684,36 +652,15 @@ class LambdaPackProgram(object):
         byte_string = client.get_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc))["Body"].read()
         return pickle.loads(byte_string)
 
-    async def get_profiling_info_async(self, pc, loop=None):
-        session = aiobotocore.get_session(loop=loop)
-        client = session.create_client('s3', use_ssl=False)
-        client = boto3.client('s3')
-        obj = await client.get_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc))
-        async with obj['Body'] as stream:
-            byte_string = await stream.read()
-        return pickle.loads(byte_string)
-
 
     def set_profiling_info(self, pc):
         inst_block = self.inst_blocks[pc]
         serializer = serialize.SerializeIndependent()
         byte_string = serializer([inst_block])[0][0]
-        client = boto3.client('s3')
+        client = boto3.client('s3', region_name='us-west-2')
         print("TYPE IS ", type(byte_string))
         client.put_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc), Body=byte_string)
 
-
-    async def set_profiling_info_async(self, pc, loop=None):
-        if (loop == None):
-          loop = asyncio.get_event_loop()
-        inst_block = self.inst_blocks[pc]
-        serializer = serialize.SerializeIndependent()
-        byte_string = serializer([inst_block])[0][0]
-        session = aiobotocore.get_session(loop=loop)
-        client = session.create_client('s3', use_ssl=False)
-        client = boto3.client('s3')
-        print("TYPE IS ", type(byte_string))
-        client.put_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc), Body=byte_string)
 
     def inst_block_status(self, i):
       status = self.block_return_statuses[i].get()
@@ -751,6 +698,17 @@ class LambdaPackProgram(object):
               if inst.i_code == OC.S3_WRITE:
                 children[i].update(read_edges[(inst.matrix,inst.bidxs)])
         return children, parents
+
+
+
+    def _recursive_priority_donate(self, nodes, priority):
+      if (priority == 0):
+        return
+      for node in nodes:
+         self.inst_blocks[node].priority = max(min(priority, self.max_priority), self.inst_blocks[node].priority)
+         self._recursive_priority_donate(self.parents[node], priority - 1)
+
+
 
     def _find_critical_path(self):
       ''' Find the longest path in dag '''
