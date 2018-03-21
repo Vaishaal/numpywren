@@ -13,59 +13,82 @@ from multiprocessing.dummy import Pool as ThreadPool
 import logging
 
 
+class LRUCache(object):
+    def __init__(self, max_items=100):
+        self.cache = {}
+        self.key_order = []
+        self.max_items = max_items
+
+    def __setitem__(self, key, value):
+        self.cache[key] = value
+        self._mark(key)
+
+    def __getitem__(self, key):
+        try:
+            value = self.cache[key]
+        except KeyError:
+            # Explicit reraise for better tracebacks
+            raise KeyError
+        self._mark(key)
+        return value
+
+    def __contains__(self, obj):
+        return obj in self.cache
+
+    def _mark(self, key):
+        if key in self.key_order:
+            self.key_order.remove(key)
+
+        self.key_order.insert(0, key)
+        if len(self.key_order) > self.max_items:
+            remove = self.key_order[self.max_items]
+            del self.cache[remove]
+            self.key_order.remove(remove)
+
 class LambdaPackExecutor(object):
-    def __init__(self, program, loop, pipeline_width=5):
+    def __init__(self, program, loop, cache):
         self.read_executor = None
         self.write_executor = None
         self.compute_executor = None
         self.loop = loop
         self.program = program
-        self.parent_children = {}
-        self.ret_status_map = {}
-        self.pc_block_map = {}
+        self.cache = cache
         self.block_ends= set()
 
     async def run(self, pc, computer=None):
         print("STARTING INSTRUCTION")
-        t = time.time()
-        self.program.pre_op(pc)
-        instrs = self.program.inst_blocks[pc].instrs
-        # first instruction in every instruction block is executable!
-        for i,inst in enumerate(instrs[0:-1]):
-            self.parent_children[inst] = instrs[i+1]
-        for i,inst in enumerate(instrs):
-            self.pc_block_map[inst] = pc
-        ret_codes = []
-        loop = self.loop
-        runtimes = []
-        try:
-            for instr in instrs:
-                start = time.time()
-                instr.executor = computer
-                res = await instr()
-                instr.executor = None
-                end = time.time()
-                runtimes.append(end - start)
-            start = time.time()
-            self.program.post_op(pc, lp.EC.SUCCESS)
-            end = time.time()
-            post_op_time = end - start
-        except Exception as e:
-            traceback.print_exc()
-            tb = traceback.format_exc()
-            self.program.post_op(pc, lp.EC.EXCEPTION, tb=tb)
-            self.loop.stop()
-            raise
+        pcs = [pc]
+        for pc in pcs:
+            t = time.time()
+            self.program.pre_op(pc)
+            instrs = self.program.inst_blocks[pc].instrs
+            # first instruction in every instruction block is executable!
+            try:
+                for instr in instrs:
+                    instr.executor = computer
+                    instr.cache = self.cache
+                    res = await instr()
+                    instr.cache = None
+                    instr.executor = None
+                next_pc = self.program.post_op(pc, lp.EC.SUCCESS)
+                if (next_pc != None):
+                    pcs.append(next_pc)
+            except Exception as e:
+                traceback.print_exc()
+                tb = traceback.format_exc()
+                self.program.post_op(pc, lp.EC.EXCEPTION, tb=tb)
+                raise
         e = time.time()
 
-def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30):
-    logging.basicConfig(level=logging.DEBUG)
+def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=10):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.create_task(check_program_state(program, loop))
     computer = fs.ThreadPoolExecutor(1)
+    cache = LRUCache(max_items=cache_size)
     for i in range(pipeline_width):
-        coro = lambdapack_run_async(loop, program, computer)
+        # all the async tasks share 1 compute thread and a io cache
+        coro = lambdapack_run_async(loop, program, computer, cache)
         loop.create_task(coro)
     res = loop.run_forever()
     print("loop end")
@@ -96,9 +119,9 @@ async def check_program_state(program, loop):
     print("Closing loop")
     loop.stop()
 
-async def lambdapack_run_async(loop, program, computer, pipeline_width=1, msg_vis_timeout=10):
+async def lambdapack_run_async(loop, program, computer, cache, pipeline_width=1, msg_vis_timeout=10):
     session = aiobotocore.get_session(loop=loop)
-    lmpk_executor = LambdaPackExecutor(program, loop)
+    lmpk_executor = LambdaPackExecutor(program, loop, cache)
     try:
         while(True):
             await asyncio.sleep(0)

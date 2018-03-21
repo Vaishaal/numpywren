@@ -123,6 +123,7 @@ class RemoteInstruction(object):
         self.end_time = None
         self.type = None
         self.executor = None
+        self.cache = None
 
     def clear(self):
         self.result = None
@@ -178,6 +179,7 @@ class RemoteLoad(RemoteInstruction):
         self.matrix = matrix
         self.bidxs = bidxs
         self.result = None
+        self.cache_hit = False
 
     async def __call__(self, prev=None):
         if (prev != None):
@@ -185,8 +187,15 @@ class RemoteLoad(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result == None):
-            self.result = await self.matrix.get_block_async(loop, *self.bidxs)
-            self.size = sys.getsizeof(self.result)
+            cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
+            if (self.cache != None and cache_key in self.cache):
+              self.result = self.cache[cache_key]
+              self.cache_hit = True
+              self.size = sys.getsizeof(self.result)
+              print("Cache hit!")
+            else:
+              self.result = await self.matrix.get_block_async(loop, *self.bidxs)
+              self.size = sys.getsizeof(self.result)
         self.end_time = time.time()
         return self.result
 
@@ -215,6 +224,10 @@ class RemoteWrite(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result == None):
+            cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
+            if (self.cache != None):
+              # write to the cache
+              self.cache[cache_key] = self.data_instr.result
             self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
             self.size = sys.getsizeof(self.data_instr.result)
             self.ret_code = 0
@@ -466,7 +479,6 @@ class LambdaPackProgram(object):
         for i in self.terminators:
           self.children[i].add(len(self.inst_blocks) - 1)
 
-        print("TERMINATORS", self.terminators)
         self.children[len(self.inst_blocks) - 1] = set()
         self.parents[len(self.inst_blocks) - 1] = self.terminators
         self.block_return_statuses.append(self.ret_status)
@@ -479,10 +491,6 @@ class LambdaPackProgram(object):
 
 
 
-        e = time.time()
-        for s in self.starters:
-          print(self.inst_blocks[s])
-        print("Post io dependency analyze took {0}".format(e - t))
 
     def pre_op(self, i):
         # 1. check if program has terminated
@@ -526,6 +534,22 @@ class LambdaPackProgram(object):
             print(self.block_ready_statuses[child].key)
             if (val >= len(self.parents[child])):
               ready_children.append(child)
+          if (len(ready_children) > 0):
+            max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
+            next_pc = ready_children[max_priority_idx]
+            print("LOCAL ENQUEUE: ", self.inst_blocks[next_pc])
+            # do not enqueue
+            del ready_children[max_priority_idx]
+          else:
+            next_pc = None
+
+          # move the highest priority job thats ready onto the local task queue
+          # this is JRK's idea of dynamic node fusion or eager scheduling
+          # the idea is that if we do something like a local cholesky decomposition
+          # we would run its highest priority child *locally* by adding the instructions to the local instruction queue
+          # this has 2 key benefits, first we completely obliviete scheduling overhead between these two nodes but also because of the local LRU cache the first read of this node will be saved this will translate
+
+
           sqs = boto3.resource('sqs', region_name='us-west-2')
           queue = sqs.Queue(self.queue_urls[inst_block.priority])
           self.inst_blocks[i].end_time = time.time()
@@ -538,6 +562,7 @@ class LambdaPackProgram(object):
             print("Adding {0} to sqs queue".format(child))
             queue.send_message(MessageBody=str(child))
             pass
+          return next_pc
         except Exception as e:
             print("POST OP EXCEPTION ", e)
             tb = traceback.format_exc()
