@@ -103,7 +103,7 @@ class RemoteProgramState(object):
     redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
     final_val = redis_client.incr(self.key)
     e = time.time()
-    print("{0} took {1}".format(self.key, e - t))
+    #print("{0} took {1}".format(self.key, e - t))
     return final_val
 
 
@@ -189,13 +189,19 @@ class RemoteLoad(RemoteInstruction):
         if (self.result == None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
             if (self.cache != None and cache_key in self.cache):
+              t = time.time()
               self.result = self.cache[cache_key]
               self.cache_hit = True
               self.size = sys.getsizeof(self.result)
-              print("Cache hit!")
+              e = time.time()
+              print("Cache hit! {0}".format(e - t))
             else:
+              t = time.time()
               self.result = await self.matrix.get_block_async(loop, *self.bidxs)
               self.size = sys.getsizeof(self.result)
+              self.cache[cache_key] = self.result
+              e = time.time()
+              print("Cache miss! {0}".format(e - t))
         self.end_time = time.time()
         return self.result
 
@@ -530,8 +536,8 @@ class LambdaPackProgram(object):
           ready_children = []
           for child in children:
             val = self.block_ready_statuses[child].incr()
-            print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
-            print(self.block_ready_statuses[child].key)
+            #print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
+            #print(self.block_ready_statuses[child].key)
             if (val >= len(self.parents[child])):
               ready_children.append(child)
           if (len(ready_children) > 0):
@@ -557,7 +563,7 @@ class LambdaPackProgram(object):
           self.inst_blocks[i].end_time = time.time()
           pipelined_time = inst_block.end_time - inst_block.start_time
           full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
-          print("Finished {0}, all children are {1}, ready children are {2}".format(i, children, ready_children))
+          #print("Finished {0}, all children are {1}, ready children are {2}".format(i, children, ready_children))
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
             queue.send_message(MessageBody=str(child))
@@ -690,11 +696,8 @@ class LambdaPackProgram(object):
         furthest_parent = parents[max(range(len(parents)), key=lambda x: parent_distances[x])]
         distances[i] = max(parent_distances) + 1
         longest_paths[i] = furthest_parent
-      print(distances)
 
       furthest_node = max(distances.items(), key=lambda x: x[1])[0]
-      print("Furthest Node ", furthest_node)
-      print(self.inst_blocks[furthest_node])
       longest_path = [furthest_node]
       current_node = longest_paths[furthest_node]
       while(current_node != -1):
@@ -911,7 +914,7 @@ def perf_profile(blocks, num_bins=100):
         flops = inst.flops/1e9
       else:
         flops = None
-      print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset, flops))
+      print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset,  inst.end_time - inst.start_time, flops))
     for k in optimes.keys():
       print("{0}: {1}s".format(k, optimes[k]/opcounts[k]))
     return read_bytes_per_sec, write_bytes_per_sec, total_flops_per_sec, bins , instructions, runtimes

@@ -89,7 +89,10 @@ class BigMatrix(object):
         self.dtype = dtype
         self.transposed = transposed
         self.parent_fn = parent_fn
-        header = self.__read_header__()
+        if (shape == None or shard_sizes == None):
+            header = self.__read_header__()
+        else:
+            header = None
         if header is None and shape is None:
             raise Exception("Header doesn't exist and no shape provided.")
         elif shape is None:

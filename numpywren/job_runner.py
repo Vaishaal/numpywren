@@ -11,10 +11,11 @@ from numpywren import lambdapack as lp
 import traceback
 from multiprocessing.dummy import Pool as ThreadPool
 import logging
+import gc
 
 
 class LRUCache(object):
-    def __init__(self, max_items=100):
+    def __init__(self, max_items=10):
         self.cache = {}
         self.key_order = []
         self.max_items = max_items
@@ -43,6 +44,8 @@ class LRUCache(object):
         if len(self.key_order) > self.max_items:
             remove = self.key_order[self.max_items]
             del self.cache[remove]
+            for c in range(10):
+                gc.collect()
             self.key_order.remove(remove)
 
 class LambdaPackExecutor(object):
@@ -80,7 +83,7 @@ class LambdaPackExecutor(object):
                 raise
         e = time.time()
 
-def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=10):
+def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.create_task(check_program_state(program, loop))
