@@ -33,7 +33,6 @@ try:
 except:
   DEFAULT_CONFIG = {}
 
-
 REDIS_IP = os.environ.get("REDIS_IP", "")
 
 
@@ -268,7 +267,7 @@ class RemoteSYRK(RemoteInstruction):
 class RemoteSub(RemoteInstruction):
     def __init__(self, i_id, argv_instr):
         super().__init__(i_id)
-        self.i_code = OC.GEMM
+        self.i_code = OC.SUB
         assert len(argv_instr) == 2 
         self.argv = argv_instr
         self.result = None
