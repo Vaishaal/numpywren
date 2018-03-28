@@ -49,9 +49,6 @@ class BigMatrix(object):
     dtype : data-type, optional
         Any object that can be interpreted as a numpy data type. Determines
         the type of the object stored in the array.
-    transposed : bool, optional
-        If transposed is True then the array object will behave like the
-        transposed version of the underlying S3 object.
     parent_fn : function, optional
         A function that gets called when a previously uninitialized block is
         accessed. Gets passed the BigMatrix object and the relevant block index
@@ -114,7 +111,7 @@ class BigMatrix(object):
     @property
     def T(self):
         """Return the transpose with the same underlying representation."""
-        return BigMatrixView(self, [None] * len(self.shape), transposed=True)
+        return BigMatrixView(self, [slice(None, None, None)] * len(self.shape), transposed=True)
 
     @property
     def blocks_exist(self):
@@ -252,8 +249,6 @@ class BigMatrix(object):
         else:
             bio = await self.__s3_key_to_byte_io__(key, loop=loop)
             X_block = np.load(bio).astype(self.dtype)
-        if (self.transposed):
-            X_block = X_block.T
         return X_block
 
     def put_block(self, block, *block_idx):
@@ -293,8 +288,6 @@ class BigMatrix(object):
 
         if (block.shape != current_shape):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
-        if (self.transposed):
-            block = block.T
 
         block = block.astype(self.dtype)
         key = self.__shard_idx_to_key__(block_idx)
@@ -382,9 +375,6 @@ class BigMatrix(object):
         else:
             return all_blocks[axis]
 
-    def __getitem__(self, bidxs):
-        return BigMatrixView(self, bidxs)
-
     def _register_parent(self, parent_fn):
         self.parent_fn = parent_fn
 
@@ -401,9 +391,6 @@ class BigMatrix(object):
             key_string = ""
 
             shard_sizes = self.shard_sizes
-            if (self.transposed):
-                shard_sizes = reversed(shard_sizes)
-                real_idxs = reversed(real_idxs)
             for ((sidx, eidx), shard_size) in zip(real_idxs, shard_sizes):
                 key_string += "{0}_{1}_{2}_".format(sidx, eidx, shard_size)
 
@@ -498,10 +485,11 @@ class BigMatrix(object):
         dtype = pickle.loads(dtype_bytes)
         return dtype
 
+    def __getitem__(self, bidxs):
+        return BigMatrixView(self, bidxs)
+
     def __str__(self):
         rep = "{0}({1})".format(self.__class__.__name__, self.key)
-        if (self.transposed):
-            rep += ".T"
         return rep
 
 
@@ -510,8 +498,8 @@ class BigMatrixView(BigMatrix):
         self.parent = parent
         self.transposed = transposed
         self.parent_slices = []
+        self.view_idx_len = len(parent.shape)
         for i, parent_slice in enumerate(parent_slices):
-            # Don't modify integer indexes.
             if not isinstance(parent_slice, int):
                 # Replace any Nones in slices.
                 start = parent_slice.start
@@ -523,6 +511,9 @@ class BigMatrixView(BigMatrix):
                     stop = self.parent.shape[i]
                 if step is None:
                     step = 1
+            else:
+                # An integer slice means we are eliminating an axis.
+                self.view_idx_len -= 1
             self.parent_slices.append(slice(start, stop, step))
         # Account for the case where slices aren't provided for the trailing indexes.
         self.parent_slices += [slice(0, self.parent.shape[i], 1)
@@ -542,46 +533,77 @@ class BigMatrixView(BigMatrix):
     @property
     def block_idxs_exist(self):
         parent_idxs = self.parent.block_idxs_exist() 
-        return map(self.__parent_to_view_block_idx__,
-                   filter(self.__is_valid_parent_block_idx__, parent_idxs))
+        view_idxs =  map(self.__parent_to_view_block_idx__,
+                         filter(self.__is_valid_parent_block_idx__, parent_idxs))
+        if self.transposed:
+            view_idxs = map(reversed, view_idxs)
+        return view_idxs
 
     @property
     def block_idxs_not_exist(self):
         parent_idxs = self.parent.block_idxs_not_exist() 
-        return map(self.__parent_to_view_block_idx__,
-                   filter(self.__is_valid_parent_block_idx__, parent_idxs))
+        view_idxs =  map(self.__parent_to_view_block_idx__,
+                         filter(self.__is_valid_parent_block_idx__, parent_idxs))
+        if self.transposed:
+            view_idxs = map(reversed, view_idxs)
+        return view_idxs
 
     @property
     def block_idxs(self):
         parent_idxs = self.parent.block_idxs() 
-        return map(self.__parent_to_view_block_idx__,
-                   filter(self.__is_valid_parent_block_idx__, parent_idxs))
+        view_idxs = map(self.__parent_to_view_block_idx__,
+                        filter(self.__is_valid_parent_block_idx__, parent_idxs))
+        if self.transposed:
+            view_idxs = map(reversed, view_idxs)
+        return view_idxs
 
     def get_block(self, *block_idx): 
+        if self.transposed:
+            block_idx = reversed(block_idx)
         parent_idx = self.__view_to_parent_block_idx__(*block_idx)
-        return self.parent.get_block(*parent_idx)
+        block = self.parent.get_block(*parent_idx)
+        if self.transposed:
+            block = block.T
+        return block
 
     async def get_block_async(self, loop, *block_idx):
+        if self.transposed:
+            block_idx = reversed(block_idx)
         parent_idx = self.__view_to_parent_block_idx__(*block_idx)
-        return self.parent.get_block_async(loop, *parent_idx)
+        block = self.parent.get_block_async(loop, *parent_idx)
+        if self.transposed:
+            block = block.T
+        return block
 
     def put_block(self, block, *block_idx):
+        if self.transposed:
+            block_idx = reversed(block_idx)
+            block = block.T
         parent_idx = self.__view_to_parent_block_idx__(*block_idx)
         return self.parent.put_block(block, parent_idx)
 
     async def put_block_async(self, block, loop=None, *block_idx):
+        if self.transposed:
+            block_idx = reversed(block_idx)
+            block = block.T
         parent_idx = self.__view_to_parent_block_idx__(*block_idx)
         return self.parent.put_block_async(block, loop, parent_idx)
 
     def delete_block(self, *block_idx):
+        if self.transposed:
+            block_idx = reversed(block_idx)
         parent_idx = self.__view_to_parent_block_idx__(*block_idx)
         return self.parent.delete_block(parent_idx)
 
     async def delete_block_async(self, loop, *block_idx):
+        if self.transposed:
+            block_idx = reversed(block_idx)
         parent_idx = self.__view_to_parent_block_idx__(*block_idx)
         return self.parent.delete_block(loop, parent_idx)
 
     def _block_idxs(self, axis=None):
+        if self.transposed:
+            axis = self.view_idx_len - axis - 1
         parent_axis = self.__view_to_parent_axis__(axis)
         parent_idxs = self.parent._block_idxs(parent_axis) 
         valid_parent_idxs = filter(lambda x: self.__is_valid_parent_block_idx__(x, parent_axis),
@@ -661,7 +683,7 @@ class BigMatrixView(BigMatrix):
 
     def __str__(self):
         slice_reps = [] 
-        last_slice = -1
+        last_slice = 0 
         for parent_slice, parent_shape in zip(self.parent_slices, self.parent.shape):
             if parent_slice != slice(0, parent_shape, 1):
                 last_slice += 1
@@ -682,7 +704,7 @@ class BigMatrixView(BigMatrix):
                     stop_rep = str(parent_slice.stop)
                 slice_reps.append(start_rep + ":" + stop_rep + step_rep)
         rep = self.parent.__str__() 
-        if last_slice != -1:
+        if last_slice != 0:
             rep += "[" + ",".join(slice_reps[:last_slice]) + "]"
         if self.transposed:
             rep += ".T"
