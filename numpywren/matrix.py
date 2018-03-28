@@ -497,8 +497,16 @@ class BigMatrixView(BigMatrix):
     def __init__(self, parent, parent_slices, transposed=False):
         self.parent = parent
         self.transposed = transposed
+        self.bucket = parent.bucket
+        self.prefix = parent.prefix
+        self.key = parent.key
+        self.key_base = parent.key_base 
+        self.dtype = parent.dtype
+
+        # Initialize all size information.
+        self.shard_sizes = parent.shard_sizes
         self.parent_slices = []
-        self.view_idx_len = len(parent.shape)
+        self.shape = []
         for i, parent_slice in enumerate(parent_slices):
             if not isinstance(parent_slice, int):
                 # Replace any Nones in slices.
@@ -511,13 +519,15 @@ class BigMatrixView(BigMatrix):
                     stop = self.parent.shape[i]
                 if step is None:
                     step = 1
+                self.shape.append((stop - start) // step)
+                self.parent_slices.append(slice(start, stop, step))
             else:
                 # An integer slice means we are eliminating an axis.
                 self.view_idx_len -= 1
-            self.parent_slices.append(slice(start, stop, step))
+                self.parent_slices.append(parent_slice)
         # Account for the case where slices aren't provided for the trailing indexes.
         self.parent_slices += [slice(0, self.parent.shape[i], 1)
-                               for i in range(len(parent_slice):len(self.parent.shape))]
+                               for i in range(len(self.parent_slices), len(self.parent.shape))]
     @property
     def blocks_exist(self):
         raise NotImplementedError
@@ -537,7 +547,7 @@ class BigMatrixView(BigMatrix):
                          filter(self.__is_valid_parent_block_idx__, parent_idxs))
         if self.transposed:
             view_idxs = map(reversed, view_idxs)
-        return view_idxs
+        return list(view_idxs)
 
     @property
     def block_idxs_not_exist(self):
@@ -546,7 +556,7 @@ class BigMatrixView(BigMatrix):
                          filter(self.__is_valid_parent_block_idx__, parent_idxs))
         if self.transposed:
             view_idxs = map(reversed, view_idxs)
-        return view_idxs
+        return list(view_idxs)
 
     @property
     def block_idxs(self):
@@ -555,7 +565,7 @@ class BigMatrixView(BigMatrix):
                         filter(self.__is_valid_parent_block_idx__, parent_idxs))
         if self.transposed:
             view_idxs = map(reversed, view_idxs)
-        return view_idxs
+        return list(view_idxs)
 
     def get_block(self, *block_idx): 
         if self.transposed:
@@ -602,24 +612,31 @@ class BigMatrixView(BigMatrix):
         return self.parent.delete_block(loop, parent_idx)
 
     def _block_idxs(self, axis=None):
-        if self.transposed:
-            axis = self.view_idx_len - axis - 1
         parent_axis = self.__view_to_parent_axis__(axis)
-        parent_idxs = self.parent._block_idxs(parent_axis) 
-        valid_parent_idxs = filter(lambda x: self.__is_valid_parent_block_idx__(x, parent_axis),
+        parent_idxs = self.parent._block_idxs(axis=parent_axis) 
+        valid_parent_idxs = filter(lambda x: self.__is_valid_parent_block_idx__(x, axis=parent_axis),
                                    parent_idxs)
-        return map(lambda x: self.__parent_to_view_block_idx__(x, parent_axis), valid_parent_idxs)
+        view_idxs = map(lambda x: self.__parent_to_view_block_idx__(x, axis=parent_axis),
+                        valid_parent_idxs)
+        if self.transposed and axis is None:
+            view_idxs = map(reversed, idxs)
+        return list(view_idxs) 
 
     def _blocks(self, axis=None):
         raise NotImplementedError
 
     def __view_to_parent_axis__(self, view_axis):
+        if view_axis is None:
+            # We make the assumption that subsequent functions can handle None correctly.
+            return None
+        if self.transposed:
+            view_axis = len(self.shape) - view_axis - 1
         num_slices = 0
         for i, parent_slice in enumerate(self.parent_slices):
             if isinstance(parent_slice, slice):
                 num_slices += 1
             # Check if we've reached the parent index referred by the view index.
-            if num_slices - 1 == view_axis
+            if num_slices - 1 == view_axis:
                 break
         return i 
 
@@ -631,7 +648,7 @@ class BigMatrixView(BigMatrix):
                 # The view won't have an index for integer slices.
                 parent_idx.append(parent_slice)
             else:
-                parent_elt = view_elt[i] * parent_slice.step + parent_slice.start
+                parent_elt = view_idx[i] * parent_slice.step + parent_slice.start
                 if parent_elt < 0:
                     raise NotImplementedError
                 if parent_elt >= parent_slice.stop:
@@ -641,27 +658,28 @@ class BigMatrixView(BigMatrix):
         return parent_idx
 
     def __parent_to_view_block_idx__(self, *parent_idx, axis=None):
+        print("in", parent_idx, axis)
         # Assign what indices we need to convert.
         if axis is not None:
             parent_slices = [self.parent_slices[axis]]
-            parent_idx = [parent_idx[axis]]
         else:
             parent_slices = self.parent_slices
 
         assert len(parent_idx) == len(parent_slices)
-        assert self.__is_valid_parent_block_idx(*parent_idx, axis)
+        assert self.__is_valid_parent_block_idx__(*parent_idx, axis)
         view_idx = []
         for parent_elt, parent_slice in zip(parent_idx, parent_slices):
             if isinstance(parent_slice, int):
                 continue
-            view_idx.append((parent_elt - parent_slice.start) / parent_slice.step)
+            view_idx.append((parent_elt - parent_slice.start) // parent_slice.step)
+        if axis is not None:
+            view_idx = view_idx[0]
         return view_idx
 
     def __is_valid_parent_block_idx__(self, *parent_idx, axis=None):
         # Assign what indices we need to check.
         if axis is not None:
             parent_slices = [self.parent_slices[axis]]
-            parent_idx = [parent_idx[axis]]
         else:
             parent_slices = self.parent_slices
 
