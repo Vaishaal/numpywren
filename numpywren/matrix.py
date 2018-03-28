@@ -74,7 +74,6 @@ class BigMatrix(object):
                  bucket=DEFAULT_BUCKET,
                  prefix='numpywren.objects/',
                  dtype=np.float64,
-                 transposed=False,
                  parent_fn=None,
                  write_header=False):
         if bucket is None:
@@ -87,7 +86,6 @@ class BigMatrix(object):
         self.key = key
         self.key_base = os.path.join(prefix, self.key)
         self.dtype = dtype
-        self.transposed = transposed
         self.parent_fn = parent_fn
         if (shape == None or shard_sizes == None):
             header = self.__read_header__()
@@ -116,7 +114,7 @@ class BigMatrix(object):
     @property
     def T(self):
         """Return the transpose with the same underlying representation."""
-        return self.__transpose__()
+        return BigMatrixView(self, [None] * len(self.shape), transposed=True)
 
     @property
     def blocks_exist(self):
@@ -302,10 +300,10 @@ class BigMatrix(object):
         key = self.__shard_idx_to_key__(block_idx)
         return await self.__save_matrix_to_s3__(block, key, loop)
 
-    def delete_block(self, block, *block_idx):
+    def delete_block(self, *block_idx):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        delete_block_async_coro = self.delete_block_async(loop, block, *block_idx)
+        delete_block_async_coro = self.delete_block_async(loop, *block_idx)
         res = loop.run_until_complete(asyncio.ensure_future(delete_block_async_coro))
         return res
 
@@ -383,6 +381,9 @@ class BigMatrix(object):
             raise Exception("Axis must be an integer.")
         else:
             return all_blocks[axis]
+
+    def __getitem__(self, bidxs):
+        return BigMatrixView(self, bidxs)
 
     def _register_parent(self, parent_fn):
         self.parent_fn = parent_fn
@@ -503,17 +504,189 @@ class BigMatrix(object):
             rep += ".T"
         return rep
 
-    def __transpose__(self):
-        transposed = self.__class__(key=self.key,
-                                    shape=self.shape[::-1],
-                                    shard_sizes=self.shard_sizes[::-1],
-                                    bucket=self.bucket,
-                                    prefix=self.prefix,
-                                    dtype=self.dtype,
-                                    transposed=True,
-                                    parent_fn=self.parent_fn)
-        return transposed
 
+class BigMatrixView(BigMatrix):
+    def __init__(self, parent, parent_slices, transposed=False):
+        self.parent = parent
+        self.transposed = transposed
+        self.parent_slices = []
+        for i, parent_slice in enumerate(parent_slices):
+            # Don't modify integer indexes.
+            if not isinstance(parent_slice, int):
+                # Replace any Nones in slices.
+                start = parent_slice.start
+                stop = parent_slice.stop
+                step = parent_slice.step
+                if start is None:
+                    start = 0
+                if stop is None:
+                    stop = self.parent.shape[i]
+                if step is None:
+                    step = 1
+            self.parent_slices.append(slice(start, stop, step))
+        # Account for the case where slices aren't provided for the trailing indexes.
+        self.parent_slices += [slice(0, self.parent.shape[i], 1)
+                               for i in range(len(parent_slice):len(self.parent.shape))]
+    @property
+    def blocks_exist(self):
+        raise NotImplementedError
+
+    @property
+    def blocks_not_exist(self):
+        raise NotImplementedError 
+
+    @property
+    def blocks(self):
+        raise NotImplementedError
+
+    @property
+    def block_idxs_exist(self):
+        parent_idxs = self.parent.block_idxs_exist() 
+        return map(self.__parent_to_view_block_idx__,
+                   filter(self.__is_valid_parent_block_idx__, parent_idxs))
+
+    @property
+    def block_idxs_not_exist(self):
+        parent_idxs = self.parent.block_idxs_not_exist() 
+        return map(self.__parent_to_view_block_idx__,
+                   filter(self.__is_valid_parent_block_idx__, parent_idxs))
+
+    @property
+    def block_idxs(self):
+        parent_idxs = self.parent.block_idxs() 
+        return map(self.__parent_to_view_block_idx__,
+                   filter(self.__is_valid_parent_block_idx__, parent_idxs))
+
+    def get_block(self, *block_idx): 
+        parent_idx = self.__view_to_parent_block_idx__(*block_idx)
+        return self.parent.get_block(*parent_idx)
+
+    async def get_block_async(self, loop, *block_idx):
+        parent_idx = self.__view_to_parent_block_idx__(*block_idx)
+        return self.parent.get_block_async(loop, *parent_idx)
+
+    def put_block(self, block, *block_idx):
+        parent_idx = self.__view_to_parent_block_idx__(*block_idx)
+        return self.parent.put_block(block, parent_idx)
+
+    async def put_block_async(self, block, loop=None, *block_idx):
+        parent_idx = self.__view_to_parent_block_idx__(*block_idx)
+        return self.parent.put_block_async(block, loop, parent_idx)
+
+    def delete_block(self, *block_idx):
+        parent_idx = self.__view_to_parent_block_idx__(*block_idx)
+        return self.parent.delete_block(parent_idx)
+
+    async def delete_block_async(self, loop, *block_idx):
+        parent_idx = self.__view_to_parent_block_idx__(*block_idx)
+        return self.parent.delete_block(loop, parent_idx)
+
+    def _block_idxs(self, axis=None):
+        parent_axis = self.__view_to_parent_axis__(axis)
+        parent_idxs = self.parent._block_idxs(parent_axis) 
+        valid_parent_idxs = filter(lambda x: self.__is_valid_parent_block_idx__(x, parent_axis),
+                                   parent_idxs)
+        return map(lambda x: self.__parent_to_view_block_idx__(x, parent_axis), valid_parent_idxs)
+
+    def _blocks(self, axis=None):
+        raise NotImplementedError
+
+    def __view_to_parent_axis__(self, view_axis):
+        num_slices = 0
+        for i, parent_slice in enumerate(self.parent_slices):
+            if isinstance(parent_slice, slice):
+                num_slices += 1
+            # Check if we've reached the parent index referred by the view index.
+            if num_slices - 1 == view_axis
+                break
+        return i 
+
+    def __view_to_parent_block_idx__(self, *view_idx):
+        parent_idx = []
+        i = 0
+        for parent_slice in self.parent_slices:
+            if isinstance(parent_slice, int):
+                # The view won't have an index for integer slices.
+                parent_idx.append(parent_slice)
+            else:
+                parent_elt = view_elt[i] * parent_slice.step + parent_slice.start
+                if parent_elt < 0:
+                    raise NotImplementedError
+                if parent_elt >= parent_slice.stop:
+                    raise IndexError("Array index out of bounds.")
+                parent_idx.append(parent_elt)
+                i += 1
+        return parent_idx
+
+    def __parent_to_view_block_idx__(self, *parent_idx, axis=None):
+        # Assign what indices we need to convert.
+        if axis is not None:
+            parent_slices = [self.parent_slices[axis]]
+            parent_idx = [parent_idx[axis]]
+        else:
+            parent_slices = self.parent_slices
+
+        assert len(parent_idx) == len(parent_slices)
+        assert self.__is_valid_parent_block_idx(*parent_idx, axis)
+        view_idx = []
+        for parent_elt, parent_slice in zip(parent_idx, parent_slices):
+            if isinstance(parent_slice, int):
+                continue
+            view_idx.append((parent_elt - parent_slice.start) / parent_slice.step)
+        return view_idx
+
+    def __is_valid_parent_block_idx__(self, *parent_idx, axis=None):
+        # Assign what indices we need to check.
+        if axis is not None:
+            parent_slices = [self.parent_slices[axis]]
+            parent_idx = [parent_idx[axis]]
+        else:
+            parent_slices = self.parent_slices
+
+        # Now check all relevant indices.
+        for parent_elt, parent_slice in zip(parent_idx, parent_slices):
+            if parent_elt < 0:
+                raise NotImplementedError("Negative indexing not yet supported.")
+            if isinstance(parent_slice, int):
+                if parent_elt != parent_slice:
+                    return False
+            else:    
+                if parent_elt < parent_slice.start:
+                    return False
+                if parent_elt >= parent_slice.stop:
+                    return False
+                if (parent_elt - parent_slice.start) % parent_slice.step != 0:
+                    return False
+        return True  
+
+    def __str__(self):
+        slice_reps = [] 
+        last_slice = -1
+        for parent_slice, parent_shape in zip(self.parent_slices, self.parent.shape):
+            if parent_slice != slice(0, parent_shape, 1):
+                last_slice += 1
+            if isinstance(parent_slice, int):
+                slice_reps.append(str(parent_slice))
+            else:
+                if parent_slice.step == 1:
+                    step_rep = ""
+                else:
+                    step_rep = ":" + parent_slice.step 
+                if parent_slice.start == 0:
+                    start_rep = ""
+                else:
+                    start_rep = str(parent_slice.start)
+                if stop_rep == self.parent.shape[i]:
+                    stop_rep = ""
+                else:
+                    stop_rep = str(parent_slice.stop)
+                slice_reps.append(start_rep + ":" + stop_rep + step_rep)
+        rep = self.parent.__str__() 
+        if last_slice != -1:
+            rep += "[" + ",".join(slice_reps[:last_slice]) + "]"
+        if self.transposed:
+            rep += ".T"
+        return rep
 
 class Scalar(BigMatrix):
     def __init__(self, key,
