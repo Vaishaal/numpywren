@@ -507,6 +507,8 @@ class BigMatrixView(BigMatrix):
         self.shard_sizes = parent.shard_sizes
         self.parent_slices = []
         self.shape = []
+        if isinstance(parent_slices, int):
+            parent_slices = [parent_slices]
         for i, parent_slice in enumerate(parent_slices):
             if not isinstance(parent_slice, int):
                 # Replace any Nones in slices.
@@ -523,7 +525,6 @@ class BigMatrixView(BigMatrix):
                 self.parent_slices.append(slice(start, stop, step))
             else:
                 # An integer slice means we are eliminating an axis.
-                self.view_idx_len -= 1
                 self.parent_slices.append(parent_slice)
         # Account for the case where slices aren't provided for the trailing indexes.
         self.parent_slices += [slice(0, self.parent.shape[i], 1)
@@ -590,14 +591,14 @@ class BigMatrixView(BigMatrix):
             block_idx = reversed(block_idx)
             block = block.T
         parent_idx = self.__view_to_parent_block_idx__(*block_idx)
-        return self.parent.put_block(block, parent_idx)
+        return self.parent.put_block(block, *parent_idx)
 
     async def put_block_async(self, block, loop=None, *block_idx):
         if self.transposed:
             block_idx = reversed(block_idx)
             block = block.T
         parent_idx = self.__view_to_parent_block_idx__(*block_idx)
-        return self.parent.put_block_async(block, loop, parent_idx)
+        return self.parent.put_block_async(block, loop, *parent_idx)
 
     def delete_block(self, *block_idx):
         if self.transposed:
