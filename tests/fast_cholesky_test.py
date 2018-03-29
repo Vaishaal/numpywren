@@ -67,9 +67,9 @@ for c in range(num_cores):
 '''
 
 t = time.time()
-all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=1), range(num_cores))
+all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=1), range(num_cores), extra_env={"REDIS_IP":os.environ.get("REDIS_IP", "")})
 time.sleep(10)
-while(program.program_status() == lp.EC.RUNNING):
+while(program.program_status() == lp.PS.RUNNING):
     time.sleep(5)
     waiting = 0
     running = 0
@@ -80,15 +80,14 @@ while(program.program_status() == lp.EC.RUNNING):
         print(attrs)
         waiting += int(attrs["ApproximateNumberOfMessages"])
         running += int(attrs["ApproximateNumberOfMessagesNotVisible"])
-    if (running == 0):
-        print("Looks like jobs timed out spinning up more...!")
-        more_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=1), range(waiting))
+    if (waiting > 10 or running == 0):
+        print("Looks like there are jobs spinning up more...!")
+        more_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=1), range(waiting), extra_env={"REDIS_IP":os.environ.get("REDIS_IP", "")})
 
 e = time.time()
 print(program.program_status())
 print("PROGRAM STATUS ", program.program_status())
 print("PROGRAM HASH", program.hash)
-print("PROGRAM Current Status", program.ret_status.get())
 print("Block idxs exist after", len(L_sharded.block_idxs_exist))
 print("Took {0} seconds".format(e - t))
 
