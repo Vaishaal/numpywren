@@ -63,23 +63,34 @@ class LambdaPackExecutor(object):
         pcs = [pc]
         for pc in pcs:
             t = time.time()
-            self.program.pre_op(pc)
+            node_status = self.program.get_node_status(pc)
+            self.program.inst_blocks[pc].start_time = time.time()
             instrs = self.program.inst_blocks[pc].instrs
-            # first instruction in every instruction block is executable!
+            next_pc = None
             try:
-                for instr in instrs:
-                    instr.executor = computer
-                    instr.cache = self.cache
-                    res = await instr()
-                    instr.cache = None
-                    instr.executor = None
-                next_pc = self.program.post_op(pc, lp.EC.SUCCESS)
+                if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
+                    for instr in instrs:
+                        instr.executor = computer
+                        instr.cache = self.cache
+                        res = await instr()
+                        instr.cache = None
+                        instr.executor = None
+                    next_pc = self.program.post_op(pc, lp.PS.SUCCESS)
+                elif (node_status == lp.NS.POST_OP):
+                    next_pc = self.program.post_op(pc, lp.PS.SUCCESS)
+                elif (node_status == lp.NS.NOT_READY):
+                    print("THIS SHOULD NEVER HAPPEN OTHER THAN DURING TEST")
+                    continue
+                elif (node_status == lp.NS.FINISHED):
+                    continue
+                else:
+                    raise Exception("Unknown state")
                 if (next_pc != None):
                     pcs.append(next_pc)
             except Exception as e:
                 traceback.print_exc()
                 tb = traceback.format_exc()
-                self.program.post_op(pc, lp.EC.EXCEPTION, tb=tb)
+                self.program.post_op(pc, lp.PS.EXCEPTION, tb=tb)
                 raise
         e = time.time()
 
@@ -115,7 +126,7 @@ async def check_program_state(program, loop):
         #TODO make this an s3 access as opposed to DD access since we don't *really need* atomicity here
         #TODO make this coroutine friendly
         s = program.program_status()
-        if(s != lp.EC.RUNNING):
+        if(s != lp.PS.RUNNING):
             break
         # DD is expensive so sleep alot
         await asyncio.sleep(10)
@@ -125,6 +136,7 @@ async def check_program_state(program, loop):
 async def lambdapack_run_async(loop, program, computer, cache, pipeline_width=1, msg_vis_timeout=10):
     session = aiobotocore.get_session(loop=loop)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
+    start_time = time.time()
     try:
         while(True):
             await asyncio.sleep(0)
@@ -155,6 +167,9 @@ async def lambdapack_run_async(loop, program, computer, cache, pipeline_width=1,
             print("releasing lock")
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
                 await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            current_time = time.time()
+            if (current_time - start_time > 200):
+                return
     except Exception as e:
         print(e)
         traceback.print_exc()

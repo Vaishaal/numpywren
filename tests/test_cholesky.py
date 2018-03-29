@@ -14,7 +14,7 @@ import time
 import os
 import boto3
 
-class LambdapackExecutorTest(unittest.TestCase):
+class CholeskyTest(unittest.TestCase):
     def test_cholesky_single(self):
         X = np.random.randn(4,4)
         A = X.dot(X.T) + np.eye(X.shape[0])
@@ -39,7 +39,7 @@ class LambdapackExecutorTest(unittest.TestCase):
         print("RUNNING MULTI")
         np.random.seed(1)
         size = 128
-        shard_size = 64
+        shard_size = 32
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -56,7 +56,7 @@ class LambdapackExecutorTest(unittest.TestCase):
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
         program.start()
         #job_runner.main(program, program.queue_url)
-        job_runner.lambdapack_run(program)
+        job_runner.lambdapack_run(program, pipeline_width=1)
         program.wait()
         print("Program status")
         print(program.program_status())
@@ -69,6 +69,12 @@ class LambdapackExecutorTest(unittest.TestCase):
             for instr in profiled_block.instrs:
                 total_time += instr.end_time - instr.start_time
             print("Block {0} total_time {1} pipelined time {2}".format(pc, total_time, actual_time))
+        L_npw = L_sharded.numpy()
+        L = np.linalg.cholesky(A)
+        print(L_npw)
+        print(L)
+        assert(np.allclose(L_npw, L))
+
 
 
 
@@ -97,7 +103,7 @@ class LambdapackExecutorTest(unittest.TestCase):
         program.start()
         num_cores = 1
         print("Mapping...")
-        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"])
+        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env={"REDIS_IP": os.environ.get("REDIS_IP", "")})
         futures[0].result()
         print("Waiting...")
         pywren.wait(futures)
@@ -123,8 +129,8 @@ class LambdapackExecutorTest(unittest.TestCase):
     def test_cholesky_multi_process(self):
         print("RUNNING many process")
         np.random.seed(1)
-        size = 16384
-        shard_size = 4096
+        size = 128
+        shard_size = 32
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -135,7 +141,7 @@ class LambdapackExecutorTest(unittest.TestCase):
         print(A_sharded.key)
         A_sharded.free()
         print("sharding A..")
-        #shard_matrix(A_sharded, A)
+        shard_matrix(A_sharded, A)
         instructions,L_sharded,trailing = lp._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
@@ -172,16 +178,17 @@ class LambdapackExecutorTest(unittest.TestCase):
     def test_cholesky_multi_lambda(self):
         print("RUNNING many lambda")
         np.random.seed(1)
-        size = 128
-        shard_size = 64
+        size = 16384
+        shard_size = 4096
         np.random.seed(1)
         print("Generating X")
-        X = np.random.randn(size, 128)
+        X = np.random.randn(size, 1)
         print("Generating A")
         A = X.dot(X.T) + np.eye(X.shape[0])
         shard_sizes = (shard_size, shard_size)
         A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
         A_sharded.free()
+        print("sharding....")
         shard_matrix(A_sharded, A)
         instructions,L_sharded,trailing = lp._chol(A_sharded)
         L_sharded.free()
@@ -192,10 +199,11 @@ class LambdapackExecutorTest(unittest.TestCase):
         print(program)
         program.start()
         num_cores = 100
-        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"])
+        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env={"REDIS_IP": os.environ.get("REDIS_IP", "")})
         program.wait()
         print("Program status")
         print(program.program_status())
+        print(program.hash)
         program.free()
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
@@ -210,6 +218,7 @@ class LambdapackExecutorTest(unittest.TestCase):
             for instr in profiled_block.instrs:
                 total_time += instr.end_time - instr.start_time
             print("Instruction Block {0} operation_time {1} end_to_end time {2}".format(pc, total_time, actual_time))
+
     def test_cholesky_multi_standalone(self):
         print("RUNNING many standalone")
         np.random.seed(1)
