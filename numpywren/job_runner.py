@@ -140,11 +140,12 @@ async def check_program_state(program, loop):
 
 async def lambdapack_run_async(loop, program, computer, cache, pipeline_width=1, msg_vis_timeout=10, timeout=200):
     session = aiobotocore.get_session(loop=loop)
-    lmpk_executor = LambdaPackExecutor(program, loop, cache)
-    start_time = time.time()
+    # every pipelined worker gets its own copy of program so we don't step on eachothers toes!
     serializer = serialize.SerializeIndependent()
     byte_string = serializer([program])[0][0]
     program = pickle.loads(byte_string)
+    lmpk_executor = LambdaPackExecutor(program, loop, cache)
+    start_time = time.time()
 
     try:
         while(True):
