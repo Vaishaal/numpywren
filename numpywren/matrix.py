@@ -303,8 +303,7 @@ class BigMatrix(object):
         return await self.__save_matrix_to_s3__(block, key, loop)
 
     def delete_block(self, block, *block_idx):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        loop = asyncio.get_event_loop()
         delete_block_async_coro = self.delete_block_async(loop, block, *block_idx)
         res = loop.run_until_complete(asyncio.ensure_future(delete_block_async_coro))
         return res
@@ -643,7 +642,7 @@ class BigSymmetricMatrix(BigMatrix):
         if block_idx_sym != block_idx:
             flipped = True
         key = self.__shard_idx_to_key__(block_idx_sym)
-        aiobotocore.get_session(loop=loop)
+        session = aiobotocore.get_session(loop=loop)
         async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
             resp = client.delete_object(Key=key, Bucket=self.bucket)
         return resp
