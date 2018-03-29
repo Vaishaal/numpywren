@@ -128,9 +128,6 @@ class RemoteInstruction(object):
     def clear(self):
         self.result = None
 
-    def __deep_copy__(self, memo):
-        return self
-
 class Barrier(RemoteInstruction):
   def __init__(self, i_id):
         super().__init__(i_id)
@@ -186,7 +183,7 @@ class RemoteLoad(RemoteInstruction):
           await prev
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
-        if (self.result == None):
+        if (self.result is None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
             if (self.cache != None and cache_key in self.cache):
               t = time.time()
@@ -230,7 +227,7 @@ class RemoteWrite(RemoteInstruction):
           await prev
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
-        if (self.result == None):
+        if (self.result is None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
             if (self.cache != None):
               # write to the cache
@@ -417,6 +414,13 @@ class InstructionBlock(object):
         return out
     def clear(self):
       [x.clear() for x in self.instrs]
+
+    def total_flops(self):
+      return sum([getattr(x, "flops", 0) for x in self.instrs])
+
+    def total_io(self):
+      return sum([getattr(x, "size", 0) for x in self.instrs])
+
     def __copy__(self):
         return InstructionBlock(self.instrs.copy(), self.label)
 
@@ -427,7 +431,7 @@ class LambdaPackProgram(object):
        Maintains global state information
     '''
 
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP):
+    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9):
         t = time.time()
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
@@ -437,6 +441,8 @@ class LambdaPackProgram(object):
         self.inst_blocks = [copy.copy(x) for x in inst_blocks]
         self.program_string = "\n".join([str(x) for x in inst_blocks])
         self.max_priority = num_priorities - 1
+        self.io_rate = io_rate
+        self.flop_rate = flop_rate
         program_string = "\n".join([str(x) for x in self.inst_blocks])
         hashed = hashlib.sha1()
         hashed.update(program_string.encode())
@@ -515,6 +521,24 @@ class LambdaPackProgram(object):
       put(self._edge_key(i,j), status.value, ip=self.redis_ip)
       return status
 
+    def set_max_pc(self, pc):
+      # unreliable DO NOT RELY ON THIS THIS JUST FOR DEBUGGING
+      max_pc = get(self.hash + "_max", ip=self.redis_ip)
+      if (max_pc == None):
+        max_pc = 0
+      max_pc = int(max_pc)
+      if (pc > max_pc):
+        max_pc = put(self.hash + "_max", pc, ip=self.redis_ip)
+
+      return max_pc
+
+    def get_max_pc(self):
+      # unreliable DO NOT RELY ON THIS THIS JUST FOR DEBUGGING
+      max_pc = get(self.hash + "_max", ip=self.redis_ip)
+      if (max_pc == None):
+        max_pc = 0
+      return int(max_pc)
+
     def post_op(self, i, ret_code, tb=None):
         # need clean post op logic to handle
         # replays
@@ -525,6 +549,11 @@ class LambdaPackProgram(object):
         # post op needs to ATOMICALLY check dependencies
 
         try:
+          node_status = self.get_node_status(i)
+          # if we had 2 racing tasks and one finished no need to go through rigamarole
+          # of re-enqueeuing children
+          if (node_status == NS.FINISHED):
+            return
           self.set_node_status(i, NS.POST_OP)
           inst_block = self.inst_blocks[i]
           if (ret_code == PS.EXCEPTION and tb != None):
@@ -536,8 +565,6 @@ class LambdaPackProgram(object):
           ready_children = []
           for child in children:
             t = time.time()
-            my_child_key = "{0}_{1}_{2}".format(self.hash,i,child)
-            print("CHILDREN_KEY", my_child_key)
             self.set_edge_status(i, child, ES.READY)
             parent_keys = [self._edge_key(p,child) for p in self.parents[child]]
             print("PARENT_KEYS", parent_keys)
@@ -558,10 +585,12 @@ class LambdaPackProgram(object):
             max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
             next_pc = ready_children[max_priority_idx]
             print("LOCAL ENQUEUE: ", self.inst_blocks[next_pc])
-            # do not enqueue
+            # do not enqueue normally
+            eager_child = ready_children[max_priority_idx]
             del ready_children[max_priority_idx]
           else:
             next_pc = None
+            eager_child = None
 
           # move the highest priority job thats ready onto the local task queue
           # this is JRK's idea of dynamic node fusion or eager scheduling
@@ -571,21 +600,25 @@ class LambdaPackProgram(object):
 
 
           sqs = boto3.resource('sqs', region_name='us-west-2')
-          queue = sqs.Queue(self.queue_urls[inst_block.priority])
           self.inst_blocks[i].end_time = time.time()
           self.set_profiling_info(i)
           self.inst_blocks[i].end_time = time.time()
           pipelined_time = inst_block.end_time - inst_block.start_time
-          full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
-          #print("Finished {0}, all children are {1}, ready children are {2}".format(i, children, ready_children))
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
+            queue = sqs.Queue(self.queue_urls[self.inst_blocks[i].priority])
             queue.send_message(MessageBody=str(child))
-            pass
+
+          if (eager_child != None):
+            # handle eager child by sending to lowest priority queue
+            queue = sqs.Queue(self.queue_urls[0])
+            #TODO don't hardcode 10s here adaptively figure out runtime of block
+            queue.send_message(MessageBody=str(eager_child), DelaySeconds=10)
           self.set_node_status(i, NS.FINISHED)
           return next_pc
         except Exception as e:
             print("POST OP EXCEPTION ", e)
+            print(self.inst_blocks[i])
             tb = traceback.format_exc()
             self.handle_exception(e, tb=tb, block=i)
             traceback.print_exc()
@@ -852,7 +885,7 @@ def perf_profile(blocks, num_bins=100):
     WRITE_INSTRUCTIONS = [OC.S3_WRITE, OC.RET]
     COMPUTE_INSTRUCTIONS = [OC.SYRK, OC.TRSM, OC.INVRS, OC.CHOL]
     # first flatten into a single instruction list
-    instructions = [inst for block in blocks for inst in block.instrs]
+    instructions = [inst for block in blocks for inst in block.instrs if inst.end_time != None and inst.start_time != None]
     start_times = [inst.start_time for inst in instructions]
     end_times = [inst.end_time for inst in instructions]
 
@@ -866,6 +899,9 @@ def perf_profile(blocks, num_bins=100):
     runtimes = []
 
     for i,inst in enumerate(instructions):
+        if (inst.end_time == None or inst.start_time == None):
+          # replay instructions don't always have profiling information...
+          continue
         duration = inst.end_time - inst.start_time
         if (inst.i_code in READ_INSTRUCTIONS):
             start_time = inst.start_time - abs_start
