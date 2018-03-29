@@ -44,6 +44,12 @@ print("Generating matrix")
 XXT_sharded = binops.gemm(pwex, X_sharded, X_sharded.T, overwrite=False)
 XXT_sharded = BigSymmetricMatrix("gemm(BigMatrix(cholesky_test_X), BigMatrix(cholesky_test_X).T)")
 XXT_sharded.lambdav = 1
+XXT = XXT_sharded.numpy()
+print("COMPUTING LOCAL CHOLESKY")
+t = time.time()
+L = np.linalg.cholesky(XXT)
+e = time.time()
+print("Local cholesky decomposition took {0} seconds".format(e - t))
 instructions,L_sharded,trailing = lp._chol(XXT_sharded)
 L_sharded.free()
 instructions  = instructions
@@ -58,7 +64,7 @@ program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=co
 print("LONGEST PATH ", program.longest_path)
 t = time.time()
 program.start()
-num_cores = 128
+num_cores = 256
 executor = fs.ProcessPoolExecutor(num_cores)
 all_futures  = []
 '''
@@ -67,7 +73,7 @@ for c in range(num_cores):
 '''
 
 t = time.time()
-all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=1), range(num_cores), extra_env={"REDIS_IP":os.environ.get("REDIS_IP", "")})
+all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3), range(num_cores), extra_env={"REDIS_IP":os.environ.get("REDIS_IP", "")})
 time.sleep(10)
 while(program.program_status() == lp.PS.RUNNING):
     time.sleep(5)
@@ -80,8 +86,10 @@ while(program.program_status() == lp.PS.RUNNING):
         print(attrs)
         waiting += int(attrs["ApproximateNumberOfMessages"])
         running += int(attrs["ApproximateNumberOfMessagesNotVisible"])
-    if (waiting > 10 or running == 0):
+
+    if ((waiting > 10 or running == 0) and (time.time() - last_run) > 60):
         print("Looks like there are jobs spinning up more...!")
+        last_run = time.time()
         more_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=1), range(waiting), extra_env={"REDIS_IP":os.environ.get("REDIS_IP", "")})
 
 e = time.time()
@@ -95,9 +103,6 @@ print("Took {0} seconds".format(e - t))
 print("Downloading L_npw")
 L_npw = L_sharded.numpy()
 print("DOWLOADING XXT")
-XXT = XXT_sharded.numpy()
-print("COMPUTING LOCAL CHOLESKY")
-L = np.linalg.cholesky(XXT)
 print(L_npw)
 print(L)
 assert(np.allclose(L_npw, L))

@@ -45,7 +45,7 @@ class FailureTests(unittest.TestCase):
         jobs = []
 
         for c in range(cores):
-            p = mp.Process(target=job_runner.lambdapack_run, args=(program,), kwargs={'timeout':3600, 'pipeline_width':3})
+            p = mp.Process(target=job_runner.lambdapack_run, args=(program,), kwargs={'timeout':3600, 'pipeline_width':4})
             jobs.append(p)
             p.start()
 
@@ -124,7 +124,7 @@ class FailureTests(unittest.TestCase):
         jobs = []
 
         for c in range(cores):
-            p = mp.Process(target=job_runner.lambdapack_run, args=(program,), kwargs={'timeout':3600, 'pipeline_width':3})
+            p = mp.Process(target=job_runner.lambdapack_run, args=(program,), kwargs={'timeout':3600, 'pipeline_width':4})
             jobs.append(p)
             p.start()
 
@@ -147,7 +147,7 @@ class FailureTests(unittest.TestCase):
                     core = int(np.random.choice(cores, 1)[0])
                     print("Maliciously Killing a job!")
                     jobs[core].terminate()
-                    p = mp.Process(target=job_runner.lambdapack_run, args=(program,), kwargs={'timeout':3600, 'pipeline_width':3})
+                    p = mp.Process(target=job_runner.lambdapack_run, args=(program,), kwargs={'timeout':3600, 'pipeline_width':4})
                     p.start()
                     jobs[core] = p
 
