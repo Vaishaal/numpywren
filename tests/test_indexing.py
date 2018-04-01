@@ -50,14 +50,12 @@ class IndexingTestClass(unittest.TestCase):
         assert(np.all(X[16::32] == X_sharded.submatrix([1, None, 2]).numpy()[::16]))
         assert(np.all(X[:, 0:96:64] == X_sharded.submatrix(None, [0, 6, 4]).numpy()[:, ::16]))
         assert(np.all(X[:, 96:128:64] == X_sharded.submatrix(None, [6, 8, 4]).numpy()[:, ::16]))
-    """
+
     def test_complex_slices(self):
         X = np.random.randn(21, 67, 53, 27)
         shard_sizes = [3, 16, 11, 9] 
         X_sharded = BigMatrix("test_5", shape=X.shape, shard_sizes=shard_sizes)
         shard_matrix(X_sharded, X)
-        assert(np.all(X[::32] == X_sharded.submatrix([None, None, 2]).numpy()[::16]))
-        assert(np.all(X[16::32] == X_sharded.submatrix([1, None, 2]).numpy()[::16]))
-        assert(np.all(X[:, 0:96:64] == X_sharded.submatrix(None, [0, 3, 2]).numpy()[:, ::16]))
-        assert(np.all(X[:, 96:128:64] == X_sharded.submatrix(None, [3, None]).numpy()[:, ::16]))
-    """
+        assert(np.all(X[18:21, 64:67, 44:53, 18:27] == X_sharded.submatrix(6, 4, 4, 2).numpy()))
+        assert(np.all(X[15:18, 64:67, 11:22, 9:18] == X_sharded.submatrix([2, None, 3], [2, None, 2], [1, None, 3], 1).get_block(1, 1, 0)))
+
