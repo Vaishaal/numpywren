@@ -99,20 +99,39 @@ class LambdaPackExecutor(object):
                 raise
         e = time.time()
 
+def calculate_busy_time(rtimes):
+    pairs = [[(item[0], 1), (item[1], -1)] for sublist in rtimes for item in sublist]
+    events = sorted([item for sublist in pairs for item in sublist])
+    running = 0
+    wtimes = []
+    current_start = 0
+    for event in events:
+        if running == 0 and event[1] == 1:
+            current_start = event[0]
+        if running == 1 and event[1] == -1:
+            wtimes.append([current_start, event[0]])
+        running += event[1]
+    return wtimes
+
+
 def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, timeout=200):
+    lambda_start = time.time()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.create_task(check_program_state(program, loop))
+    #loop.create_task(check_program_state(program, loop))
     computer = fs.ThreadPoolExecutor(1)
     cache = LRUCache(max_items=cache_size)
+    tasks = []
     for i in range(pipeline_width):
         # all the async tasks share 1 compute thread and a io cache
         coro = lambdapack_run_async(loop, program, computer, cache, timeout=timeout)
-        loop.create_task(coro)
-    res = loop.run_forever()
+        tasks.append(loop.create_task(coro))
+    results = loop.run_until_complete(asyncio.gather(*tasks))
     print("loop end")
     loop.close()
-    return 0
+    lambda_stop = time.time()
+    return {"up_time": [lambda_start, lambda_stop],
+            "exec_time": calculate_busy_time(results)}
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
     try:
@@ -146,7 +165,8 @@ async def lambdapack_run_async(loop, program, computer, cache, pipeline_width=1,
     program = pickle.loads(byte_string)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
     start_time = time.time()
-
+    running_times = []
+    last_message_time = time.time()
     try:
         while(True):
             await asyncio.sleep(0)
@@ -162,7 +182,11 @@ async def lambdapack_run_async(loop, program, computer, cache, pipeline_width=1,
                     # queue_url= messages
                     break
             if ("Messages" not in messages):
+                if time.time() - last_message_time > 10:
+                    return running_times
                 continue
+            last_message_time = time.time()
+            start_processing_time = time.time()
             msg = messages["Messages"][0]
             receipt_handle = msg["ReceiptHandle"]
             pc = int(msg["Body"])
@@ -182,10 +206,11 @@ async def lambdapack_run_async(loop, program, computer, cache, pipeline_width=1,
             sqs_client = boto3.client('sqs')
             sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             '''
-
+            end_processing_time = time.time()
+            running_times.append((start_processing_time, end_processing_time))
             current_time = time.time()
             if (current_time - start_time > timeout):
-                return
+                return running_times
     except Exception as e:
         print(e)
         traceback.print_exc()
