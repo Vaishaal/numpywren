@@ -559,10 +559,11 @@ class BigMatrixView(BigMatrix):
                 stop = self.axis_lens[i]
             if step is None:
                 step = 1
-            if stop == self.axis_lens[i]:
-                self.shape.append((self.parent.shape[i] - self.shard_sizes[i] * start) // step)
-            else: 
-                self.shape.append(self.shard_sizes[i] * (stop - start) // step)
+            self.shape.append(self.shard_sizes[i] * int(np.ceil((stop - start) / step)))
+            # Handle the case where the last view block is equal to a final
+            # parent block that is smaller than the shard size.
+            if (stop - 1 - start) % step == 0 and self.parent.shape[i] % self.shard_sizes[i] != 0:
+                self.shape[-1] += self.parent.shape[i] % self.shard_sizes[i]  - self.shard_sizes[i]
             self.parent_slices.append(slice(start, stop, step))
         # Account for the case where slices aren't provided for the trailing indexes.
         for i in range(len(self.parent_slices), len(self.parent.shape)):
