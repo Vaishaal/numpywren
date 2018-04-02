@@ -129,8 +129,8 @@ class CholeskyTest(unittest.TestCase):
     def test_cholesky_multi_process(self):
         print("RUNNING many process")
         np.random.seed(1)
-        size = 128
-        shard_size = 32
+        size = 16384 
+        shard_size = 4096
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -141,7 +141,7 @@ class CholeskyTest(unittest.TestCase):
         print(A_sharded.key)
         A_sharded.free()
         print("sharding A..")
-        shard_matrix(A_sharded, A)
+        #shard_matrix(A_sharded, A)
         instructions,L_sharded,trailing = lp._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
@@ -178,8 +178,8 @@ class CholeskyTest(unittest.TestCase):
     def test_cholesky_multi_lambda(self):
         print("RUNNING many lambda")
         np.random.seed(1)
-        size = 16384
-        shard_size = 4096
+        size = 128 
+        shard_size = 32
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 1)
@@ -207,8 +207,6 @@ class CholeskyTest(unittest.TestCase):
         program.free()
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
-        print(L_npw)
-        print(L)
         assert(np.allclose(L_npw, L))
         profiled_blocks = program.get_all_profiling_info()
         print(lp.perf_profile(profiled_blocks))
@@ -216,6 +214,7 @@ class CholeskyTest(unittest.TestCase):
             total_time = 0
             actual_time = profiled_block.end_time - profiled_block.start_time
             for instr in profiled_block.instrs:
+                if (instr.end_time == None or instr.start_time == None): continue
                 total_time += instr.end_time - instr.start_time
             print("Instruction Block {0} operation_time {1} end_to_end time {2}".format(pc, total_time, actual_time))
 

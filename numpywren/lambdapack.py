@@ -84,8 +84,19 @@ def get(key, ip=REDIS_IP, s3=False, s3_bucket=""):
       return redis_client.get(key)
 
 
-def atomic_sum(keys, ip=REDIS_IP):
+def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, value=1):
+  ''' Crucial atomic operation needed to insure DAG correctness
+      the return value of this operation will be sum(keys) + value
+      but it will also have the side-effect of binding key_to_set to value
+      @param key_to_set - at the end of this transaction key_to_set will be bound to value
+      @param keys - keys to be summed must exclue key_to_set
+      @param ip - ip of redis server
+      @param value - the value to bind key_to_set to
+
+    '''
+
   tot_sum = 0
+  assert key_to_set not in keys
   keys = list(set(keys))
   def _atomic_parent_sum(pipe):
     nonlocal tot_sum
@@ -99,12 +110,14 @@ def atomic_sum(keys, ip=REDIS_IP):
         print("Edge {0} is ".format(key), edge)
       tot_sum += edge
     pipe.multi()
-    pipe.set(sum_key, tot_sum)
+    pipe.set(key_to_set, value)
+    pipe.set(sum_key, tot_sum + value)
     pipe.execute()
   r = redis.StrictRedis(ip, port=6379, db=0)
   keys_to_watch = keys.copy()
   sum_key = "sum_{0}".format(keys)
   keys_to_watch.append(sum_key)
+  keys_to_watch.append(key_to_set)
   r.transaction(_atomic_parent_sum, *keys_to_watch)
   return int(r.get(sum_key))
 
@@ -137,37 +150,6 @@ class Barrier(RemoteInstruction):
   async def __call__(self):
         return 0
 
-class RemoteWrite(RemoteInstruction):
-    def __init__(self, i_id, matrix, data_instr, *bidxs):
-        super().__init__(i_id)
-        self.i_code = OC.S3_WRITE
-        self.matrix = matrix
-        self.bidxs = bidxs
-        self.data_instr = data_instr
-        self.result = None
-
-    async def __call__(self, prev=None):
-        if (prev != None):
-          await prev
-        loop = asyncio.get_event_loop()
-        self.start_time = time.time()
-        if (self.result == None):
-            self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
-            self.size = sys.getsizeof(self.data_instr.result)
-            self.ret_code = 0
-        self.end_time = time.time()
-        return self.result
-
-    def clear(self):
-        self.result = None
-
-    def __str__(self):
-        bidxs_str = ""
-        for x in self.bidxs:
-            bidxs_str += str(x)
-            bidxs_str += " "
-        return "{0} = S3_WRITE {1} {2} {3} {4}".format(self.id, self.matrix, len(self.bidxs), bidxs_str.strip(), self.data_instr.id)
-
 
 class RemoteLoad(RemoteInstruction):
     def __init__(self, i_id, matrix, *bidxs):
@@ -184,6 +166,7 @@ class RemoteLoad(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result is None):
+            #cache_key = (self.matrix, self.bidxs)
             cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
             if (self.cache != None and cache_key in self.cache):
               t = time.time()
@@ -194,9 +177,20 @@ class RemoteLoad(RemoteInstruction):
               print("Cache hit! {0}".format(e - t))
             else:
               t = time.time()
-              self.result = await self.matrix.get_block_async(loop, *self.bidxs)
+              while(True):
+                try:
+                  self.result = await self.matrix.get_block_async(loop, *self.bidxs)
+                  print("AWS S3 GET FOR CACHE KEY: {0}".format(cache_key))
+                  print(self.result)
+                  result = await self.matrix.get_block_async(loop, *self.bidxs)
+                  print("AWS S3 GET RETRY FOR CACHE KEY: {0}".format(cache_key))
+                  print(self.result)
+                  break
+                except fs._base.TimeoutError as e:
+                  pass
               self.size = sys.getsizeof(self.result)
-              self.cache[cache_key] = self.result
+              if (self.cache != None):
+                self.cache[cache_key] = self.result
               e = time.time()
               print("Cache miss! {0}".format(e - t))
               print(self.result.shape)
@@ -228,11 +222,21 @@ class RemoteWrite(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result is None):
+            cache_key = (self.matrix, self.bidxs)
+            #print(cache_key, hash(cache_key))
             cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
+            print(cache_key, hash(cache_key))
             if (self.cache != None):
               # write to the cache
+              await self.write_lock.acquire()
               self.cache[cache_key] = self.data_instr.result
-            self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
+              self.write_lock.release()
+            while(True):
+              try:
+                self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
+                break
+              except fs._base.TimeoutError as e:
+                pass
             self.size = sys.getsizeof(self.data_instr.result)
             self.ret_code = 0
         self.end_time = time.time()
@@ -262,14 +266,16 @@ class RemoteSYRK(RemoteInstruction):
         loop = asyncio.get_event_loop()
         def compute():
           self.start_time = time.time()
-          if (self.result == None):
+          if (self.result is None):
               old_block = self.argv[0].result
               block_2 = self.argv[1].result
               block_1 = self.argv[2].result
               old_block -= block_2.dot(block_1.T)
               self.result = old_block
               self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
-              self.ret_code = 0
+          else:
+            raise Exception("Same Machine Replay instruction...")
+          self.ret_code = 0
           self.end_time = time.time()
           return self.result
         return await loop.run_in_executor(self.executor, compute)
@@ -290,12 +296,14 @@ class RemoteTRSM(RemoteInstruction):
       loop = asyncio.get_event_loop()
       def compute():
           self.start_time = time.time()
-          if (self.result == None):
+          if (self.result is None):
               L_bb = self.argv[1].result
               col_block = self.argv[0].result
               self.result = scipy.linalg.blas.dtrsm(1.0, L_bb.T, col_block, side=1,lower=0)
               self.flops =  col_block.shape[1] * L_bb.shape[0] * L_bb.shape[1]
               self.ret_code = 0
+          else:
+            raise Exception("Same Machine Replay instruction...")
           self.end_time = time.time()
           return self.ret_code
       return await loop.run_in_executor(self.executor, compute)
@@ -320,11 +328,13 @@ class RemoteCholesky(RemoteInstruction):
       def compute():
           self.start_time = time.time()
           s = time.time()
-          if (self.result == None):
+          if (self.result is None):
               L_bb = self.argv[0].result
               self.result = np.linalg.cholesky(L_bb)
               self.flops = 1.0/3.0*(L_bb.shape[0]**3) + 2.0/3.0*(L_bb.shape[0])
               self.ret_code = 0
+          else:
+            raise Exception("Same Machine Replay instruction...")
           e = time.time()
           self.end_time = time.time()
           return self.result
@@ -335,35 +345,6 @@ class RemoteCholesky(RemoteInstruction):
 
     def __str__(self):
         return "{0} = CHOL {1}".format(self.id, self.argv[0].id)
-
-class RemoteInverse(RemoteInstruction):
-    def __init__(self, i_id, argv_instr):
-        super().__init__(i_id)
-        self.i_code = OC.INVRS
-        assert len(argv_instr) == 1
-        self.argv = argv_instr
-        self.result = None
-    async def __call__(self, prev=None):
-      if (prev != None):
-          await prev
-      loop = asyncio.get_event_loop()
-      def compute():
-          self.start_time = time.time()
-          if (self.result == None):
-              L_bb = self.argv[0].result
-              self.result = np.linalg.inv(L_bb)
-              self.flops = 2.0/3.0*(L_bb.shape[0]**3)
-              self.ret_code = 0
-          self.end_time  = time.time()
-          return self.result
-      return await loop.run_in_executor(self.executor, compute)
-
-
-    def clear(self):
-        self.result = None
-
-    def __str__(self):
-        return "{0} = INVRS {1}".format(self.id, self.argv[0].id)
 
 
 class RemoteReturn(RemoteInstruction):
@@ -431,7 +412,7 @@ class LambdaPackProgram(object):
        Maintains global state information
     '''
 
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9):
+    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9, eager=False):
         t = time.time()
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
@@ -443,6 +424,7 @@ class LambdaPackProgram(object):
         self.max_priority = num_priorities - 1
         self.io_rate = io_rate
         self.flop_rate = flop_rate
+        self.eager = eager
         program_string = "\n".join([str(x) for x in self.inst_blocks])
         hashed = hashlib.sha1()
         hashed.update(program_string.encode())
@@ -565,11 +547,12 @@ class LambdaPackProgram(object):
           ready_children = []
           for child in children:
             t = time.time()
-            self.set_edge_status(i, child, ES.READY)
+            my_key = self._edge_key(i,child)
             parent_keys = [self._edge_key(p,child) for p in self.parents[child]]
             print("PARENT_KEYS", parent_keys)
             # redis transaction should be atomic
-            val = atomic_sum(parent_keys, ip=self.redis_ip)
+            other_keys = [x for x in parent_keys if x != my_key]
+            val = atomic_set_and_sum(my_key, other_keys, ip=self.redis_ip)
             print("parent_sum is ", val)
             print("expected is ", len(self.parents[child]))
             print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
@@ -581,16 +564,16 @@ class LambdaPackProgram(object):
 
           # clear result() blocks
           self.inst_blocks[i].clear()
-          if (len(ready_children) >  0):
-            max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
-            next_pc = ready_children[max_priority_idx]
-            print("LOCAL ENQUEUE: ", self.inst_blocks[next_pc])
-            # do not enqueue normally
-            eager_child = ready_children[max_priority_idx]
-            del ready_children[max_priority_idx]
+          if (self.eager == True and (len(ready_children) >= 1)):
+              max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
+              next_pc = ready_children[max_priority_idx]
+              print("LOCAL ENQUEUE: ", self.inst_blocks[next_pc])
+              # do not enqueue normally
+              eager_child = ready_children[max_priority_idx]
+              del ready_children[max_priority_idx]
+              #next_pc = None
           else:
             next_pc = None
-            eager_child = None
 
           # move the highest priority job thats ready onto the local task queue
           # this is JRK's idea of dynamic node fusion or eager scheduling
@@ -604,23 +587,20 @@ class LambdaPackProgram(object):
           self.set_profiling_info(i)
           self.inst_blocks[i].end_time = time.time()
           pipelined_time = inst_block.end_time - inst_block.start_time
+          # throw away children that are done
+          ready_children = [x for x in ready_children if self.get_node_status(x) != NS.FINISHED]
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
-            queue = sqs.Queue(self.queue_urls[self.inst_blocks[i].priority])
+            queue = sqs.Queue(self.queue_urls[self.inst_blocks[child].priority])
             queue.send_message(MessageBody=str(child))
-
-          if (eager_child != None):
-            # handle eager child by sending to lowest priority queue
-            queue = sqs.Queue(self.queue_urls[0])
-            #TODO don't hardcode 10s here adaptively figure out runtime of block
-            queue.send_message(MessageBody=str(eager_child), DelaySeconds=10)
-          self.set_node_status(i, NS.FINISHED)
+          [x.clear() for x in self.inst_blocks[i].instrs]
           return next_pc
         except Exception as e:
             print("POST OP EXCEPTION ", e)
             print(self.inst_blocks[i])
+            # clear all intermediate state
+            [x.clear() for x in self.inst_blocks[i].instrs]
             tb = traceback.format_exc()
-            self.handle_exception(e, tb=tb, block=i)
             traceback.print_exc()
             raise
 

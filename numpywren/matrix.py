@@ -304,8 +304,13 @@ class BigMatrix(object):
 
     def delete_block(self, block, *block_idx):
         loop = asyncio.get_event_loop()
+        if (loop.is_closed()):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         delete_block_async_coro = self.delete_block_async(loop, block, *block_idx)
         res = loop.run_until_complete(asyncio.ensure_future(delete_block_async_coro))
+        loop.close()
         return res
 
     async def delete_block_async(self, loop=None, *block_idx):
@@ -339,6 +344,7 @@ class BigMatrix(object):
 
     def free(self):
         """Delete all allocated blocks while leaving the matrix metadata intact."""
+
         [self.delete_block(*x) for x in self.block_idxs_exist]
         return 0
 
@@ -606,7 +612,8 @@ class BigSymmetricMatrix(BigMatrix):
         key = self.__shard_idx_to_key__(block_idx_sym)
         exists = await key_exists_async(self.bucket, key)
         if (not exists and self.parent_fn == None):
-            raise Exception("Key does not exist, and no parent function prescripted")
+            raise Exception("Key {0} does not exist, and no parent function prescripted".format(key))
+            
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx_sym)
         else:
