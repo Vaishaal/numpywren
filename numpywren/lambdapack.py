@@ -179,7 +179,8 @@ class RemoteLoad(RemoteInstruction):
               t = time.time()
               self.result = await self.matrix.get_block_async(loop, *self.bidxs)
               self.size = sys.getsizeof(self.result)
-              self.cache[cache_key] = self.result.copy()
+              if (self.cache != None):
+                self.cache[cache_key] = self.result.copy()
               e = time.time()
               print("Cache miss! {0}".format(e - t))
               print(self.result.shape)

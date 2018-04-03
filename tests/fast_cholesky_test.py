@@ -20,6 +20,7 @@ import numpywren
 import numpywren.wait
 from numpywren import job_runner
 
+redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
 def program_state_inspect(program):
     executor = fs.ThreadPoolExecutor(64)
     futures = []
@@ -48,14 +49,15 @@ XXT_sharded.lambdav = D
 instructions,L_sharded,trailing = lp._chol(XXT_sharded)
 print("NUmber of instructions", len(instructions))
 L_sharded.free()
-instructions  = instructions
+instructions  = instructions[:500]
 print(L_sharded.key)
 print(L_sharded.bucket)
 print("Block idxs exist total", len(L_sharded.block_idxs))
 print("Block idxs exist not before", len(L_sharded.block_idxs_not_exist))
 executor = pywren.default_executor
 config = pwex.config
-program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, num_priorities=1, eager=True)
+program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, num_priorities=1, eager=False)
+print("program.hash", program.hash)
 print("LONGEST PATH ", program.longest_path)
 t = time.time()
 program.start()
@@ -67,7 +69,7 @@ for c in range(num_cores):
     all_futures.append(executor.submit(job_runner.lambdapack_run, program, 3))
 '''
 t = time.time()
-all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3), range(num_cores), extra_env={"REDIS_IP":os.environ.get("REDIS_IP", "")})
+all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3), range(num_cores), extra_env=redis_env)
 time.sleep(10)
 last_run = time.time()
 while(program.program_status() == lp.PS.RUNNING):
@@ -86,7 +88,7 @@ while(program.program_status() == lp.PS.RUNNING):
     if ((waiting > 10 or running == 0) and (time.time() - last_run) > 10):
         print("Looks like there are jobs spinning up more...!")
         last_run = time.time()
-        more_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3), range(waiting), extra_env={"REDIS_IP":os.environ.get("REDIS_IP", "")})
+        more_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3), range(waiting), extra_env=redis_env)
 e = time.time()
 print(program.program_status())
 print("PROGRAM STATUS ", program.program_status())

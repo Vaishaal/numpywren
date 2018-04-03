@@ -111,7 +111,7 @@ class FailureTests(unittest.TestCase):
         np.random.seed(1)
         size = 256
         shard_size = 64
-        failures =  16
+        failures =  4
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -148,7 +148,7 @@ class FailureTests(unittest.TestCase):
                 waiting += int(attrs["ApproximateNumberOfMessages"])
                 running += int(attrs["ApproximateNumberOfMessagesNotVisible"])
             print("SQS QUEUE STATUS Waiting {0}, Running {1}".format(waiting, running))
-            time.sleep(1)
+            time.sleep(10)
             if (np.random.random() > 0.65):
                 for i in range(failures):
                     core = int(np.random.choice(cores, 1)[0])
