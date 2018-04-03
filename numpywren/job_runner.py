@@ -33,10 +33,7 @@ class LRUCache(object):
     def __setitem__(self, key, value):
         if (key in self.cache):
             if (not np.allclose(value, self.cache[key])):
-                print( bcolors.WARNING + "OMG THIS IS AN ERROR THIS SHOULDN'T HAPPEN")
-        print("Key", key)
-        print("new value", value)
-        print("old value", self.cache.get(key))
+                raise Exception("LRU Cache Error inconsistent mutation")
         self.cache[key] = value
         self.key_access_times[key] = time.time()
         if (len(self.cache.keys()) > self.max_items):
@@ -127,6 +124,8 @@ class LambdaPackExecutor(object):
             except Exception as e:
                 traceback.print_exc()
                 tb = traceback.format_exc()
+                print("EXCEPTION " + tb)
+                print(program.inst_blocks[pc])
                 self.program.post_op(pc, lp.PS.EXCEPTION, tb=tb)
                 raise
         e = time.time()
