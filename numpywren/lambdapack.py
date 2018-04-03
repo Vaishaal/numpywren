@@ -35,6 +35,7 @@ except:
 
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
+REDIS_PASS = os.environ.get("REDIS_PASS", "")
 
 class RemoteInstructionOpCodes(Enum):
     S3_LOAD = 0
@@ -64,9 +65,9 @@ class ProgramStatus(Enum):
     EXCEPTION = 2
     NOT_STARTED = 3
 
-def put(key, value, ip=REDIS_IP, s3=False, s3_bucket=""):
+def put(key, value, ip=REDIS_IP, passw=REDIS_PASS , s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
-    redis_client = redis.StrictRedis(ip, port=6379, db=0)
+    redis_client = redis.StrictRedis(ip, port=6379, db=0, password=passw)
     redis_client.set(key, value)
     return value
     if (s3):
@@ -74,17 +75,17 @@ def put(key, value, ip=REDIS_IP, s3=False, s3_bucket=""):
       raise Exception("Not Implemented")
 
 
-def get(key, ip=REDIS_IP, s3=False, s3_bucket=""):
+def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
     if (s3):
       # read from S3
       raise Exception("Not Implemented")
     else:
-      redis_client = redis.StrictRedis(ip, port=6379, db=0)
+      redis_client = redis.StrictRedis(ip, port=6379, db=0, password=passw)
       return redis_client.get(key)
 
 
-def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, value=1):
+def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, passw=REDIS_PASS, value=1):
   ''' Crucial atomic operation needed to insure DAG correctness
       the return value of this operation will be sum(keys) + value
       but it will also have the side-effect of binding key_to_set to value
@@ -113,7 +114,7 @@ def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, value=1):
     pipe.set(key_to_set, value)
     pipe.set(sum_key, tot_sum + value)
     pipe.execute()
-  r = redis.StrictRedis(ip, port=6379, db=0)
+  r = redis.StrictRedis(ip, port=6379, db=0, password=passw)
   keys_to_watch = keys.copy()
   sum_key = "sum_{0}".format(keys)
   keys_to_watch.append(sum_key)
