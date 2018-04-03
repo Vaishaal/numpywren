@@ -41,6 +41,7 @@ class FailureTests(unittest.TestCase):
         executor = pywren.lambda_executor
         config = pwex.config
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, eager=True)
+        print("PROGRAM HASH", program.hash)
         cores = 16
         program.start()
         jobs = []

@@ -166,31 +166,19 @@ class RemoteLoad(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result is None):
-            #cache_key = (self.matrix, self.bidxs)
             cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
             if (self.cache != None and cache_key in self.cache):
               t = time.time()
-              self.result = self.cache[cache_key]
+              self.result = self.cache[cache_key].copy()
               self.cache_hit = True
               self.size = sys.getsizeof(self.result)
               e = time.time()
               print("Cache hit! {0}".format(e - t))
             else:
               t = time.time()
-              while(True):
-                try:
-                  self.result = await self.matrix.get_block_async(loop, *self.bidxs)
-                  print("AWS S3 GET FOR CACHE KEY: {0}".format(cache_key))
-                  print(self.result)
-                  result = await self.matrix.get_block_async(loop, *self.bidxs)
-                  print("AWS S3 GET RETRY FOR CACHE KEY: {0}".format(cache_key))
-                  print(self.result)
-                  break
-                except fs._base.TimeoutError as e:
-                  pass
+              self.result = await self.matrix.get_block_async(loop, *self.bidxs)
               self.size = sys.getsizeof(self.result)
-              if (self.cache != None):
-                self.cache[cache_key] = self.result
+              self.cache[cache_key] = self.result.copy()
               e = time.time()
               print("Cache miss! {0}".format(e - t))
               print(self.result.shape)
@@ -222,21 +210,11 @@ class RemoteWrite(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result is None):
-            cache_key = (self.matrix, self.bidxs)
-            #print(cache_key, hash(cache_key))
             cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
-            print(cache_key, hash(cache_key))
             if (self.cache != None):
               # write to the cache
-              await self.write_lock.acquire()
-              self.cache[cache_key] = self.data_instr.result
-              self.write_lock.release()
-            while(True):
-              try:
-                self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
-                break
-              except fs._base.TimeoutError as e:
-                pass
+              self.cache[cache_key] = self.data_instr.result.copy()
+            self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
             self.size = sys.getsizeof(self.data_instr.result)
             self.ret_code = 0
         self.end_time = time.time()
@@ -564,14 +542,13 @@ class LambdaPackProgram(object):
 
           # clear result() blocks
           self.inst_blocks[i].clear()
-          if (self.eager == True and (len(ready_children) >= 1)):
+          if (self.eager == True and len(ready_children) >  1):
               max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
               next_pc = ready_children[max_priority_idx]
               print("LOCAL ENQUEUE: ", self.inst_blocks[next_pc])
               # do not enqueue normally
               eager_child = ready_children[max_priority_idx]
               del ready_children[max_priority_idx]
-              #next_pc = None
           else:
             next_pc = None
 
@@ -593,13 +570,12 @@ class LambdaPackProgram(object):
             print("Adding {0} to sqs queue".format(child))
             queue = sqs.Queue(self.queue_urls[self.inst_blocks[child].priority])
             queue.send_message(MessageBody=str(child))
-          [x.clear() for x in self.inst_blocks[i].instrs]
           return next_pc
         except Exception as e:
             print("POST OP EXCEPTION ", e)
             print(self.inst_blocks[i])
             # clear all intermediate state
-            [x.clear() for x in self.inst_blocks[i].instrs]
+            self.inst_blocks[i].clear()
             tb = traceback.format_exc()
             traceback.print_exc()
             raise
