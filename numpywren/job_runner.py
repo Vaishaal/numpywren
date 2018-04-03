@@ -71,7 +71,7 @@ class LambdaPackExecutor(object):
             instrs = self.program.inst_blocks[pc].instrs
             next_pc = None
             try:
-                if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
+                if (node_status == lp.NS.READY):
                     for instr in instrs:
                         instr.executor = computer
                         instr.cache = self.cache
@@ -92,11 +92,16 @@ class LambdaPackExecutor(object):
                     raise Exception("Unknown state")
                 if (next_pc != None):
                     pcs.append(next_pc)
+            except RuntimeError as e:
+                pass
+            except fs._base.CancelledError as e:
+                pass
             except Exception as e:
                 traceback.print_exc()
                 tb = traceback.format_exc()
                 self.program.post_op(pc, lp.PS.EXCEPTION, tb=tb)
                 raise
+        return pcs
         e = time.time()
 
 def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, timeout=200):
@@ -172,16 +177,16 @@ async def lambdapack_run_async(loop, program, computer, cache, pipeline_width=1,
             print("got locklock")
             coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, lock)
             loop.create_task(coro)
-            z = await lmpk_executor.run(pc, computer=computer)
+            pcs = await lmpk_executor.run(pc, computer=computer)
             lock.release()
+
+            for pc in pcs[::-1]:
+                program.set_node_status(pc, lp.NS.FINISHED)
+
             print("releasing lock")
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
                 print("Job done...Deleting message for {0}".format(pc))
                 await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            '''
-            sqs_client = boto3.client('sqs')
-            sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            '''
 
             current_time = time.time()
             if (current_time - start_time > timeout):
