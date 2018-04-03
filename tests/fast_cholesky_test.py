@@ -49,14 +49,14 @@ XXT_sharded.lambdav = D
 instructions,L_sharded,trailing = lp._chol(XXT_sharded)
 print("NUmber of instructions", len(instructions))
 L_sharded.free()
-instructions  = instructions[:500]
+instructions  = instructions
 print(L_sharded.key)
 print(L_sharded.bucket)
 print("Block idxs exist total", len(L_sharded.block_idxs))
 print("Block idxs exist not before", len(L_sharded.block_idxs_not_exist))
 executor = pywren.default_executor
 config = pwex.config
-program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, num_priorities=1, eager=False)
+program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, num_priorities=1, eager=True)
 print("program.hash", program.hash)
 print("LONGEST PATH ", program.longest_path)
 t = time.time()
@@ -69,7 +69,7 @@ for c in range(num_cores):
     all_futures.append(executor.submit(job_runner.lambdapack_run, program, 3))
 '''
 t = time.time()
-all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3), range(num_cores), extra_env=redis_env)
+all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3, cache_size=10), range(num_cores), extra_env=redis_env)
 time.sleep(10)
 last_run = time.time()
 while(program.program_status() == lp.PS.RUNNING):
@@ -97,6 +97,8 @@ print("Block idxs exist after", len(L_sharded.block_idxs_exist))
 print("Took {0} seconds".format(e - t))
 print("Downloading L_npw")
 L_npw = L_sharded.numpy()
+XXT = XXT_sharded.numpy()
+L = np.linalg.cholesky(XXT)
 print("DOWLOADING XXT")
 print(L_npw)
 print(L)

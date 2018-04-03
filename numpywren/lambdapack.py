@@ -543,7 +543,7 @@ class LambdaPackProgram(object):
             print("redis dep check time", e - t)
 
           # clear result() blocks
-          self.inst_blocks[i].clear()
+
           if (self.eager == True and len(ready_children) >  1):
               max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
               next_pc = ready_children[max_priority_idx]
@@ -568,6 +568,10 @@ class LambdaPackProgram(object):
           pipelined_time = inst_block.end_time - inst_block.start_time
           # throw away children that are done
           ready_children = [x for x in ready_children if self.get_node_status(x) != NS.FINISHED]
+          # this should NEVER happen...
+          assert (i in ready_children) == False
+          for inst in self.inst_blocks[i].instrs:
+            inst.result = None
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
             queue = sqs.Queue(self.queue_urls[self.inst_blocks[child].priority])

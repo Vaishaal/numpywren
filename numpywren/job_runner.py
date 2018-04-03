@@ -92,6 +92,10 @@ class LambdaPackExecutor(object):
                     raise Exception("Unknown state")
                 if (next_pc != None):
                     pcs.append(next_pc)
+            except RuntimeError as e:
+                pass
+            except fs._base.CancelledError as e:
+                pass
             except Exception as e:
                 traceback.print_exc()
                 tb = traceback.format_exc()
@@ -121,7 +125,7 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
         while(lock.locked()):
             receipt_handle = msg["ReceiptHandle"]
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
-                res = await sqs_client.change_message_visibility(VisibilityTimeout=10, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+                res = await sqs_client.change_message_visibility(VisibilityTimeout=30, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             await asyncio.sleep(10)
     except Exception as e:
         print(e)

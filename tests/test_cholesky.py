@@ -143,7 +143,7 @@ class CholeskyTest(unittest.TestCase):
         print(A_sharded.key)
         A_sharded.free()
         print("sharding A..")
-        #shard_matrix(A_sharded, A)
+        shard_matrix(A_sharded, A)
         instructions,L_sharded,trailing = lp._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
