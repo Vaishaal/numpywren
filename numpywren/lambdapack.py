@@ -67,7 +67,7 @@ class ProgramStatus(Enum):
 
 def put(key, value, ip=REDIS_IP, passw=REDIS_PASS , s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
-    redis_client = redis.StrictRedis(ip, port=6379, db=0, password=passw)
+    redis_client = redis.StrictRedis(ip, port=6379, db=0, password=passw, socket_timeout=5)
     redis_client.set(key, value)
     return value
     if (s3):
@@ -81,7 +81,7 @@ def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
       # read from S3
       raise Exception("Not Implemented")
     else:
-      redis_client = redis.StrictRedis(ip, port=6379, db=0, password=passw)
+      redis_client = redis.StrictRedis(ip, port=6379, db=0, password=passw, socket_timeout=5)
       return redis_client.get(key)
 
 
@@ -114,7 +114,7 @@ def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, passw=REDIS_PASS, value=1)
     pipe.set(key_to_set, value)
     pipe.set(sum_key, tot_sum + value)
     pipe.execute()
-  r = redis.StrictRedis(ip, port=6379, db=0, password=passw)
+  r = redis.StrictRedis(ip, port=6379, db=0, password=passw, socket_timeout=5)
   keys_to_watch = keys.copy()
   sum_key = "sum_{0}".format(keys)
   keys_to_watch.append(sum_key)
@@ -562,10 +562,6 @@ class LambdaPackProgram(object):
 
 
           sqs = boto3.resource('sqs', region_name='us-west-2')
-          self.inst_blocks[i].end_time = time.time()
-          self.set_profiling_info(i)
-          self.inst_blocks[i].end_time = time.time()
-          pipelined_time = inst_block.end_time - inst_block.start_time
           # throw away children that are done
           ready_children = [x for x in ready_children if self.get_node_status(x) != NS.FINISHED]
           # this should NEVER happen...
@@ -576,6 +572,8 @@ class LambdaPackProgram(object):
             print("Adding {0} to sqs queue".format(child))
             queue = sqs.Queue(self.queue_urls[self.inst_blocks[child].priority])
             queue.send_message(MessageBody=str(child))
+          self.inst_blocks[i].end_time = time.time()
+          self.set_profiling_info(i)
           return next_pc
         except Exception as e:
             print("POST OP EXCEPTION ", e)
@@ -589,6 +587,7 @@ class LambdaPackProgram(object):
 
     def start(self):
         put(self.hash, PS.RUNNING.value, ip=self.redis_ip)
+        self.set_max_pc(0)
         sqs = boto3.resource('sqs')
         for starter in self.starters:
           print("Enqueuing ", starter)
