@@ -27,12 +27,12 @@ def program_state_inspect(program):
     for i in range(len(program.inst_blocks)):
         futures.append(executor.submit(program.get_profiling_info, i))
     fs.wait(futures)
-    max_state = max([f.result() for f in futures if f.result() == lp.EC.SUCCESS])
-    running = sum([1 for f in futures if f.result() == lp.EC.RUNNING])
+    max_state = max([f.result() for f in futures if f.result() == lp.PS.SUCCESS])
+    running = sum([1 for f in futures if f.result() == lp.PS.RUNNING])
     return max_state, running
 
 def num_running_program_state(program):
-    return sum([1 for i in range(len(program.inst_blocks)) if program.inst_block_status(i) == lp.EC.RUNNING] + [0])
+    return sum([1 for i in range(len(program.inst_blocks)) if program.inst_block_status(i) == lp.PS.RUNNING] + [0])
 
 D = 65536
 X = np.random.randn(int(D), 1)

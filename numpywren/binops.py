@@ -238,7 +238,7 @@ def trisolve(pwex, A, B, out_bucket=None, tasks_per_job=1, lower=False):
     program.start()
     job_runner.lambdapack_run(program)
     program.wait()
-    if (program.program_status() != lp.EC.SUCCESS):
+    if program.program_status() != lp.PS.SUCCESS:
         program.unwind()
         raise Exception("Lambdapack Exception : {0}".format(program.program_status()))
     program.free()

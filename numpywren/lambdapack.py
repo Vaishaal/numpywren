@@ -33,7 +33,7 @@ try:
 except:
   DEFAULT_CONFIG = {}
 
-REDIS_IP = os.environ.get("REDIS_IP", "")
+REDIS_IP = "127.0.0.1"
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
 
 class RemoteInstructionOpCodes(Enum):
@@ -820,6 +820,7 @@ def make_local_cholesky(pc, L_out, L_in, b0, label=None):
 
 
 def make_remote_gemm(pc, XY, X, Y, label=None):
+    assert XY.shape[0] == X.shape[0] and XY.shape[1] == Y.shape[1]
     block_0_load = RemoteLoad(pc, X)
     pc += 1
     block_1_load = RemoteLoad(pc, Y)

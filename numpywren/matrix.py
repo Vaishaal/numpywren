@@ -630,7 +630,7 @@ class BigMatrixView(BigMatrix):
 
     async def get_block_async(self, loop, *block_idx):
         parent_idx = self.__view_to_parent_block_idx__(block_idx)
-        block = self.parent.get_block_async(loop, *parent_idx)
+        block = await self.parent.get_block_async(loop, *parent_idx)
         if self.transposed:
             block = block.T
         return block
@@ -645,7 +645,7 @@ class BigMatrixView(BigMatrix):
         if self.transposed:
             block = block.T
         parent_idx = self.__view_to_parent_block_idx__(block_idx)
-        return self.parent.put_block_async(block, loop, *parent_idx)
+        return await self.parent.put_block_async(block, loop, *parent_idx)
 
     def delete_block(self, *block_idx):
         parent_idx = self.__view_to_parent_block_idx__(block_idx)
@@ -653,7 +653,7 @@ class BigMatrixView(BigMatrix):
 
     async def delete_block_async(self, loop, *block_idx):
         parent_idx = self.__view_to_parent_block_idx__(block_idx)
-        return self.parent.delete_block(loop, *parent_idx)
+        return await self.parent.delete_block(loop, *parent_idx)
 
     def _block_idxs(self, axis=None):
         parent_axis = self.__view_to_parent_axis__(axis)
@@ -676,7 +676,7 @@ class BigMatrixView(BigMatrix):
         intermediate_idx = [elt for elt in view_idx]
         if len(view_idx) < len(self.shape):
             for i in range(len(self.shape)):
-                if self.shape[i] == self.shard_sizes[i]:
+                if self.shape[i] <= self.shard_sizes[i]:
                     intermediate_idx.insert(i, 0)
         if len(intermediate_idx) != len(self.shape):
             raise ValueError("Invalid index length.")
