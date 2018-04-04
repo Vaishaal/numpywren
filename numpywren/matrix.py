@@ -84,6 +84,7 @@ class BigMatrix(object):
         self.key_base = os.path.join(prefix, self.key)
         self.dtype = dtype
         self.parent_fn = parent_fn
+        self.transposed = False
         if (shape == None or shard_sizes == None):
             header = self.__read_header__()
         else:
