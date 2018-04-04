@@ -125,8 +125,8 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
         while(lock.locked()):
             receipt_handle = msg["ReceiptHandle"]
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
-                res = await sqs_client.change_message_visibility(VisibilityTimeout=30, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(10)
+                res = await sqs_client.change_message_visibility(VisibilityTimeout=3, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            await asyncio.sleep(1)
     except Exception as e:
         print(e)
     return 0
