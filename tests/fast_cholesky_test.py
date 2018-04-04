@@ -19,6 +19,7 @@ import boto3
 import numpywren
 import numpywren.wait
 from numpywren import job_runner
+import sys
 
 redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
 def program_state_inspect(program):
@@ -48,30 +49,33 @@ XXT_sharded = BigSymmetricMatrix("gemm(BigMatrix(cholesky_test_X), BigMatrix(cho
 XXT_sharded.lambdav = D
 instructions,L_sharded,trailing = lp._chol(XXT_sharded)
 print("NUmber of instructions", len(instructions))
-L_sharded.free()
-instructions  = instructions
+instructions  = instructions[:850]
 print(L_sharded.key)
 print(L_sharded.bucket)
 print("Block idxs exist total", len(L_sharded.block_idxs))
 print("Block idxs exist not before", len(L_sharded.block_idxs_not_exist))
 executor = pywren.default_executor
 config = pwex.config
-program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, num_priorities=1, eager=True)
+program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, num_priorities=6, eager=True)
 print("program.hash", program.hash)
 print("LONGEST PATH ", program.longest_path)
 t = time.time()
 program.start()
-num_cores = 512
+NUM_CORES = 32
+PIPELINE_WIDTH = 3
+num_cores = NUM_CORES
 executor = fs.ProcessPoolExecutor(num_cores)
 all_futures  = []
+t = time.time()
+all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=PIPELINE_WIDTH, cache_size=5), range(NUM_CORES), extra_env=redis_env)
+
 '''
 for c in range(num_cores):
-    all_futures.append(executor.submit(job_runner.lambdapack_run, program, 3))
+    all_futures.append(executor.submit(job_runner.lambdapack_run, program, pipeline_width=PIPELINE_WIDTH, cache_size=5, timeout=200))
 '''
-t = time.time()
-all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3, cache_size=10), range(num_cores), extra_env=redis_env)
 time.sleep(10)
 last_run = time.time()
+start_time = time.time()
 while(program.program_status() == lp.PS.RUNNING):
     max_pc = program.get_max_pc()
     print("Max PC is {0}".format(max_pc))
@@ -80,16 +84,32 @@ while(program.program_status() == lp.PS.RUNNING):
     running = 0
     for i, queue_url in enumerate(program.queue_urls):
         client = boto3.client('sqs')
-        print("Priority {0}".format(i))
         attrs = client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'])['Attributes']
-        print(attrs)
         waiting += int(attrs["ApproximateNumberOfMessages"])
         running += int(attrs["ApproximateNumberOfMessagesNotVisible"])
-    if ((waiting > 10 or running == 0) and (time.time() - last_run) > 10):
-        print("Looks like there are jobs spinning up more...!")
+    current_time = time.time() - start_time
+    print("{2}: Running: {0}, Waiting {1}".format(running, waiting, int(current_time)))
+    sys.stdout.flush()
+    print("Time since last run ", (time.time() - last_run))
+    if ((time.time() - last_run) > 300):
         last_run = time.time()
-        more_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=3), range(waiting), extra_env=redis_env)
+        workers_to_run = NUM_CORES
+        print("spinning {0} more jobs...!".format(workers_to_run, last_run))
+        print("spinning {0} more jobs...!".format(workers_to_run, last_run))
+        print("spinning {0} more jobs...!".format(workers_to_run, last_run))
+        print("spinning {0} more jobs...!".format(workers_to_run, last_run))
+        print("spinning {0} more jobs...!".format(workers_to_run, last_run))
+        print("spinning {0} more jobs...!".format(workers_to_run, last_run))
+        print("spinning {0} more jobs...!".format(workers_to_run, last_run))
+        #for c in range(num_cores):
+            #all_futures.append(executor.submit(job_runner.lambdapack_run, program, pipeline_width=PIPELINE_WIDTH, cache_size=5, timeout=200))
+        more_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=PIPELINE_WIDTH, cache_size=5), range(workers_to_run), extra_env=redis_env)
 e = time.time()
+print(program.program_status())
+print("PROGRAM STATUS ", program.program_status())
+print("PROGRAM HASH", program.hash)
+print("Block idxs exist after", len(L_sharded.block_idxs_exist))
+print("Took {0} seconds".format(e - t))
 print(program.program_status())
 print("PROGRAM STATUS ", program.program_status())
 print("PROGRAM HASH", program.hash)
