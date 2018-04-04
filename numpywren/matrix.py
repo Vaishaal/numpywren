@@ -284,7 +284,9 @@ class BigMatrix(object):
         key = self.__shard_idx_to_key__(block_idx)
         exists = await key_exists_async(self.bucket, key, loop)
         if (not exists and self.parent_fn == None):
-            raise Exception("Key does not exist, and no parent function prescripted")
+            print(self.bucket)
+            print(key)
+            raise Exception("Key does {0} not exist, and no parent function prescripted")
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx)
         else:
@@ -299,7 +301,7 @@ class BigMatrix(object):
         res = loop.run_until_complete(asyncio.ensure_future(put_block_async_coro))
         return res
 
-    async def put_block_async(self, block, loop=None, *block_idx):
+    async def put_block_async(self, block, loop=None, *block_idx, no_overwrite=False):
         """
         Given a block index, sets the contents of the block.
 
@@ -324,6 +326,13 @@ class BigMatrix(object):
         if (loop == None):
             loop = asyncio.get_event_loop()
 
+        key = self.__shard_idx_to_key__(block_idx)
+        if (no_overwrite):
+            exists = await key_exists_async(self.bucket, key, loop)
+            if (exists):
+                old_block = await self.get_block_async(loop, *block_idx)
+                assert(np.allclose(old_block, block))
+
         real_idxs = self.__block_idx_to_real_idx__(block_idx)
         current_shape = tuple([e - s for s,e in real_idxs])
 
@@ -331,13 +340,17 @@ class BigMatrix(object):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
 
         block = block.astype(self.dtype)
-        key = self.__shard_idx_to_key__(block_idx)
         return await self.__save_matrix_to_s3__(block, key, loop)
 
     def delete_block(self, block, *block_idx):
         loop = asyncio.get_event_loop()
+        if (loop.is_closed()):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         delete_block_async_coro = self.delete_block_async(loop, block, *block_idx)
         res = loop.run_until_complete(asyncio.ensure_future(delete_block_async_coro))
+        loop.close()
         return res
 
     async def delete_block_async(self, loop=None, *block_idx):
@@ -371,6 +384,7 @@ class BigMatrix(object):
 
     def free(self):
         """Delete all allocated blocks while leaving the matrix metadata intact."""
+
         [self.delete_block(*x) for x in self.block_idxs_exist]
         return 0
 
@@ -839,7 +853,8 @@ class BigSymmetricMatrix(BigMatrix):
         key = self.__shard_idx_to_key__(block_idx_sym)
         exists = await key_exists_async(self.bucket, key)
         if (not exists and self.parent_fn == None):
-            raise Exception("Key does not exist, and no parent function prescripted")
+            raise Exception("Key {0} does not exist, and no parent function prescripted".format(key))
+            
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx_sym)
         else:
@@ -852,9 +867,14 @@ class BigSymmetricMatrix(BigMatrix):
             X_block[idxs] += self.lambdav
         return X_block
 
-    async def put_block_async(self, block, loop=None, *block_idx):
+    async def put_block_async(self, block, loop=None, *block_idx, no_overwrite=False):
         if (loop == None):
             loop = asyncio.get_event_loop()
+        if (no_overwrite):
+            exists = await key_exists_async(self.bucket, key, loop)
+            if (exists):
+                old_block = await self.get_block_async(loop, *block_idx)
+                assert(np.allclose(old_block, block))
         block_idx_sym = self._symmetrize_idx(block_idx)
         if block_idx_sym != block_idx:
             flipped = True
