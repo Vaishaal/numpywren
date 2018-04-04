@@ -124,3 +124,10 @@ print(L_npw)
 print(L)
 assert(np.allclose(L_npw, L))
 
+print("Downloading L_npw")
+L_npw = L_sharded.numpy()
+print("DOWLOADING XXT")
+print(L_npw)
+print(L)
+assert(np.allclose(L_npw, L))
+

@@ -610,6 +610,7 @@ class LambdaPackProgram(object):
               del ready_children[max_priority_idx]
           else:
             next_pc = None
+            eager_child = None
 
           # move the highest priority job thats ready onto the local task queue
           # this is JRK's idea of dynamic node fusion or eager scheduling
@@ -833,7 +834,6 @@ def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
         out_bucket = X.bucket
 
     root_key = generate_key_name_binop(X, Y, "gemm")
-
     if (X.key == Y.key and (X.transposed ^ Y.transposed)):
         XY = BigSymmetricMatrix(root_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]])
     else:
