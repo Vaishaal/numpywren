@@ -49,9 +49,6 @@ class BigMatrix(object):
     dtype : data-type, optional
         Any object that can be interpreted as a numpy data type. Determines
         the type of the object stored in the array.
-    transposed : bool, optional
-        If transposed is True then the array object will behave like the
-        transposed version of the underlying S3 object.
     parent_fn : function, optional
         A function that gets called when a previously uninitialized block is
         accessed. Gets passed the BigMatrix object and the relevant block index
@@ -74,7 +71,6 @@ class BigMatrix(object):
                  bucket=DEFAULT_BUCKET,
                  prefix='numpywren.objects/',
                  dtype=np.float64,
-                 transposed=False,
                  parent_fn=None,
                  write_header=False):
         if bucket is None:
@@ -87,9 +83,12 @@ class BigMatrix(object):
         self.key = key
         self.key_base = os.path.join(prefix, self.key)
         self.dtype = dtype
-        self.transposed = transposed
         self.parent_fn = parent_fn
-        header = self.__read_header__()
+        self.transposed = False
+        if (shape == None or shard_sizes == None):
+            header = self.__read_header__()
+        else:
+            header = None
         if header is None and shape is None:
             raise Exception("Header doesn't exist and no shape provided.")
         elif shape is None:
@@ -110,10 +109,52 @@ class BigMatrix(object):
             # Write a header if you want to load this value later.
             self.__write_header__()
 
+    def submatrix(self, *block_slices):
+        """
+        Given block slices return a submatrix with the same underlying representation.
+
+        Parameters
+        ----------
+        block_slices : None or int or array_like or sequence of Nones and ints and array_likes
+            Each element in the sequence represents a restriction of the corresponding axis.
+            When the element is an int the axis will be reduced to a single block whose index
+            is the given integer. The element can also be an array_like of the form:
+            (stop), (start, stop), or (start, stop, step).
+
+        Returns
+        -------
+        matrix_view : BigMatrixView
+           A submatrix view of the current matrix.
+        """
+        updated_block_slices = []
+        for i, block_slice in enumerate(block_slices):
+            if block_slice is None:
+                updated_block_slices.append(slice(None, None, None))
+            elif isinstance(block_slice, int):
+                updated_block_slices.append(slice(block_slice, block_slice + 1, 1))
+            elif not isinstance(block_slice, slice):
+                start = None
+                stop = None
+                step = None
+                if len(block_slice) == 1:
+                    stop = block_slice[0]
+                elif len(block_slice) == 2:
+                    start = block_slice[0]
+                    stop = block_slice[1]
+                elif len(block_slice) == 3:
+                    start = block_slice[0]
+                    stop = block_slice[1]
+                    step = block_slice[2]
+                else:
+                    raise ValueError("Expected slices of length 1 to 3.")
+                updated_block_slices.append(slice(start, stop, step))
+
+        return BigMatrixView(self, updated_block_slices)
+
     @property
     def T(self):
         """Return the transpose with the same underlying representation."""
-        return self.__transpose__()
+        return BigMatrixView(self, [slice(None, None, None)] * len(self.shape), transposed=True)
 
     @property
     def blocks_exist(self):
@@ -245,14 +286,12 @@ class BigMatrix(object):
         if (not exists and self.parent_fn == None):
             print(self.bucket)
             print(key)
-            raise Exception("Key does not exist, and no parent function prescripted")
+            raise Exception("Key does {0} not exist, and no parent function prescripted")
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx)
         else:
             bio = await self.__s3_key_to_byte_io__(key, loop=loop)
             X_block = np.load(bio).astype(self.dtype)
-        if (self.transposed):
-            X_block = X_block.T
         return X_block
 
     def put_block(self, block, *block_idx):
@@ -262,7 +301,7 @@ class BigMatrix(object):
         res = loop.run_until_complete(asyncio.ensure_future(put_block_async_coro))
         return res
 
-    async def put_block_async(self, block, loop=None, *block_idx):
+    async def put_block_async(self, block, loop=None, *block_idx, no_overwrite=False):
         """
         Given a block index, sets the contents of the block.
 
@@ -287,23 +326,31 @@ class BigMatrix(object):
         if (loop == None):
             loop = asyncio.get_event_loop()
 
+        key = self.__shard_idx_to_key__(block_idx)
+        if (no_overwrite):
+            exists = await key_exists_async(self.bucket, key, loop)
+            if (exists):
+                old_block = await self.get_block_async(loop, *block_idx)
+                assert(np.allclose(old_block, block))
+
         real_idxs = self.__block_idx_to_real_idx__(block_idx)
         current_shape = tuple([e - s for s,e in real_idxs])
 
         if (block.shape != current_shape):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
-        if (self.transposed):
-            block = block.T
 
         block = block.astype(self.dtype)
-        key = self.__shard_idx_to_key__(block_idx)
         return await self.__save_matrix_to_s3__(block, key, loop)
 
     def delete_block(self, block, *block_idx):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        loop = asyncio.get_event_loop()
+        if (loop.is_closed()):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         delete_block_async_coro = self.delete_block_async(loop, block, *block_idx)
         res = loop.run_until_complete(asyncio.ensure_future(delete_block_async_coro))
+        loop.close()
         return res
 
     async def delete_block_async(self, loop=None, *block_idx):
@@ -337,6 +384,7 @@ class BigMatrix(object):
 
     def free(self):
         """Delete all allocated blocks while leaving the matrix metadata intact."""
+
         [self.delete_block(*x) for x in self.block_idxs_exist]
         return 0
 
@@ -397,9 +445,6 @@ class BigMatrix(object):
             key_string = ""
 
             shard_sizes = self.shard_sizes
-            if (self.transposed):
-                shard_sizes = reversed(shard_sizes)
-                real_idxs = reversed(real_idxs)
             for ((sidx, eidx), shard_size) in zip(real_idxs, shard_sizes):
                 key_string += "{0}_{1}_{2}_".format(sidx, eidx, shard_size)
 
@@ -496,21 +541,225 @@ class BigMatrix(object):
 
     def __str__(self):
         rep = "{0}({1})".format(self.__class__.__name__, self.key)
-        if (self.transposed):
-            rep += ".T"
         return rep
 
-    def __transpose__(self):
-        transposed = self.__class__(key=self.key,
-                                    shape=self.shape[::-1],
-                                    shard_sizes=self.shard_sizes[::-1],
-                                    bucket=self.bucket,
-                                    prefix=self.prefix,
-                                    dtype=self.dtype,
-                                    transposed=True,
-                                    parent_fn=self.parent_fn)
-        return transposed
 
+class BigMatrixView(BigMatrix):
+    def __init__(self, parent, parent_slices, transposed=False):
+        self.parent = parent
+        self.transposed = transposed
+        self.bucket = parent.bucket
+        self.prefix = parent.prefix
+        self.key = parent.key
+        self.key_base = parent.key_base 
+        self.dtype = parent.dtype
+
+        # Initialize all size information.
+        self.shard_sizes = parent.shard_sizes
+        self.parent_slices = []
+        self.shape = []
+        if isinstance(parent_slices, int) or isinstance(parent_slices, slice):
+            parent_slices = [parent_slices]
+        self.axis_lens = [int(np.ceil(self.parent.shape[i] / self.shard_sizes[i]))
+                          for i in range(len(self.parent.shape))]
+        for i, parent_slice in enumerate(parent_slices):
+            # Replace any Nones in slices.
+            start = parent_slice.start
+            stop = parent_slice.stop
+            step = parent_slice.step
+            if start is None:
+                start = 0
+            if stop is None:
+                stop = self.axis_lens[i]
+            if step is None:
+                step = 1
+            self.shape.append(self.shard_sizes[i] * int(np.ceil((stop - start) / step)))
+            # Handle the case where the last view block is equal to a final
+            # parent block that is smaller than the shard size.
+            if (stop - 1 - start) % step == 0 and self.parent.shape[i] % self.shard_sizes[i] != 0:
+                self.shape[-1] += self.parent.shape[i] % self.shard_sizes[i]  - self.shard_sizes[i]
+            self.parent_slices.append(slice(start, stop, step))
+        # Account for the case where slices aren't provided for the trailing indexes.
+        for i in range(len(self.parent_slices), len(self.parent.shape)):
+            self.parent_slices.append(slice(0, self.axis_lens[i], 1))
+            self.shape.append(self.parent.shape[i])
+        if self.transposed:
+            self.shape = list(reversed(self.shape))
+            self.shard_sizes = list(reversed(self.shard_sizes))
+        assert len(self.shard_sizes) == len(self.shape)
+
+    @property
+    def blocks_exist(self):
+        raise NotImplementedError
+
+    @property
+    def blocks_not_exist(self):
+        raise NotImplementedError 
+
+    @property
+    def blocks(self):
+        raise NotImplementedError
+
+    @property
+    def block_idxs_exist(self):
+        parent_idxs = self.parent.block_idxs_exist() 
+        view_idxs = map(self.__parent_to_view_block_idx__,
+                        filter(self.__is_valid_parent_block_idx__, parent_idxs))
+        return list(view_idxs)
+
+    @property
+    def block_idxs_not_exist(self):
+        parent_idxs = self.parent.block_idxs_not_exist() 
+        view_idxs =  map(self.__parent_to_view_block_idx__,
+                         filter(self.__is_valid_parent_block_idx__, parent_idxs))
+        return list(view_idxs)
+
+    @property
+    def block_idxs(self):
+        parent_idxs = self.parent.block_idxs() 
+        view_idxs = map(self.__parent_to_view_block_idx__,
+                        filter(self.__is_valid_parent_block_idx__, parent_idxs))
+        return list(view_idxs)
+
+    def get_block(self, *block_idx): 
+        parent_idx = self.__view_to_parent_block_idx__(block_idx)
+        block = self.parent.get_block(*parent_idx)
+        if self.transposed:
+            block = block.T
+        return block
+
+    async def get_block_async(self, loop, *block_idx):
+        parent_idx = self.__view_to_parent_block_idx__(block_idx)
+        block = self.parent.get_block_async(loop, *parent_idx)
+        if self.transposed:
+            block = block.T
+        return block
+
+    def put_block(self, block, *block_idx):
+        if self.transposed:
+            block = block.T
+        parent_idx = self.__view_to_parent_block_idx__(block_idx)
+        return self.parent.put_block(block, *parent_idx)
+
+    async def put_block_async(self, block, loop=None, *block_idx):
+        if self.transposed:
+            block = block.T
+        parent_idx = self.__view_to_parent_block_idx__(block_idx)
+        return self.parent.put_block_async(block, loop, *parent_idx)
+
+    def delete_block(self, *block_idx):
+        parent_idx = self.__view_to_parent_block_idx__(block_idx)
+        return self.parent.delete_block(*parent_idx)
+
+    async def delete_block_async(self, loop, *block_idx):
+        parent_idx = self.__view_to_parent_block_idx__(block_idx)
+        return self.parent.delete_block(loop, *parent_idx)
+
+    def _block_idxs(self, axis=None):
+        parent_axis = self.__view_to_parent_axis__(axis)
+        parent_idxs = self.parent._block_idxs(axis=parent_axis) 
+        valid_parent_idxs = filter(lambda x: self.__is_valid_parent_block_idx__(x, axis=parent_axis),
+                                   parent_idxs)
+        view_idxs = map(lambda x: self.__parent_to_view_block_idx__(x, axis=parent_axis),
+                        valid_parent_idxs)
+        return list(view_idxs)
+
+    def _blocks(self, axis=None):
+        raise NotImplementedError
+
+    def __view_to_parent_axis__(self, view_axis):
+        if self.transposed:
+            view_axis = len(self.shape) - view_axis - 1
+        return view_axis 
+
+    def __view_to_parent_block_idx__(self, view_idx):
+        intermediate_idx = [elt for elt in view_idx]
+        if len(view_idx) < len(self.shape):
+            for i in range(len(self.shape)):
+                if self.shape[i] == self.shard_sizes[i]:
+                    intermediate_idx.insert(i, 0)
+        if len(intermediate_idx) != len(self.shape):
+            raise ValueError("Invalid index length.")
+        if self.transposed:
+            intermediate_idx = reversed(intermediate_idx)
+
+        parent_idx = []
+        for parent_slice, intermediate_elt in zip(self.parent_slices, intermediate_idx):
+            parent_elt = intermediate_elt * parent_slice.step + parent_slice.start
+            if parent_elt < 0:
+                raise NotImplementedError
+            if parent_elt >= parent_slice.stop:
+                raise IndexError("Array index out of bounds.")
+            parent_idx.append(parent_elt)
+        return parent_idx
+
+    def __parent_to_view_block_idx__(self, parent_idx, axis=None):
+        # Assign what indices we need to convert.
+        if axis is not None:
+            parent_slices = [self.parent_slices[axis]]
+            parent_idx = [parent_idx]
+        else:
+            parent_slices = self.parent_slices
+
+        view_idx = []
+        for parent_elt, parent_slice in zip(parent_idx, parent_slices):
+            view_idx.append((parent_elt - parent_slice.start) // parent_slice.step)
+
+        if axis is not None:
+            view_idx = view_idx[0]
+        elif self.transposed:
+          view_idx = list(reversed(view_idx))
+
+        return view_idx
+
+    def __is_valid_parent_block_idx__(self, parent_idx, axis=None):
+        # Assign what indices we need to check.
+        if axis is not None:
+            parent_slices = [self.parent_slices[axis]]
+            parent_idx = [parent_idx]
+        else:
+            parent_slices = self.parent_slices
+
+        # Now check all relevant indices.
+        for parent_elt, parent_slice in zip(parent_idx, parent_slices):
+            if parent_elt < 0:
+                raise NotImplementedError("Negative indexing not yet supported.")
+            if parent_elt < parent_slice.start:
+                return False
+            if parent_elt >= parent_slice.stop:
+                return False
+            if (parent_elt - parent_slice.start) % parent_slice.step != 0:
+                return False
+        return True  
+
+    def __str__(self):
+        slice_reps = [] 
+        last_slice = 0 
+        for i, (parent_slice, axis_len) in enumerate(zip(self.parent_slices, self.axis_lens)):
+            if parent_slice != slice(0, axis_len, 1):
+                last_slice = i 
+            if parent_slice.start == parent_slice.stop - 1:
+                slice_reps.append(str(parent_slice.start))
+            else:
+                if parent_slice.step == 1:
+                    step_rep = ""
+                else:
+                    step_rep = ":" + parent_slice.step 
+                if parent_slice.start == 0:
+                    start_rep = ""
+                else:
+                    start_rep = str(parent_slice.start)
+                if stop_rep == axis_len:
+                    stop_rep = ""
+                else:
+                    stop_rep = str(parent_slice.stop)
+                slice_reps.append(start_rep + ":" + stop_rep + step_rep)
+        rep = self.parent.__str__() 
+        if last_slice != 0:
+            rep += "[" + ",".join(slice_reps[:last_slice]) + "]"
+        if self.transposed:
+            rep += ".T"
+        return rep
 
 class Scalar(BigMatrix):
     def __init__(self, key,
@@ -604,7 +853,8 @@ class BigSymmetricMatrix(BigMatrix):
         key = self.__shard_idx_to_key__(block_idx_sym)
         exists = await key_exists_async(self.bucket, key)
         if (not exists and self.parent_fn == None):
-            raise Exception("Key does not exist, and no parent function prescripted")
+            raise Exception("Key {0} does not exist, and no parent function prescripted".format(key))
+            
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx_sym)
         else:
@@ -617,9 +867,14 @@ class BigSymmetricMatrix(BigMatrix):
             X_block[idxs] += self.lambdav
         return X_block
 
-    async def put_block_async(self, block, loop=None, *block_idx):
+    async def put_block_async(self, block, loop=None, *block_idx, no_overwrite=False):
         if (loop == None):
             loop = asyncio.get_event_loop()
+        if (no_overwrite):
+            exists = await key_exists_async(self.bucket, key, loop)
+            if (exists):
+                old_block = await self.get_block_async(loop, *block_idx)
+                assert(np.allclose(old_block, block))
         block_idx_sym = self._symmetrize_idx(block_idx)
         if block_idx_sym != block_idx:
             flipped = True
@@ -640,7 +895,7 @@ class BigSymmetricMatrix(BigMatrix):
         if block_idx_sym != block_idx:
             flipped = True
         key = self.__shard_idx_to_key__(block_idx_sym)
-        aiobotocore.get_session(loop=loop)
+        session = aiobotocore.get_session(loop=loop)
         async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
             resp = client.delete_object(Key=key, Bucket=self.bucket)
         return resp

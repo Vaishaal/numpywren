@@ -23,7 +23,7 @@ setup(
     install_requires=[
         'Click', 'boto3', 'PyYAML',
         'enum34', 'flaky', 'glob2',
-        'watchtower', 'tblib', 'pywren' # it's nuts that we need both botos
+        'watchtower', 'tblib', 'pywren', 'numpy', 'aiobotocore==0.6.0' # it's nuts that we need both botos
     ],
     tests_requires=[
         'pytest', 'numpy',

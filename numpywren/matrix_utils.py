@@ -166,7 +166,6 @@ def get_local_matrix(bigm, workers=cpu_count, mmap_loc=None, big_axis=0):
     executor = fs.ProcessPoolExecutor(max_workers=workers)
     blocks_to_get = [bigm._block_idxs(i) for i in range(len(bigm.shape))]
     big_axis = np.argmax([len(bigm._block_idxs(i)) for i in range(len(bigm.shape))])
-    print("big axis", big_axis)
     futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=big_axis)
     fs.wait(futures)
     [f.result() for f in futures]
@@ -269,9 +268,6 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
     '''
     mmap_shape = []
     local_idxs = []
-    print(bigm.shape)
-    print(bigm.shard_sizes)
-    print(blocks_to_get)
 
     matrix_locations = [{} for _ in range(len(bigm.shape))]
     matrix_maxes = [0 for _ in range(len(bigm.shape))]
@@ -292,9 +288,6 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
     mmap_shape = tuple(mmap_shape)
     if (executor == None):
         executor = fs.ProcessPoolExecutor(max_workers=workers)
-    print(mmap_shape)
-    print(bigm.dtype)
-    print(mmap_loc)
     np.memmap(mmap_loc, dtype=bigm.dtype, mode='w+', shape=mmap_shape)
     futures = []
 

@@ -34,22 +34,7 @@ except:
   DEFAULT_CONFIG = {}
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
-
-
-class LocalExecutor(object):
-  def __init__(self, procs=32, config=DEFAULT_CONFIG):
-    self.procs = procs
-    self.executor = fs.ProcessPoolExecutor(max_workers=procs)
-    self.config = DEFAULT_CONFIG
-
-  def call_async(self, f, *args, **kwargs):
-    return self.executor.submit(f, *args, **kwargs)
-
-  def map(self, f, arg_list, **kwargs):
-    futures = []
-    for a in arg_list:
-      futures.append(self.call_async(f, a))
-    return futures
+REDIS_PASS = os.environ.get("REDIS_PASS", "")
 
 class RemoteInstructionOpCodes(Enum):
     S3_LOAD = 0
@@ -66,57 +51,85 @@ class RemoteInstructionOpCodes(Enum):
     EXIT = 11
 
 
+class NodeStatus(Enum):
+    NOT_READY = 0
+    READY = 1
+    RUNNING = 2
+    POST_OP = 3
+    FINISHED = 4
 
-class RemoteInstructionExitCodes(Enum):
+class EdgeStatus(Enum):
+    NOT_READY = 0
+    READY = 1
+
+class ProgramStatus(Enum):
     SUCCESS = 0
     RUNNING = 1
     EXCEPTION = 2
-    REPLAY = 3
-    NOT_STARTED = 4
+    NOT_STARTED = 3
 
-class RemoteInstructionTypes(Enum):
-  IO = 0
-  COMPUTE = 1
-
-class RemoteProgramState(object):
-  ''' Host integers on dynamodb '''
-
-  def __init__(self, key, ip=REDIS_IP, default=0):
-    self.key = key
-    self.ip = ip
-    self.default = default
-
-  def put(self, value):
-    assert isinstance(value, int)
-    redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
-    redis_client.set(self.key, value)
-
-  def clear_all(self):
-    redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
-    redis_client.flushall()
-
-  def get(self):
-    redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
-    res = redis_client.get(self.key)
-    if (res == None):
-      return self.default
-    return int(res)
-
-  def incr(self, inc=1):
-    t = time.time()
-    redis_client = redis.StrictRedis(self.ip, port=6379, db=0)
-    final_val = redis_client.incr(self.key)
-    e = time.time()
-    print("{0} took {1}".format(self.key, e - t))
-    return final_val
+def put(key, value, ip=REDIS_IP, passw=REDIS_PASS , s3=False, s3_bucket=""):
+    #TODO: fall back to S3 here
+    redis_client = redis.StrictRedis(ip, port=6379, db=0, password=passw, socket_timeout=5)
+    redis_client.set(key, value)
+    return value
+    if (s3):
+      # flush write to S3
+      raise Exception("Not Implemented")
 
 
+def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
+    #TODO: fall back to S3 here
+    if (s3):
+      # read from S3
+      raise Exception("Not Implemented")
+    else:
+      redis_client = redis.StrictRedis(ip, port=6379, db=0, password=passw, socket_timeout=5)
+      return redis_client.get(key)
 
 
-EC = RemoteInstructionExitCodes
+def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, passw=REDIS_PASS, value=1):
+  ''' Crucial atomic operation needed to insure DAG correctness
+      the return value of this operation will be sum(keys) + value
+      but it will also have the side-effect of binding key_to_set to value
+      @param key_to_set - at the end of this transaction key_to_set will be bound to value
+      @param keys - keys to be summed must exclue key_to_set
+      @param ip - ip of redis server
+      @param value - the value to bind key_to_set to
+
+    '''
+
+  tot_sum = 0
+  assert key_to_set not in keys
+  keys = list(set(keys))
+  def _atomic_parent_sum(pipe):
+    nonlocal tot_sum
+    tot_sum = 0
+    for key in keys:
+      edge = pipe.get(key)
+      if (edge == None):
+        edge = 0
+      else:
+        edge = int(edge)
+        print("Edge {0} is ".format(key), edge)
+      tot_sum += edge
+    pipe.multi()
+    pipe.set(key_to_set, value)
+    pipe.set(sum_key, tot_sum + value)
+    pipe.execute()
+  r = redis.StrictRedis(ip, port=6379, db=0, password=passw, socket_timeout=5)
+  keys_to_watch = keys.copy()
+  sum_key = "sum_{0}".format(keys)
+  keys_to_watch.append(sum_key)
+  keys_to_watch.append(key_to_set)
+  r.transaction(_atomic_parent_sum, *keys_to_watch)
+  return int(r.get(sum_key))
+
 OC = RemoteInstructionOpCodes
-IT = RemoteInstructionTypes
-RPS = RemoteProgramState
+NS = NodeStatus
+ES = EdgeStatus
+PS = ProgramStatus
+
 
 
 class RemoteInstruction(object):
@@ -127,12 +140,10 @@ class RemoteInstruction(object):
         self.end_time = None
         self.type = None
         self.executor = None
+        self.cache = None
 
     def clear(self):
         self.result = None
-
-    def __deep_copy__(self, memo):
-        return self
 
 class Barrier(RemoteInstruction):
   def __init__(self, i_id):
@@ -143,37 +154,6 @@ class Barrier(RemoteInstruction):
   async def __call__(self):
         return 0
 
-class RemoteWrite(RemoteInstruction):
-    def __init__(self, i_id, matrix, data_instr, *bidxs):
-        super().__init__(i_id)
-        self.i_code = OC.S3_WRITE
-        self.matrix = matrix
-        self.bidxs = bidxs
-        self.data_instr = data_instr
-        self.result = None
-
-    async def __call__(self, prev=None):
-        if (prev != None):
-          await prev
-        loop = asyncio.get_event_loop()
-        self.start_time = time.time()
-        if (self.result == None):
-            self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
-            self.size = sys.getsizeof(self.data_instr.result)
-            self.ret_code = 0
-        self.end_time = time.time()
-        return self.result
-
-    def clear(self):
-        self.result = None
-
-    def __str__(self):
-        bidxs_str = ""
-        for x in self.bidxs:
-            bidxs_str += str(x)
-            bidxs_str += " "
-        return "{0} = S3_WRITE {1} {2} {3} {4}".format(self.id, self.matrix, len(self.bidxs), bidxs_str.strip(), self.data_instr.id)
-
 
 class RemoteLoad(RemoteInstruction):
     def __init__(self, i_id, matrix, *bidxs):
@@ -182,15 +162,31 @@ class RemoteLoad(RemoteInstruction):
         self.matrix = matrix
         self.bidxs = bidxs
         self.result = None
+        self.cache_hit = False
 
     async def __call__(self, prev=None):
         if (prev != None):
           await prev
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
-        if (self.result == None):
-            self.result = await self.matrix.get_block_async(loop, *self.bidxs)
-            self.size = sys.getsizeof(self.result)
+        if (self.result is None):
+            cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
+            if (self.cache != None and cache_key in self.cache):
+              t = time.time()
+              self.result = self.cache[cache_key].copy()
+              self.cache_hit = True
+              self.size = sys.getsizeof(self.result)
+              e = time.time()
+              print("Cache hit! {0}".format(e - t))
+            else:
+              t = time.time()
+              self.result = await self.matrix.get_block_async(loop, *self.bidxs)
+              self.size = sys.getsizeof(self.result)
+              if (self.cache != None):
+                self.cache[cache_key] = self.result.copy()
+              e = time.time()
+              print("Cache miss! {0}".format(e - t))
+              print(self.result.shape)
         self.end_time = time.time()
         return self.result
 
@@ -218,7 +214,11 @@ class RemoteWrite(RemoteInstruction):
           await prev
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
-        if (self.result == None):
+        if (self.result is None):
+            cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
+            if (self.cache != None):
+              # write to the cache
+              self.cache[cache_key] = self.data_instr.result.copy()
             self.result = await self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs)
             self.size = sys.getsizeof(self.data_instr.result)
             self.ret_code = 0
@@ -249,14 +249,16 @@ class RemoteSYRK(RemoteInstruction):
         loop = asyncio.get_event_loop()
         def compute():
           self.start_time = time.time()
-          if (self.result == None):
+          if (self.result is None):
               old_block = self.argv[0].result
               block_2 = self.argv[1].result
               block_1 = self.argv[2].result
               old_block -= block_2.dot(block_1.T)
               self.result = old_block
               self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
-              self.ret_code = 0
+          else:
+            raise Exception("Same Machine Replay instruction...")
+          self.ret_code = 0
           self.end_time = time.time()
           return self.result
         return await loop.run_in_executor(self.executor, compute)
@@ -332,12 +334,14 @@ class RemoteTRSM(RemoteInstruction):
       loop = asyncio.get_event_loop()
       def compute():
           self.start_time = time.time()
-          if (self.result == None):
+          if self.result is None:
               A_block = self.argv[0].result
               B_block = self.argv[1].result
               self.result = scipy.linalg.blas.dtrsm(1.0, A_block, B_block, side=int(self.right),lower=int(self.lower))
               self.flops =  A_block.shape[0] * B_block.shape[0] * B_block.shape[1]
               self.ret_code = 0
+          else:
+            raise Exception("Same Machine Replay instruction...")
           self.end_time = time.time()
           return self.ret_code
       return await loop.run_in_executor(self.executor, compute)
@@ -362,11 +366,13 @@ class RemoteCholesky(RemoteInstruction):
       def compute():
           self.start_time = time.time()
           s = time.time()
-          if (self.result == None):
+          if (self.result is None):
               L_bb = self.argv[0].result
               self.result = np.linalg.cholesky(L_bb)
               self.flops = 1.0/3.0*(L_bb.shape[0]**3) + 2.0/3.0*(L_bb.shape[0])
               self.ret_code = 0
+          else:
+            raise Exception("Same Machine Replay instruction...")
           e = time.time()
           self.end_time = time.time()
           return self.result
@@ -377,35 +383,6 @@ class RemoteCholesky(RemoteInstruction):
 
     def __str__(self):
         return "{0} = CHOL {1}".format(self.id, self.argv[0].id)
-
-class RemoteInverse(RemoteInstruction):
-    def __init__(self, i_id, argv_instr):
-        super().__init__(i_id)
-        self.i_code = OC.INVRS
-        assert len(argv_instr) == 1
-        self.argv = argv_instr
-        self.result = None
-    async def __call__(self, prev=None):
-      if (prev != None):
-          await prev
-      loop = asyncio.get_event_loop()
-      def compute():
-          self.start_time = time.time()
-          if (self.result == None):
-              L_bb = self.argv[0].result
-              self.result = np.linalg.inv(L_bb)
-              self.flops = 2.0/3.0*(L_bb.shape[0]**3)
-              self.ret_code = 0
-          self.end_time  = time.time()
-          return self.result
-      return await loop.run_in_executor(self.executor, compute)
-
-
-    def clear(self):
-        self.result = None
-
-    def __str__(self):
-        return "{0} = INVRS {1}".format(self.id, self.argv[0].id)
 
 
 class RemoteReturn(RemoteInstruction):
@@ -420,8 +397,8 @@ class RemoteReturn(RemoteInstruction):
       loop = asyncio.get_event_loop()
       self.start_time = time.time()
       if (self.result == None):
-        self.return_loc.put(EC.SUCCESS.value)
-        self.size = sys.getsizeof(EC.SUCCESS.value)
+        put(self.return_loc, PS.SUCCESS.value)
+        self.size = sys.getsizeof(PS.SUCCESS.value)
       self.end_time = time.time()
       return self.result
 
@@ -456,6 +433,13 @@ class InstructionBlock(object):
         return out
     def clear(self):
       [x.clear() for x in self.instrs]
+
+    def total_flops(self):
+      return sum([getattr(x, "flops", 0) for x in self.instrs])
+
+    def total_io(self):
+      return sum([getattr(x, "size", 0) for x in self.instrs])
+
     def __copy__(self):
         return InstructionBlock(self.instrs.copy(), self.label)
 
@@ -466,23 +450,25 @@ class LambdaPackProgram(object):
        Maintains global state information
     '''
 
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2):
+    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9, eager=False):
         t = time.time()
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
         self.executor = executor
         self.bucket = pywren_config['s3']['bucket']
+        self.redis_ip = redis_ip
         self.inst_blocks = [copy.copy(x) for x in inst_blocks]
         self.program_string = "\n".join([str(x) for x in inst_blocks])
         self.max_priority = num_priorities - 1
+        self.io_rate = io_rate
+        self.flop_rate = flop_rate
+        self.eager = eager
         program_string = "\n".join([str(x) for x in self.inst_blocks])
         hashed = hashlib.sha1()
         hashed.update(program_string.encode())
+        # this is temporary hack?
         hashed.update(str(time.time()).encode())
         self.hash = hashed.hexdigest()
-        self.ret_status = RPS(self.hash, default=EC.NOT_STARTED.value)
-        self.ret_status.clear_all()
-        self.ret_status.put(EC.NOT_STARTED.value)
         client = boto3.client('sqs', region_name='us-west-2')
         self.queue_urls = []
         for i in range(num_priorities):
@@ -499,8 +485,6 @@ class LambdaPackProgram(object):
         self.starters = []
         self.terminators = []
         max_i_id = max([inst.id for inst_block in self.inst_blocks for inst in inst_block.instrs])
-        self.block_return_statuses = []
-        self.block_ready_statuses = []
         self.pc = max_i_id + 1
         for i in range(len(self.inst_blocks)):
             children = self.children[i]
@@ -510,107 +494,164 @@ class LambdaPackProgram(object):
             if len(parents) == 0:
                 self.starters.append(i)
             block_hash = hashlib.sha1((self.hash + str(i)).encode()).hexdigest()
-            block_ret_status  = RPS(block_hash, default=EC.NOT_STARTED.value)
-            block_return = RemoteReturn(self.pc + 1, block_ret_status)
-            block_ready_hash = block_hash + "_ready"
-            block_ready_status = RPS(block_ready_hash, default=0)
+            block_return = RemoteReturn(self.pc + 1, block_hash)
             self.inst_blocks[i].instrs.append(block_return)
-            self.block_return_statuses.append(block_ret_status)
-            self.block_ready_statuses.append(block_ready_status)
 
-        self.remote_return = RemoteReturn(max_i_id + 1, self.ret_status)
+        self.remote_return = RemoteReturn(max_i_id + 1, self.hash)
         self.return_block = InstructionBlock([self.remote_return], label="EXIT")
         self.inst_blocks.append(self.return_block)
 
         for i in self.terminators:
           self.children[i].add(len(self.inst_blocks) - 1)
 
-        print("TERMINATORS", self.terminators)
         self.children[len(self.inst_blocks) - 1] = set()
         self.parents[len(self.inst_blocks) - 1] = self.terminators
-        self.block_return_statuses.append(self.ret_status)
-        self.ret_ready_status = RPS(self.hash + "_ready", default=0)
-        self.block_ready_statuses.append(self.ret_ready_status)
         longest_path = self._find_critical_path()
         self.longest_path = longest_path
         self._recursive_priority_donate(self.longest_path, self.max_priority)
+        put(self.hash, PS.NOT_STARTED.value, ip=self.redis_ip)
 
 
 
 
-        e = time.time()
-        for s in self.starters:
-          print(self.inst_blocks[s])
-        print("Post io dependency analyze took {0}".format(e - t))
 
-    def pre_op(self, i):
-        # 1. check if program has terminated
-        # 2. check if this instruction_block has executed successfully
-        # 3. check if parents are not completed
-        # if any of the above are False -> exit
-        try:
-          print("RUNNING " , i)
-          program_status = self.program_status().value
-          if (i == len(self.inst_blocks) - 1):
-            # special case final block
-            print("RETURN BLOCK")
-            pass
-          self.set_inst_block_status(i, EC.RUNNING)
-          self.inst_blocks[i].start_time = time.time()
-          if (program_status != EC.RUNNING.value):
-            return i, self.inst_blocks[i], EC.EXCEPTION
-        except Exception as e:
-            print("EXCEPTION ", e)
-            tb = traceback.format_exc()
-            self.handle_exception(e, tb=tb, block=i)
-            traceback.print_exc()
-            raise
+    def _node_key(self, i):
+      return "{0}_{1}".format(self.hash, i)
+
+    def _edge_key(self, i, j):
+      return "{0}_{1}_{2}".format(self.hash, i, j)
+
+    def get_node_status(self, i):
+      s = get(self._node_key(i), ip=self.redis_ip)
+      if (s == None):
+        s = 0
+      return NS(int(s))
+
+    def get_edge_status(self, i, j):
+      s = get(self._edge_key(i,j), ip=self.redis_ip)
+      if (s == None):
+        s = 0
+      return ES(int(s))
+
+    def set_node_status(self, i, status):
+      put(self._node_key(i), status.value, ip=self.redis_ip)
+      return status
+
+    def set_edge_status(self, i, j, status):
+      put(self._edge_key(i,j), status.value, ip=self.redis_ip)
+      return status
+
+    def set_max_pc(self, pc):
+      # unreliable DO NOT RELY ON THIS THIS JUST FOR DEBUGGING
+      max_pc = get(self.hash + "_max", ip=self.redis_ip)
+      if (max_pc == None):
+        max_pc = 0
+      max_pc = int(max_pc)
+      if (pc > max_pc):
+        max_pc = put(self.hash + "_max", pc, ip=self.redis_ip)
+
+      return max_pc
+
+    def get_max_pc(self):
+      # unreliable DO NOT RELY ON THIS THIS JUST FOR DEBUGGING
+      max_pc = get(self.hash + "_max", ip=self.redis_ip)
+      if (max_pc == None):
+        max_pc = 0
+      return int(max_pc)
 
     def post_op(self, i, ret_code, tb=None):
+        # need clean post op logic to handle
+        # replays
+        # avoid double increments
+        # failures at ANY POINT
+
+        # for each dependency2
+        # post op needs to ATOMICALLY check dependencies
+
         try:
+          node_status = self.get_node_status(i)
+          # if we had 2 racing tasks and one finished no need to go through rigamarole
+          # of re-enqueeuing children
+          if (node_status == NS.FINISHED):
+            return
+          self.set_node_status(i, NS.POST_OP)
           inst_block = self.inst_blocks[i]
-          if (ret_code == EC.EXCEPTION and tb != None):
+          if (ret_code == PS.EXCEPTION and tb != None):
             print("EXCEPTION ")
             print(inst_block)
             self.handle_exception(" EXCEPTION", tb=tb, block=i)
           children = self.children[i]
           parents = self.parents[i]
-          self.set_inst_block_status(i, EC(ret_code))
-          self.inst_blocks[i].clear()
-          child_futures = []
           ready_children = []
           for child in children:
-            val = self.block_ready_statuses[child].incr()
+            t = time.time()
+            my_key = self._edge_key(i,child)
+            parent_keys = [self._edge_key(p,child) for p in self.parents[child]]
+            print("PARENT_KEYS", parent_keys)
+            # redis transaction should be atomic
+            other_keys = [x for x in parent_keys if x != my_key]
+            val = atomic_set_and_sum(my_key, other_keys, ip=self.redis_ip)
+            print("parent_sum is ", val)
+            print("expected is ", len(self.parents[child]))
             print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
-            print(self.block_ready_statuses[child].key)
-            if (val >= len(self.parents[child])):
+            if (val == len(self.parents[child])):
+              self.set_node_status(child, NS.READY)
               ready_children.append(child)
+            e = time.time()
+            print("redis dep check time", e - t)
+
+          # clear result() blocks
+
+          if (self.eager == True and len(ready_children) >  1):
+              max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
+              next_pc = ready_children[max_priority_idx]
+              print("LOCAL ENQUEUE: ", self.inst_blocks[next_pc])
+              # do not enqueue normally
+              eager_child = ready_children[max_priority_idx]
+              del ready_children[max_priority_idx]
+          else:
+            next_pc = None
+            eager_child = None
+
+          # move the highest priority job thats ready onto the local task queue
+          # this is JRK's idea of dynamic node fusion or eager scheduling
+          # the idea is that if we do something like a local cholesky decomposition
+          # we would run its highest priority child *locally* by adding the instructions to the local instruction queue
+          # this has 2 key benefits, first we completely obliviete scheduling overhead between these two nodes but also because of the local LRU cache the first read of this node will be saved this will translate
+
+
           sqs = boto3.resource('sqs', region_name='us-west-2')
-          queue = sqs.Queue(self.queue_urls[inst_block.priority])
-          self.inst_blocks[i].end_time = time.time()
-          self.set_profiling_info(i)
-          self.inst_blocks[i].end_time = time.time()
-          pipelined_time = inst_block.end_time - inst_block.start_time
-          full_times = [inst.end_time  - inst.start_time for inst in inst_block.instrs]
-          print("Finished {0}, all children are {1}, ready children are {2}".format(i, children, ready_children))
+          # throw away children that are done
+          ready_children = [x for x in ready_children if self.get_node_status(x) != NS.FINISHED]
+          # this should NEVER happen...
+          assert (i in ready_children) == False
+          for inst in self.inst_blocks[i].instrs:
+            inst.result = None
           for child in ready_children:
             print("Adding {0} to sqs queue".format(child))
+            queue = sqs.Queue(self.queue_urls[self.inst_blocks[child].priority])
             queue.send_message(MessageBody=str(child))
-            pass
+          self.inst_blocks[i].end_time = time.time()
+          self.set_profiling_info(i)
+          return next_pc
         except Exception as e:
             print("POST OP EXCEPTION ", e)
+            print(self.inst_blocks[i])
+            # clear all intermediate state
+            self.inst_blocks[i].clear()
             tb = traceback.format_exc()
-            self.handle_exception(e, tb=tb, block=i)
             traceback.print_exc()
             raise
 
 
     def start(self):
-        self.ret_status.put(EC.RUNNING.value)
+        put(self.hash, PS.RUNNING.value, ip=self.redis_ip)
+        self.set_max_pc(0)
         sqs = boto3.resource('sqs')
         for starter in self.starters:
           print("Enqueuing ", starter)
           inst_block = self.inst_blocks[starter]
+          self.set_node_status(starter, NS.READY)
           priority = inst_block.priority
           queue = sqs.Queue(self.queue_urls[priority])
           queue.send_message(MessageBody=str(starter))
@@ -620,21 +661,16 @@ class LambdaPackProgram(object):
     def handle_exception(self, error, tb, block):
         client = boto3.client('s3')
         client.put_object(Key=self.hash + "/EXCEPTION.{0}".format(block), Bucket=self.bucket, Body=tb + str(error))
-        e = EC.EXCEPTION.value
-        self.ret_status.put(e)
+        e = PS.EXCEPTION.value
+        put(self.hash, e, ip=self.redis_ip)
 
     def program_status(self):
-      status = self.ret_status.get()
-      if (status == None):
-        return EC.NOT_STARTED
-      else:
-        return EC(status)
-
-
+      status = get(self.hash, ip=self.redis_ip)
+      return PS(int(status))
 
     def wait(self, sleep_time=1):
         status = self.program_status()
-        while (status == EC.RUNNING):
+        while (status == PS.RUNNING):
             time.sleep(sleep_time)
             status = self.program_status()
 
@@ -660,19 +696,6 @@ class LambdaPackProgram(object):
         print("TYPE IS ", type(byte_string))
         client.put_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc), Body=byte_string)
 
-
-    def inst_block_status(self, i):
-      status = self.block_return_statuses[i].get()
-      if (status == None):
-        return EC.NOT_STARTED
-      else:
-        return EC(status)
-
-    def set_inst_block_status(self, i, status):
-        return self.block_return_statuses[i].put(status.value)
-
-    async def set_inst_block_status_async(self, i, status, loop):
-        return await self.block_return_statuses[i].put_async(status.value, loop)
 
     def _io_dependency_analyze(self, instruction_blocks, barrier_look_ahead=2):
         print("Starting IO dependency")
@@ -724,11 +747,8 @@ class LambdaPackProgram(object):
         furthest_parent = parents[max(range(len(parents)), key=lambda x: parent_distances[x])]
         distances[i] = max(parent_distances) + 1
         longest_paths[i] = furthest_parent
-      print(distances)
 
       furthest_node = max(distances.items(), key=lambda x: x[1])[0]
-      print("Furthest Node ", furthest_node)
-      print(self.inst_blocks[furthest_node])
       longest_path = [furthest_node]
       current_node = longest_paths[furthest_node]
       while(current_node != -1):
@@ -799,18 +819,14 @@ def make_local_cholesky(pc, L_out, L_in, b0, label=None):
     return InstructionBlock([block_load, cholesky, write_diag], label=label), 4
 
 
-def make_remote_gemm(pc, XY, X, Y, b0, b1, b2, label=None):
-    # download row_b0[b2]
-    # download col_b1[b2]
-    # compute row_b0[b2].T.dot(col_b1[b2])
-
-    block_0_load = RemoteLoad(pc, X, b0, b1)
+def make_remote_gemm(pc, XY, X, Y, label=None):
+    block_0_load = RemoteLoad(pc, X)
     pc += 1
-    block_1_load = RemoteLoad(pc, Y, b1, b2)
+    block_1_load = RemoteLoad(pc, Y)
     pc += 1
     matmul = RemoteGemm(pc, [block_0_load, block_1_load])
     pc += 1
-    write_out = RemoteWrite(pc, XY, matmul, b0, b1)
+    write_out = RemoteWrite(pc, XY, matmul)
     pc += 1
     return InstructionBlock([block_0_load, block_1_load, matmul, write_out], label=label), 4
 
@@ -821,7 +837,6 @@ def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
         out_bucket = X.bucket
 
     root_key = generate_key_name_binop(X, Y, "gemm")
-
     if (X.key == Y.key and (X.transposed ^ Y.transposed)):
         XY = BigSymmetricMatrix(root_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]])
     else:
@@ -879,7 +894,8 @@ def _trisolve(A, B, lower=False, out_bucket=None):
                 start = j + 1
                 end = len(A._block_idxs(1))
             for k in A._block_idxs(1)[start:end]:
-                instructions, count = make_remote_gemm(pc, scratch[i], A, X, j, k, i,
+                instructions, count = make_remote_gemm(pc, scratch[i].submatrix(j, k),
+                                                       A.submatrix(j, k), X.submatrix(k, i),
                                                        label="gemm_{0}_{1}_{2}".format(i, j, k))
                 all_instructions.append(instructions)
                 pc += count
@@ -918,8 +934,7 @@ def _chol(X, out_bucket=None):
         L_trailing = BigMatrix(out_key + "_{0}_trailing".format(i),
                        shape=(X.shape[0], X.shape[0]),
                        bucket=out_bucket,
-                       shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]],
-                       parent_fn=constant_zeros)
+                       shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]])
         block_size =  min(X.shard_sizes[0], X.shape[0] - X.shard_sizes[0]*j0)
         trailing.append(L_trailing)
     trailing.append(L)
@@ -960,7 +975,7 @@ def perf_profile(blocks, num_bins=100):
     WRITE_INSTRUCTIONS = [OC.S3_WRITE, OC.RET]
     COMPUTE_INSTRUCTIONS = [OC.SYRK, OC.TRSM, OC.INVRS, OC.CHOL]
     # first flatten into a single instruction list
-    instructions = [inst for block in blocks for inst in block.instrs]
+    instructions = [inst for block in blocks for inst in block.instrs if inst.end_time != None and inst.start_time != None]
     start_times = [inst.start_time for inst in instructions]
     end_times = [inst.end_time for inst in instructions]
 
@@ -974,6 +989,9 @@ def perf_profile(blocks, num_bins=100):
     runtimes = []
 
     for i,inst in enumerate(instructions):
+        if (inst.end_time == None or inst.start_time == None):
+          # replay instructions don't always have profiling information...
+          continue
         duration = inst.end_time - inst.start_time
         if (inst.i_code in READ_INSTRUCTIONS):
             start_time = inst.start_time - abs_start
@@ -1015,7 +1033,7 @@ def perf_profile(blocks, num_bins=100):
         flops = inst.flops/1e9
       else:
         flops = None
-      print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset, flops))
+      print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset,  inst.end_time - inst.start_time, flops))
     for k in optimes.keys():
       print("{0}: {1}s".format(k, optimes[k]/opcounts[k]))
     return read_bytes_per_sec, write_bytes_per_sec, total_flops_per_sec, bins , instructions, runtimes
