@@ -119,6 +119,7 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
         if (condition_key == 0):
           pipe.multi()
           pipe.set(key_to_incr, current_value + 1)
+          pipe.set(condition_key, 1)
           assert(pipe.execute()[0])
         break
       except redis.WatchError as e:
