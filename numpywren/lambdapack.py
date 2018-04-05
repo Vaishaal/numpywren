@@ -103,6 +103,8 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
 
   #r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
   r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+  current_value = 0
+  condition_key = 0
   with r.pipeline() as pipe:
     while True:
       try:
@@ -112,19 +114,21 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
         if (current_value is None):
           current_value = 0
         current_value = int(current_value)
-        condition_key = pipe.get(condition_key)
-        if (condition_key is None):
-          condition_key = 0
-        condition_key = int(condition_key)
+        condition_val = pipe.get(condition_key)
+        if (condition_val is None):
+          condition_val = 0
+        condition_val = int(condition_val)
+        print("Condition val is ", condition_val)
         if (condition_key == 0):
           pipe.multi()
-          pipe.set(key_to_incr, current_value + 1)
+          current_value += 1
+          pipe.set(key_to_incr, current_value)
           pipe.set(condition_key, 1)
           assert(pipe.execute()[0])
         break
       except redis.WatchError as e:
         continue
-  return current_value + 1
+  return current_value
 
 
 def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, passw=REDIS_PASS, value=1):
