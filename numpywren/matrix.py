@@ -744,19 +744,19 @@ class BigMatrixView(BigMatrix):
                 if parent_slice.step == 1:
                     step_rep = ""
                 else:
-                    step_rep = ":" + parent_slice.step 
+                    step_rep = ":" + str(parent_slice.step)
                 if parent_slice.start == 0:
                     start_rep = ""
                 else:
                     start_rep = str(parent_slice.start)
-                if stop_rep == axis_len:
+                if parent_slice.stop == axis_len:
                     stop_rep = ""
                 else:
                     stop_rep = str(parent_slice.stop)
                 slice_reps.append(start_rep + ":" + stop_rep + step_rep)
         rep = self.parent.__str__() 
         if last_slice != 0:
-            rep += "[" + ",".join(slice_reps[:last_slice]) + "]"
+            rep += "[" + ",".join(slice_reps[:last_slice + 1]) + "]"
         if self.transposed:
             rep += ".T"
         return rep
