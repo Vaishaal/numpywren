@@ -84,7 +84,7 @@ def put(key, value, ip=REDIS_IP, s3=False, s3_bucket=""):
       raise Exception("Not Implemented")
 
 
-def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
+def get(key, ip=REDIS_IP, s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
     if (s3):
       # read from S3
@@ -139,7 +139,7 @@ def atomic_sum(keys, ip=REDIS_IP):
 
 OC = RemoteInstructionOpCodes
 
-def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_PASS):
+def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP):
   ''' Crucial atomic operation needed to insure DAG correctness
       @param key_to_incr - increment this key
       @param condition_key - only do so if this value is 1
@@ -164,7 +164,7 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
   return int(r.get(key_to_incr))
 
 
-def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, passw=REDIS_PASS, value=1):
+def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, value=1):
   ''' Crucial atomic operation needed to insure DAG correctness
       the return value of this operation will be sum(keys) + value
       but it will also have the side-effect of binding key_to_set to value
