@@ -255,6 +255,9 @@ class BigMatrix(object):
         """
         return self._block_idxs()
 
+    def true_block_idx(self, *block_idx):
+        return block_idx
+
     def get_block(self, *block_idx):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -576,7 +579,8 @@ class BigMatrixView(BigMatrix):
             self.shape.append(self.shard_sizes[i] * int(np.ceil((stop - start) / step)))
             # Handle the case where the last view block is equal to a final
             # parent block that is smaller than the shard size.
-            if (stop - 1 - start) % step == 0 and self.parent.shape[i] % self.shard_sizes[i] != 0:
+            if (stop == self.axis_lens[i] and (stop - 1 - start) % step == 0 and
+                self.parent.shape[i] % self.shard_sizes[i] != 0):
                 self.shape[-1] += self.parent.shape[i] % self.shard_sizes[i]  - self.shard_sizes[i]
             self.parent_slices.append(slice(start, stop, step))
         # Account for the case where slices aren't provided for the trailing indexes.
@@ -584,8 +588,8 @@ class BigMatrixView(BigMatrix):
             self.parent_slices.append(slice(0, self.axis_lens[i], 1))
             self.shape.append(self.parent.shape[i])
         if self.transposed:
-            self.shape = list(reversed(self.shape))
-            self.shard_sizes = list(reversed(self.shard_sizes))
+            self.shape = tuple(reversed(self.shape))
+            self.shard_sizes = tuple(reversed(self.shard_sizes))
         assert len(self.shard_sizes) == len(self.shape)
 
     @property
@@ -620,6 +624,9 @@ class BigMatrixView(BigMatrix):
         view_idxs = map(self.__parent_to_view_block_idx__,
                         filter(self.__is_valid_parent_block_idx__, parent_idxs))
         return list(view_idxs)
+
+    def true_block_idx(self, *block_idx):
+        return self.parent.true_block_idx(*self.__view_to_parent_block_idx__(block_idx))
 
     def get_block(self, *block_idx): 
         parent_idx = self.__view_to_parent_block_idx__(block_idx)
@@ -691,7 +698,7 @@ class BigMatrixView(BigMatrix):
             if parent_elt >= parent_slice.stop:
                 raise IndexError("Array index out of bounds.")
             parent_idx.append(parent_elt)
-        return parent_idx
+        return tuple(parent_idx)
 
     def __parent_to_view_block_idx__(self, parent_idx, axis=None):
         # Assign what indices we need to convert.
@@ -708,7 +715,7 @@ class BigMatrixView(BigMatrix):
         if axis is not None:
             view_idx = view_idx[0]
         elif self.transposed:
-          view_idx = list(reversed(view_idx))
+          view_idx = tuple(reversed(view_idx))
 
         return view_idx
 

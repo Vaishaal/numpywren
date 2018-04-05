@@ -47,15 +47,13 @@ class TrisolveTestClass(unittest.TestCase):
         A_sharded = BigMatrix("A_trisolve_test_2", shape=A.shape, shard_sizes=[32, 32])
         shard_matrix(A_sharded, A)
         B = np.random.rand(128, 64) + 1
-        B_sharded = BigMatrix("B_trisolve_test_2", shape=B.shape, shard_sizes=[32, 32])
+        B_sharded = BigMatrix("B_trisolve_test_2", shape=B.shape, shard_sizes=[32,32])
         shard_matrix(B_sharded, B)
         pwex = pywren.lambda_executor()
         X_sharded = binops.trisolve(pwex, A_sharded, B_sharded)
         X_sharded_local = X_sharded.numpy()
         X = scipy.linalg.solve_triangular(A, B) 
         X_sharded.free()
-        print(X)
-        print(X_sharded_local)
         assert(np.all(np.isclose(X,X_sharded_local)))
 
     def test_multiple_uneven_shard_trisolve_upper(self):

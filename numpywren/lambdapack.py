@@ -170,7 +170,7 @@ class RemoteLoad(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result is None):
-            cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
+            cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
             if (self.cache != None and cache_key in self.cache):
               t = time.time()
               self.result = self.cache[cache_key].copy()
@@ -215,7 +215,7 @@ class RemoteWrite(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result is None):
-            cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
+            cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
             if (self.cache != None):
               # write to the cache
               self.cache[cache_key] = self.data_instr.result.copy()
@@ -707,18 +707,19 @@ class LambdaPackProgram(object):
             # find all places inst_0 reads
             for inst in inst_0.instrs:
               if inst.i_code == OC.S3_LOAD:
-                read_edges[(inst.matrix,inst.bidxs)].add(i)
+                read_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))].add(i)
               if inst.i_code == OC.S3_WRITE:
-                write_edges[(inst.matrix,inst.bidxs)].add(i)
-                assert len(write_edges[(inst.matrix,inst.bidxs)]) == 1
+                write_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))].add(i)
+                assert len(write_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))]) == 1
 
         for i, inst_0 in enumerate(instruction_blocks):
             # find all places inst_0 reads
             for inst in inst_0.instrs:
               if inst.i_code == OC.S3_LOAD:
-                parents[i].update(write_edges[(inst.matrix,inst.bidxs)])
+                parents[i].update(write_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))])
               if inst.i_code == OC.S3_WRITE:
-                children[i].update(read_edges[(inst.matrix,inst.bidxs)])
+                children[i].update(read_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))])
+
         return children, parents
 
 
@@ -820,7 +821,7 @@ def make_local_cholesky(pc, L_out, L_in, b0, label=None):
 
 
 def make_remote_gemm(pc, XY, X, Y, label=None):
-    assert XY.shape[0] == X.shape[0] and XY.shape[1] == Y.shape[1]
+    # assert XY.shape[0] == X.shape[0] and XY.shape[1] == Y.shape[1]
     block_0_load = RemoteLoad(pc, X)
     pc += 1
     block_1_load = RemoteLoad(pc, Y)
@@ -869,17 +870,15 @@ def _trisolve(A, B, lower=False, out_bucket=None):
                   shape=(B.shape[0], B.shape[1]),
                   bucket=out_bucket,
                   shard_sizes=[B.shard_sizes[0], B.shard_sizes[1]],
-                  parent_fn=constant_zeros,
                   write_header=True)
 
     scratch = []
     for i,j0 in enumerate(B._block_idxs(1)):
         col_size = min(B.shard_sizes[1], B.shape[1] - B.shard_sizes[1]*j0)
-        scratch.append(BigMatrix(out_key + "_{0}_scratch".format(i),
-                       shape=[A.shape[0], col_size * len(B._block_idxs(0))],
+        scratch.append(BigMatrix(out_key + "_scratch_{0}".format(i),
+                       shape=[len(B._block_idxs(1)), A.shape[0], col_size * len(B._block_idxs(0))],
                        bucket=out_bucket,
-                       shard_sizes=[A.shard_sizes[0], col_size],
-                       parent_fn=constant_zeros,
+                       shard_sizes=[1, A.shard_sizes[0], col_size],
                        write_header=True))
     pc = 0
     all_instructions = []
