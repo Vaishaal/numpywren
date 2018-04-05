@@ -105,7 +105,7 @@ class LambdaPackExecutor(object):
                     print("HAHAH CAN'T TRICK ME... I'm just going to rage quit")
                     continue
                 else:
-                    raise Exception("Unknown state")
+                    raise Exception("Unknown status: {0}".format(node_status))
                 if (next_pc != None):
                     pcs.append(next_pc)
             except RuntimeError as e:
@@ -144,8 +144,8 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
             receipt_handle = msg["ReceiptHandle"]
             pc = int(msg["Body"])
             sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(50)
+            res = sqs_client.change_message_visibility(VisibilityTimeout=20, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            await asyncio.sleep(10)
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
             await asyncio.sleep(10)

@@ -87,30 +87,6 @@ def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
       #redis_client = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
       return redis_client.get(key)
 
-def atomic_sum(keys, ip=REDIS_IP, passw=REDIS_PASS):
-  tot_sum = 0
-  keys = list(set(keys))
-  def _atomic_parent_sum(pipe):
-    nonlocal tot_sum
-    tot_sum = 0
-    for key in keys:
-      edge = pipe.get(key)
-      if (edge == None):
-        edge = 0
-      else:
-        edge = int(edge)
-        print("Edge {0} is ".format(key), edge)
-      tot_sum += edge
-    pipe.multi()
-    pipe.set(sum_key, tot_sum)
-    pipe.execute()
-  r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-  #r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
-  keys_to_watch = keys.copy()
-  sum_key = "sum_{0}".format(keys)
-  keys_to_watch.append(sum_key)
-  r.transaction(_atomic_parent_sum, *keys_to_watch)
-  return int(r.get(sum_key))
 
 OC = RemoteInstructionOpCodes
 
@@ -122,21 +98,32 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
       @param value - the value to bind key_to_set to
     '''
 
-  tot_sum = 0
-  def _conditional_increment(pipe):
-      edge = pipe.get(condition_key)
-      if (edge == None):
-        edge = 0
-      if (edge == 0):
-        pipe.multi()
-        pipe.set(condition_key, 1)
-        pipe.incr(key_to_incr)
-        pipe.execute()
+  res = 0
+
+
   #r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
   r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-  keys_to_watch = [condition_key]
-  r.transaction(_conditional_increment, *keys_to_watch)
-  return int(r.get(key_to_incr))
+  with r.pipeline() as pipe:
+    while True:
+      try:
+        pipe.watch(key_to_incr)
+        pipe.watch(condition_key)
+        current_value = pipe.get(key_to_incr)
+        if (current_value is None):
+          current_value = 0
+        current_value = int(current_value)
+        condition_key = pipe.get(condition_key)
+        if (condition_key is None):
+          condition_key = 0
+        condition_key = int(condition_key)
+        if (condition_key == 0):
+          pipe.multi()
+          pipe.set(key_to_incr, current_value + 1)
+          assert(pipe.execute()[0])
+        break
+      except redis.WatchError as e:
+        continue
+  return current_value + 1
 
 
 def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, passw=REDIS_PASS, value=1):
@@ -534,6 +521,9 @@ class LambdaPackProgram(object):
     def _node_key(self, i):
       return "{0}_{1}".format(self.hash, i)
 
+    def _node_edge_sum_key(self, i):
+      return "{0}_{1}_edgesum".format(self.hash, i)
+
     def _edge_key(self, i, j):
       return "{0}_{1}_{2}".format(self.hash, i, j)
 
@@ -604,11 +594,11 @@ class LambdaPackProgram(object):
           for child in children:
             t = time.time()
             my_child_edge = self._edge_key(i,child)
-            child_key = self._node_key(child)
+            child_edge_sum_key = self._node_edge_sum_key(child)
             #self.set_edge_status(i, child, ES.READY)
             # redis transaction should be atomic
             tp = fs.ThreadPoolExecutor(1)
-            val_future = tp.submit(conditional_increment, child_key, my_child_edge, ip=self.redis_ip)
+            val_future = tp.submit(conditional_increment, child_edge_sum_key, my_child_edge, ip=self.redis_ip)
             #val_future = tp.submit(atomic_sum, parent_keys, ip=self.redis_ip)
             done, not_done = fs.wait([val_future], timeout=60)
             if len(done) == 0:
