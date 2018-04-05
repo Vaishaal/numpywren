@@ -35,7 +35,7 @@ except:
 
 REDIS_IP = "127.0.0.1"
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
-REDIS_PORT = 9000
+REDIS_PORT = 6379 
 
 class RemoteInstructionOpCodes(Enum):
     S3_LOAD = 0
@@ -957,9 +957,9 @@ def _trisolve(A, B, lower=False, out_bucket=None):
     for i,j0 in enumerate(B._block_idxs(1)):
         col_size = min(B.shard_sizes[1], B.shape[1] - B.shard_sizes[1]*j0)
         scratch.append(BigMatrix(out_key + "_scratch_{0}".format(i),
-                       shape=[len(B._block_idxs(1)), A.shape[0], col_size * len(B._block_idxs(0))],
+                       shape=[A.shape[0], col_size * len(B._block_idxs(0))],
                        bucket=out_bucket,
-                       shard_sizes=[1, A.shard_sizes[0], col_size],
+                       shard_sizes=[A.shard_sizes[0], col_size],
                        write_header=True))
     pc = 0
     all_instructions = []
