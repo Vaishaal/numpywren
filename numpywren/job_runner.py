@@ -49,6 +49,8 @@ class LRUCache(object):
             remove = self.key_order[self.max_items]
             del self.cache[remove]
             self.key_order.remove(remove)
+            for i in range(10):
+                gc.collect()
 
 class LambdaPackExecutor(object):
     def __init__(self, program, loop, cache):

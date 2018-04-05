@@ -101,14 +101,10 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
   res = 0
 
 
-  #r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
   r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-  current_value = 0
-  condition_key = 0
   with r.pipeline() as pipe:
     while True:
       try:
-        pipe.watch(key_to_incr)
         pipe.watch(condition_key)
         current_value = pipe.get(key_to_incr)
         if (current_value is None):
@@ -118,17 +114,21 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
         if (condition_val is None):
           condition_val = 0
         condition_val = int(condition_val)
+        res = current_value
+        print("CONDITION KEY IS ", condition_key)
         print("Condition val is ", condition_val)
-        if (condition_key == 0):
+        if (condition_val == 0):
+          print("doing transaction")
           pipe.multi()
-          current_value += 1
-          pipe.set(key_to_incr, current_value)
+          pipe.incr(key_to_incr)
           pipe.set(condition_key, 1)
-          assert(pipe.execute()[0])
+          t_results = pipe.execute()
+          res = int(t_results[0])
+          assert(t_results[1])
         break
       except redis.WatchError as e:
         continue
-  return current_value
+  return res
 
 
 def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, passw=REDIS_PASS, value=1):
@@ -600,6 +600,7 @@ class LambdaPackProgram(object):
             t = time.time()
             my_child_edge = self._edge_key(i,child)
             child_edge_sum_key = self._node_edge_sum_key(child)
+            print("CHILD EDGE SUM KEY ", child_edge_sum_key)
             #self.set_edge_status(i, child, ES.READY)
             # redis transaction should be atomic
             tp = fs.ThreadPoolExecutor(1)
@@ -984,12 +985,12 @@ def perf_profile(blocks, num_bins=100):
       optimes[inst.i_code] += t
       IO_INSTRUCTIONS = [OC.S3_LOAD, OC.S3_WRITE, OC.RET]
       if (inst.i_code not in IO_INSTRUCTIONS):
-        print(inst.i_code)
-        print(IO_INSTRUCTIONS)
+        #print(inst.i_code)
+        #print(IO_INSTRUCTIONS)
         flops = inst.flops/1e9
       else:
         flops = None
-      print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset,  inst.end_time - inst.start_time, flops))
+      #print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset,  inst.end_time - inst.start_time, flops))
     for k in optimes.keys():
       print("{0}: {1}s".format(k, optimes[k]/opcounts[k]))
     return read_bytes_per_sec, write_bytes_per_sec, total_flops_per_sec, bins , instructions, runtimes
