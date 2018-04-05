@@ -25,27 +25,29 @@ class FailureTests(unittest.TestCase):
         np.random.seed(1)
         size = 256
         shard_size = 64
-        repeats = 8
-        np.random.seed(1)
+        repeats = 18
+        np.random.seed(2)
         print("Generating X")
         X = np.random.randn(size, 128)
         print("Generating A")
-        A = X.dot(X.T) + np.eye(X.shape[0])
+        A = X.dot(X.T) + size*np.eye(X.shape[0])
         shard_sizes = (shard_size, shard_size)
-        A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
+        A_sharded= BigMatrix("cholesky_test_A_{0}".format(int(time.time())), shape=A.shape, shard_sizes=shard_sizes, write_header=True)
         A_sharded.free()
         shard_matrix(A_sharded, A)
         instructions,L_sharded,trailing = lp._chol(A_sharded)
+        L_sharded.free()
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
         config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, eager=True)
+        print("PROGRAM HASH", program.hash)
         cores = 16
         program.start()
         jobs = []
 
         for c in range(cores):
-            p = mp.Process(target=job_runner.lambdapack_run, args=(program,), kwargs={'timeout':3600, 'pipeline_width':4})
+            p = mp.Process(target=job_runner.lambdapack_run, args=(program,), kwargs={'timeout':3600, 'pipeline_width':5})
             jobs.append(p)
             p.start()
 
@@ -91,10 +93,15 @@ class FailureTests(unittest.TestCase):
                     continue
                 total_time += instr.end_time - instr.start_time
             print("Block {0} total_time {1} pipelined time {2}".format(pc, total_time, actual_time))
+        time.sleep(1)
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
         print(L_npw)
         print(L)
+        print("MAX ", np.max(np.abs(L - L_npw)))
+        z = np.argmax(np.abs(L - L_npw))
+        print("L_local max value", L.ravel()[z])
+        print("L_npw wrong value", L_npw.ravel()[z])
         assert(np.allclose(L_npw, L))
 
     def test_cholesky_multi_failures(self):
@@ -109,7 +116,7 @@ class FailureTests(unittest.TestCase):
         print("Generating X")
         X = np.random.randn(size, 128)
         print("Generating A")
-        A = X.dot(X.T) + np.eye(X.shape[0])
+        A = X.dot(X.T) + size*np.eye(X.shape[0])
         shard_sizes = (shard_size, shard_size)
         A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
         A_sharded.free()
@@ -118,7 +125,7 @@ class FailureTests(unittest.TestCase):
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
         config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, eager=True)
         cores = 16
         program.start()
         jobs = []
@@ -141,7 +148,7 @@ class FailureTests(unittest.TestCase):
                 waiting += int(attrs["ApproximateNumberOfMessages"])
                 running += int(attrs["ApproximateNumberOfMessagesNotVisible"])
             print("SQS QUEUE STATUS Waiting {0}, Running {1}".format(waiting, running))
-            time.sleep(1)
+            time.sleep(10)
             if (np.random.random() > 0.65):
                 for i in range(failures):
                     core = int(np.random.choice(cores, 1)[0])
@@ -171,4 +178,5 @@ class FailureTests(unittest.TestCase):
         L = np.linalg.cholesky(A)
         print(L_npw)
         print(L)
+        print("MAX ", np.max(np.abs(L - L_npw)))
         assert(np.allclose(L_npw, L))

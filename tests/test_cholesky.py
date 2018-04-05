@@ -14,6 +14,8 @@ import time
 import os
 import boto3
 
+redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
+
 class CholeskyTest(unittest.TestCase):
     def test_cholesky_single(self):
         X = np.random.randn(4,4)
@@ -103,7 +105,7 @@ class CholeskyTest(unittest.TestCase):
         program.start()
         num_cores = 1
         print("Mapping...")
-        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env={"REDIS_IP": os.environ.get("REDIS_IP", "")})
+        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)
         futures[0].result()
         print("Waiting...")
         pywren.wait(futures)
@@ -178,8 +180,8 @@ class CholeskyTest(unittest.TestCase):
     def test_cholesky_multi_lambda(self):
         print("RUNNING many lambda")
         np.random.seed(1)
-        size = 16384
-        shard_size = 4096
+        size = 128 
+        shard_size = 32
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 1)
@@ -199,7 +201,7 @@ class CholeskyTest(unittest.TestCase):
         print(program)
         program.start()
         num_cores = 100
-        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env={"REDIS_IP": os.environ.get("REDIS_IP", "")})
+        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)
         program.wait()
         print("Program status")
         print(program.program_status())
@@ -207,8 +209,6 @@ class CholeskyTest(unittest.TestCase):
         program.free()
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
-        print(L_npw)
-        print(L)
         assert(np.allclose(L_npw, L))
         profiled_blocks = program.get_all_profiling_info()
         print(lp.perf_profile(profiled_blocks))
@@ -216,49 +216,10 @@ class CholeskyTest(unittest.TestCase):
             total_time = 0
             actual_time = profiled_block.end_time - profiled_block.start_time
             for instr in profiled_block.instrs:
+                if (instr.end_time == None or instr.start_time == None): continue
                 total_time += instr.end_time - instr.start_time
             print("Instruction Block {0} operation_time {1} end_to_end time {2}".format(pc, total_time, actual_time))
 
-    def test_cholesky_multi_standalone(self):
-        print("RUNNING many standalone")
-        np.random.seed(1)
-        size = 128
-        shard_size = 32
-        np.random.seed(1)
-        print("Generating X")
-        X = np.random.randn(size, 128)
-        print("Generating A")
-        A = X.dot(X.T) + np.eye(X.shape[0])
-        shard_sizes = (shard_size, shard_size)
-        A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
-        A_sharded.free()
-        shard_matrix(A_sharded, A)
-        instructions,L_sharded,trailing = lp._chol(A_sharded)
-        pwex = pywren.standalone_executor()
-        executor = pywren.standalone_executor
-        config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
-        print(program)
-        program.start()
-        num_cores = 1
-        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores))
-        program.wait()
-        print("Program status")
-        print(program.program_status())
-        program.free()
-        profiled_blocks = program.get_all_profiling_info()
-        print(lp.perf_profile(profiled_blocks))
-        for pc,profiled_block in enumerate(profiled_blocks):
-            total_time = 0
-            actual_time = profiled_block.end_time - profiled_block.start_time
-            for instr in profiled_block.instrs:
-                total_time += instr.end_time - instr.start_time
-            print("Instruction Block {0} operation_time {1} end_to_end time {2}".format(pc, total_time, actual_time))
-        L_npw = L_sharded.numpy()
-        L = np.linalg.cholesky(A)
-        print(L_npw)
-        print(L)
-        assert(np.allclose(L_npw, L))
 
 
 
