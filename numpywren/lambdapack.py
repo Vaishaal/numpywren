@@ -35,6 +35,7 @@ except:
 
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
+REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 
 class RemoteInstructionOpCodes(Enum):
     S3_LOAD = 0
@@ -64,9 +65,17 @@ class ProgramStatus(Enum):
     EXCEPTION = 2
     NOT_STARTED = 3
 
+redis_client = None
+def get_redis_client(ip=REDIS_IP):
+    global redis_client
+    if redis_client == None:
+        redis_client = redis.StrictRedis(ip, port=6379, password=REDIS_PASSWORD, db=0)
+    return redis_client
+
+
 def put(key, value, ip=REDIS_IP, s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
-    redis_client = redis.StrictRedis(ip, port=6379, db=0)
+    redis_client = get_redis_client(ip)
     redis_client.set(key, value)
     return value
     if (s3):
@@ -80,8 +89,26 @@ def get(key, ip=REDIS_IP, s3=False, s3_bucket=""):
       # read from S3
       raise Exception("Not Implemented")
     else:
-      redis_client = redis.StrictRedis(ip, port=6379, db=0)
+      redis_client = get_redis_client(ip)
       return redis_client.get(key)
+
+def incr(key, amount, ip=REDIS_IP, s3=False, s3_bucket=""):
+    #TODO: fall back to S3 here
+    if (s3):
+      # read from S3
+      raise Exception("Not Implemented")
+    else:
+      redis_client = get_redis_client(ip)
+      return redis_client.incr(key, amount=amount)
+
+def decr(key, amount, ip=REDIS_IP, s3=False, s3_bucket=""):
+    #TODO: fall back to S3 here
+    if (s3):
+      # read from S3
+      raise Exception("Not Implemented")
+    else:
+      redis_client = get_redis_client(ip)
+      return redis_client.decr(key, amount=amount)
 
 
 def atomic_sum(keys, ip=REDIS_IP):
@@ -101,7 +128,7 @@ def atomic_sum(keys, ip=REDIS_IP):
     pipe.multi()
     pipe.set(sum_key, tot_sum)
     pipe.execute()
-  r = redis.StrictRedis(ip, port=6379, db=0)
+  r = get_redis_client(ip)
   keys_to_watch = keys.copy()
   sum_key = "sum_{0}".format(keys)
   keys_to_watch.append(sum_key)
@@ -449,6 +476,8 @@ class LambdaPackProgram(object):
         # this is temporary hack?
         hashed.update(str(time.time()).encode())
         self.hash = hashed.hexdigest()
+        self.up = 'up' + self.hash
+        self.set_up(0)
         client = boto3.client('sqs', region_name='us-west-2')
         self.queue_urls = []
         for i in range(num_priorities):
@@ -581,16 +610,16 @@ class LambdaPackProgram(object):
 
           # clear result() blocks
           self.inst_blocks[i].clear()
-          if (len(ready_children) >  0):
-            max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
-            next_pc = ready_children[max_priority_idx]
-            print("LOCAL ENQUEUE: ", self.inst_blocks[next_pc])
-            # do not enqueue normally
-            eager_child = ready_children[max_priority_idx]
-            del ready_children[max_priority_idx]
-          else:
-            next_pc = None
-            eager_child = None
+#          if (len(ready_children) >  0):
+#            max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
+#            next_pc = ready_children[max_priority_idx]
+#            print("LOCAL ENQUEUE: ", self.inst_blocks[next_pc])
+#            # do not enqueue normally
+#            eager_child = ready_children[max_priority_idx]
+#            del ready_children[max_priority_idx]
+#          else:
+          next_pc = None
+          eager_child = None
 
           # move the highest priority job thats ready onto the local task queue
           # this is JRK's idea of dynamic node fusion or eager scheduling
@@ -647,6 +676,18 @@ class LambdaPackProgram(object):
     def program_status(self):
       status = get(self.hash, ip=self.redis_ip)
       return PS(int(status))
+
+    def incr_up(self, amount):
+      incr(self.up, amount, ip=self.redis_ip)
+
+    def decr_up(self, amount):
+      decr(self.up, amount, ip=self.redis_ip)
+
+    def get_up(self):
+      return get(self.up, ip=self.redis_ip)
+
+    def set_up(self, value):
+      put(self.up, value, ip=self.redis_ip)
 
     def wait(self, sleep_time=1):
         status = self.program_status()

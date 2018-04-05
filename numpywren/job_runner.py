@@ -92,7 +92,11 @@ class LambdaPackExecutor(object):
                     raise Exception("Unknown state")
                 if (next_pc != None):
                     pcs.append(next_pc)
+            except fs._base.TimeoutError as e:
+                self.program.decr_up(1)
+                raise
             except Exception as e:
+                self.program.decr_up(1)
                 traceback.print_exc()
                 tb = traceback.format_exc()
                 self.program.post_op(pc, lp.PS.EXCEPTION, tb=tb)
@@ -130,6 +134,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
     print("loop end")
     loop.close()
     lambda_stop = time.time()
+    program.decr_up(1)
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(results)}
 
