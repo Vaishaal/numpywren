@@ -16,7 +16,11 @@ import pickle
 import gc
 import os
 import sys
+import redis
 
+def mem():
+   mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+   return mem_bytes/(1024.**3)
 
 class LRUCache(object):
     def __init__(self, max_items=10):
@@ -65,8 +69,8 @@ class LambdaPackExecutor(object):
     async def run(self, pc, computer=None):
         pcs = [pc]
         for pc in pcs:
-            print("STARTING INSTRUCTION ", pc)
-            print(self.program.inst_blocks[pc])
+            #print("STARTING INSTRUCTION ", pc)
+            #print(self.program.inst_blocks[pc])
             t = time.time()
             node_status = self.program.get_node_status(pc)
             self.program.set_max_pc(pc)
@@ -76,16 +80,17 @@ class LambdaPackExecutor(object):
             if (len(instrs) != len(set(instrs))):
                 raise Exception("Duplicate instruction in instruction stream")
             try:
-                if (node_status == lp.NS.READY):
+                if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
+                    self.program.set_node_status(pc, lp.NS.RUNNING)
                     for instr in instrs:
                         instr.executor = computer
                         instr.cache = self.cache
-                        print("START: {0},  PC: {1}, time: {2}, pid: {3}".format(instr, pc, time.time(), os.getpid()))
+                        #print("START: {0},  PC: {1}, time: {2}, pid: {3}".format(instr, pc, time.time(), os.getpid()))
                         if (instr.run):
                             e_str = "EXCEPTION: Same machine replay instruction: " + str(instr) + " PC: {0}, time: {1}, pid: {2}".format(pc, time.time(), os.getpid())
                             raise Exception(e_str)
                         res = await instr()
-                        print("END: {0}, PC: {1}, time: {2}, pid: {3}".format(instr, pc, time.time(), os.getpid()))
+                        #print("END: {0}, PC: {1}, time: {2}, pid: {3}".format(instr, pc, time.time(), os.getpid()))
                         sys.stdout.flush()
 
                         instr.run = True
@@ -98,22 +103,20 @@ class LambdaPackExecutor(object):
 
                     next_pc = self.program.post_op(pc, lp.PS.SUCCESS)
                 elif (node_status == lp.NS.POST_OP):
-                    print("Re-running POST OP")
+                    #print("Re-running POST OP")
                     next_pc = self.program.post_op(pc, lp.PS.SUCCESS)
                 elif (node_status == lp.NS.NOT_READY):
-                    print("THIS SHOULD NEVER HAPPEN OTHER THAN DURING TEST")
+                    #print("THIS SHOULD NEVER HAPPEN OTHER THAN DURING TEST")
                     continue
                 elif (node_status == lp.NS.FINISHED):
-                    print("HAHAH CAN'T TRICK ME... I'm just going to rage quit")
+                    #print("HAHAH CAN'T TRICK ME... I'm just going to rage quit")
                     continue
                 else:
                     raise Exception("Unknown status: {0}".format(node_status))
                 if (next_pc != None):
                     pcs.append(next_pc)
             except RuntimeError as e:
-                pass
-            #except fs._base.CancelledError as e:
-            #    pass
+                raise
             except Exception as e:
                 traceback.print_exc()
                 tb = traceback.format_exc()
@@ -126,7 +129,10 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     computer = fs.ThreadPoolExecutor(1)
-    cache = LRUCache(max_items=cache_size)
+    if (cache_size > 0):
+        cache = LRUCache(max_items=cache_size)
+    else:
+        cache = None
     shared_state = {}
     shared_state["done_workers"] = 0
     shared_state["pipeline_width"] = pipeline_width
@@ -136,24 +142,22 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
         coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout)
         loop.create_task(coro)
     res = loop.run_forever()
-    print("loop end")
+    #print("loop end")
     loop.close()
     return 0
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
-    while(lock[0] == 1):
         try:
             receipt_handle = msg["ReceiptHandle"]
             pc = int(msg["Body"])
             sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=20, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(10)
+            res = sqs_client.change_message_visibility(VisibilityTimeout=75, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
         except Exception as e:
-            print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
+            #print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
             await asyncio.sleep(10)
-    pc = int(msg["Body"])
-    print("Exiting msg visibility for {0}".format(pc))
-    return 0
+        pc = int(msg["Body"])
+        #print("Exiting msg visibility for {0}".format(pc))
+        return 0
 
 async def check_program_state(program, loop, shared_state):
     while(True and shared_state["done_workers"] < shared_state["pipeline_width"]):
@@ -164,10 +168,12 @@ async def check_program_state(program, loop, shared_state):
             break
         # DD is expensive so sleep alot
         await asyncio.sleep(10)
-    print("Closing loop")
+    #print("Closing loop")
     loop.stop()
 
+REDIS_CLIENT = None
 async def lambdapack_run_async(loop, program, computer, cache, shared_state, pipeline_width=1, msg_vis_timeout=10, timeout=200):
+    #print("LAMBDAPACK_RUN_ASYNC")
     session = aiobotocore.get_session(loop=loop)
     # every pipelined worker gets its own copy of program so we don't step on eachothers toes!
     orig_program = program
@@ -176,10 +182,10 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     program = pickle.loads(byte_string)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
     start_time = time.time()
-
+    sqs_client = boto3.client('sqs', use_ssl=False,  region_name='us-west-2')
+    global REDIS_CLIENT
     try:
         while(True):
-            await asyncio.sleep(0)
             # go from high priority -> low priority
             for queue_url in program.queue_urls[::-1]:
                 async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
@@ -193,29 +199,33 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
                     break
             if ("Messages" not in messages):
                 continue
+            await asyncio.sleep(1)
+            #print("SQS MSG PROCESS")
             msg = messages["Messages"][0]
             receipt_handle = msg["ReceiptHandle"]
-            sqs_client = boto3.client('sqs', use_ssl=False,  region_name='us-west-2')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=30, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            # if we don't finish in 75s count as a failure
+            res = sqs_client.change_message_visibility(VisibilityTimeout=80, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             pc = int(msg["Body"])
-            print("creating lock")
-            lock = [1]
-            coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, lock)
-            loop.create_task(coro)
+            if (REDIS_CLIENT == None):
+                REDIS_CLIENT = redis.StrictRedis(lp.REDIS_IP, port=lp.REDIS_PORT, db=0, socket_timeout=5)
+            redis_client = REDIS_CLIENT
+            redis_client.set(msg["MessageId"], str(time.time()))
+
             pcs = await lmpk_executor.run(pc, computer=computer)
             for pc in pcs:
                 program.set_node_status(pc, lp.NS.FINISHED)
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
-                print("Job done...Deleting message for {0}".format(pcs[0]))
-                lock[0] = 0
+                #print("Job done...Deleting message for {0}".format(pcs[0]))
                 await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            for i in range(10):
+                gc.collect()
             current_time = time.time()
             if (current_time - start_time > timeout):
-                print("Hit timeout...returning now")
+                #print("Hit timeout...returning now")
                 shared_state["done_workers"] += 1
                 return
     except Exception as e:
-        print(e)
+        #print(e)
         traceback.print_exc()
         raise
     return

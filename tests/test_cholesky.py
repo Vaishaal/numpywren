@@ -131,7 +131,7 @@ class CholeskyTest(unittest.TestCase):
     def test_cholesky_multi_process(self):
         print("RUNNING many process")
         np.random.seed(1)
-        size =  256
+        size =  128
         shard_size = 32
         np.random.seed(1)
         print("Generating X")

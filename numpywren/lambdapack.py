@@ -24,6 +24,7 @@ import traceback
 import pickle
 from collections import defaultdict
 import aiobotocore
+import aiohttp
 import asyncio
 import redis
 import os
@@ -36,7 +37,8 @@ except:
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
-REDIS_PORT = 9000
+REDIS_PORT = 9001
+REDIS_CLIENT = None
 
 class RemoteInstructionOpCodes(Enum):
     S3_LOAD = 0
@@ -67,9 +69,12 @@ class ProgramStatus(Enum):
     NOT_STARTED = 3
 
 def put(key, value, ip=REDIS_IP, passw=REDIS_PASS , s3=False, s3_bucket=""):
+    global REDIS_CLIENT
     #TODO: fall back to S3 here
     #redis_client = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
-    redis_client = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+    if (REDIS_CLIENT == None):
+      REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+    redis_client = REDIS_CLIENT
     redis_client.set(key, value)
     return value
     if (s3):
@@ -78,12 +83,15 @@ def put(key, value, ip=REDIS_IP, passw=REDIS_PASS , s3=False, s3_bucket=""):
 
 
 def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
+    global REDIS_CLIENT
     #TODO: fall back to S3 here
     if (s3):
       # read from S3
       raise Exception("Not Implemented")
     else:
-      redis_client = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+      if (REDIS_CLIENT == None):
+        REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+      redis_client = REDIS_CLIENT
       #redis_client = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
       return redis_client.get(key)
 
@@ -97,15 +105,17 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
       @param ip - ip of redis server
       @param value - the value to bind key_to_set to
     '''
-
+  global REDIS_CLIENT
   res = 0
 
-
-  r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+  if (REDIS_CLIENT == None):
+    REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+  r = REDIS_CLIENT
   with r.pipeline() as pipe:
     while True:
       try:
         pipe.watch(condition_key)
+        pipe.watch(key_to_incr)
         current_value = pipe.get(key_to_incr)
         if (current_value is None):
           current_value = 0
@@ -115,10 +125,10 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
           condition_val = 0
         condition_val = int(condition_val)
         res = current_value
-        print("CONDITION KEY IS ", condition_key)
-        print("Condition val is ", condition_val)
+        #print("CONDITION KEY IS ", condition_key)
+        #print("Condition val is ", condition_val)
         if (condition_val == 0):
-          print("doing transaction")
+          #print("doing transaction")
           pipe.multi()
           pipe.incr(key_to_incr)
           pipe.set(condition_key, 1)
@@ -154,7 +164,7 @@ def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, passw=REDIS_PASS, value=1)
         edge = 0
       else:
         edge = int(edge)
-        print("Edge {0} is ".format(key), edge)
+        #print("Edge {0} is ".format(key), edge)
       tot_sum += edge
     pipe.multi()
     pipe.set(key_to_set, value)
@@ -223,7 +233,7 @@ class RemoteLoad(RemoteInstruction):
               self.cache_hit = True
               self.size = sys.getsizeof(self.result)
               e = time.time()
-              print("Cache hit! {0}".format(e - t))
+              #print("Cache hit! {0}".format(e - t))
             else:
               t = time.time()
               backoff = 0.2
@@ -231,7 +241,7 @@ class RemoteLoad(RemoteInstruction):
                 try:
                   self.result = await asyncio.wait_for(self.matrix.get_block_async(loop, *self.bidxs), self.MAX_READ_TIME)
                   break
-                except asyncio.TimeoutError:
+                except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError):
                   await asyncio.sleep(backoff)
                   backoff *= 2
                   pass
@@ -239,8 +249,8 @@ class RemoteLoad(RemoteInstruction):
               if (self.cache != None):
                 self.cache[cache_key] = self.result.copy()
               e = time.time()
-              print("Cache miss! {0}".format(e - t))
-              print(self.result.shape)
+              #print("Cache miss! {0}".format(e - t))
+              #print(self.result.shape)
         self.end_time = time.time()
         return self.result
 
@@ -279,10 +289,10 @@ class RemoteWrite(RemoteInstruction):
               try:
                 self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs), self.MAX_WRITE_TIME)
                 break
-              except asyncio.TimeoutError:
-                await asyncio.sleep(backoff)
-                backoff *= 2
-                pass
+              except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError) as e:
+                  await asyncio.sleep(backoff)
+                  backoff *= 2
+                  pass
             self.size = sys.getsizeof(self.data_instr.result)
             self.ret_code = 0
         self.end_time = time.time()
@@ -484,11 +494,11 @@ class LambdaPackProgram(object):
           self.queue_urls.append(queue_url)
           client.purge_queue(QueueUrl=queue_url)
         e = time.time()
-        print("Pre depedency analyze {0}".format(e - t))
+        #print("Pre depedency analyze {0}".format(e - t))
         t = time.time()
         self.children, self.parents = self._io_dependency_analyze(self.inst_blocks)
         e = time.time()
-        print("Dependency analyze ", e - t)
+        #print("Dependency analyze ", e - t)
         t = time.time()
         self.starters = []
         self.terminators = []
@@ -578,10 +588,10 @@ class LambdaPackProgram(object):
 
         # for each dependency2
         # post op needs to ATOMICALLY check dependencies
-
+        global REDIS_CLIENT
         try:
           post_op_start = time.time()
-          print("Post OP STARTED: {0}".format(i))
+          #print("Post OP STARTED: {0}".format(i))
           node_status = self.get_node_status(i)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
@@ -590,17 +600,18 @@ class LambdaPackProgram(object):
           self.set_node_status(i, NS.POST_OP)
           inst_block = self.inst_blocks[i]
           if (ret_code == PS.EXCEPTION and tb != None):
-            print("EXCEPTION ")
-            print(inst_block)
+            #print("EXCEPTION ")
+            #print(inst_block)
             self.handle_exception(" EXCEPTION", tb=tb, block=i)
           children = self.children[i]
           parents = self.parents[i]
           ready_children = []
           for child in children:
+            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), "STILL IN POST OP")
             t = time.time()
             my_child_edge = self._edge_key(i,child)
             child_edge_sum_key = self._node_edge_sum_key(child)
-            print("CHILD EDGE SUM KEY ", child_edge_sum_key)
+            #print("CHILD EDGE SUM KEY ", child_edge_sum_key)
             #self.set_edge_status(i, child, ES.READY)
             # redis transaction should be atomic
             tp = fs.ThreadPoolExecutor(1)
@@ -610,22 +621,18 @@ class LambdaPackProgram(object):
             if len(done) == 0:
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
-            print("parent_sum is ", val)
-            print("expected is ", len(self.parents[child]))
-            print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
-            if (val == len(self.parents[child])):
-              self.set_node_status(child, NS.READY)
+            #print("parent_sum is ", val)
+            #print("expected is ", len(self.parents[child]))
+            #print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
+            if (val == len(self.parents[child]) and self.get_node_status(child) == NS.NOT_READY):
               ready_children.append(child)
             e = time.time()
-            print("redis dep check time", e - t)
+            #print("redis dep check time", e - t)
 
           # clear result() blocks
-
           if (self.eager == True and len(ready_children) >=  1):
               max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
               next_pc = ready_children[max_priority_idx]
-              #print("LOCAL ENQUEUE: ", self.inst_blocks[next_pc])
-              # do not enqueue normally
               eager_child = ready_children[max_priority_idx]
               del ready_children[max_priority_idx]
           else:
@@ -638,30 +645,31 @@ class LambdaPackProgram(object):
           # we would run its highest priority child *locally* by adding the instructions to the local instruction queue
           # this has 2 key benefits, first we completely obliviete scheduling overhead between these two nodes but also because of the local LRU cache the first read of this node will be saved this will translate
 
-
-          sqs = boto3.resource('sqs', region_name='us-west-2')
-          # throw away children that are done
-          ready_children = [x for x in ready_children if self.get_node_status(x) != NS.FINISHED]
+          client = boto3.client('sqs', region_name='us-west-2')
           # this should NEVER happen...
           assert (i in ready_children) == False
           for child in ready_children:
-            print("Adding {0} to sqs queue".format(child))
-            queue = sqs.Queue(self.queue_urls[self.inst_blocks[child].priority])
-            queue.send_message(MessageBody=str(child))
-          print("Profile started: {0}".format(i))
+            #print("Adding {0} to sqs queue".format(child))
+            resp = client.send_message(QueueUrl=self.queue_urls[self.inst_blocks[child].priority], MessageBody=str(child))
+            if (REDIS_CLIENT == None):
+              REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), str(resp))
+            self.set_node_status(child, NS.READY)
+
+          #print("Profile started: {0}".format(i))
           profile_start = time.time()
           self.inst_blocks[i].end_time = time.time()
           self.set_profiling_info(i)
           profile_end = time.time()
           profile_time = profile_end - profile_start
-          print("Profile finished: {0} took {1}".format(i, profile_time))
+          #print("Profile finished: {0} took {1}".format(i, profile_time))
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
-          print("Post finished : {0}, took {1}".format(i, post_op_time))
+          #print("Post finished : {0}, took {1}".format(i, post_op_time))
           return next_pc
         except Exception as e:
-            print("POST OP EXCEPTION ", e)
-            print(self.inst_blocks[i])
+            #print("POST OP EXCEPTION ", e)
+            #print(self.inst_blocks[i])
             # clear all intermediate state
             tb = traceback.format_exc()
             traceback.print_exc()
@@ -673,7 +681,7 @@ class LambdaPackProgram(object):
         self.set_max_pc(0)
         sqs = boto3.resource('sqs')
         for starter in self.starters:
-          print("Enqueuing ", starter)
+          #print("Enqueuing ", starter)
           inst_block = self.inst_blocks[starter]
           self.set_node_status(starter, NS.READY)
           priority = inst_block.priority
@@ -717,12 +725,12 @@ class LambdaPackProgram(object):
         serializer = serialize.SerializeIndependent()
         byte_string = serializer([inst_block])[0][0]
         client = boto3.client('s3', region_name='us-west-2')
-        print("TYPE IS ", type(byte_string))
+        #print("TYPE IS ", type(byte_string))
         client.put_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc), Body=byte_string)
 
 
     def _io_dependency_analyze(self, instruction_blocks, barrier_look_ahead=2):
-        print("Starting IO dependency")
+        #print("Starting IO dependency")
         parents = defaultdict(set)
         children = defaultdict(set)
         read_edges = defaultdict(set)
@@ -866,11 +874,11 @@ def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
     all_futures = []
 
     for i, c in enumerate(chunked_blocks):
-        print("Submitting job for chunk {0} in axis 0".format(i))
+        #print("Submitting job for chunk {0} in axis 0".format(i))
         s = time.time()
         futures = pwex.map(pywren_run, c)
         e = time.time()
-        print("Pwex Map Time {0}".format(e - s))
+        #print("Pwex Map Time {0}".format(e - s))
         all_futures.append((i,futures))
     return instruction_blocks
 
@@ -985,12 +993,12 @@ def perf_profile(blocks, num_bins=100):
       optimes[inst.i_code] += t
       IO_INSTRUCTIONS = [OC.S3_LOAD, OC.S3_WRITE, OC.RET]
       if (inst.i_code not in IO_INSTRUCTIONS):
-        #print(inst.i_code)
-        #print(IO_INSTRUCTIONS)
+        ##print(inst.i_code)
+        ##print(IO_INSTRUCTIONS)
         flops = inst.flops/1e9
       else:
         flops = None
-      #print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset,  inst.end_time - inst.start_time, flops))
+      ##print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset,  inst.end_time - inst.start_time, flops))
     for k in optimes.keys():
       print("{0}: {1}s".format(k, optimes[k]/opcounts[k]))
     return read_bytes_per_sec, write_bytes_per_sec, total_flops_per_sec, bins , instructions, runtimes
