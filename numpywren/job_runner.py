@@ -125,7 +125,8 @@ class LambdaPackExecutor(object):
         e = time.time()
 
 def calculate_busy_time(rtimes):
-    pairs = [[(item[0], 1), (item[1], -1)] for sublist in rtimes for item in sublist]
+    #pairs = [[(item[0], 1), (item[1], -1)] for sublist in rtimes for item in sublist]
+    pairs = [[(item[0], 1), (item[1], -1)] for item in rtimes]
     events = sorted([item for sublist in pairs for item in sublist])
     running = 0
     wtimes = []
@@ -146,21 +147,24 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
     computer = fs.ThreadPoolExecutor(1)
     cache = LRUCache(max_items=cache_size)
     shared_state = {}
-    shared_state["done_workers"] = 0
+    shared_state["busy_workers"] = 0
     shared_state["pipeline_width"] = pipeline_width
-    #loop.create_task(check_program_state(program, loop, shared_state))
+    shared_state["running_times"] = []
+    shared_state["last_busy_time"] = time.time()
+    loop.create_task(check_program_state(program, loop, shared_state))
     tasks = []
     for i in range(pipeline_width):
         # all the async tasks share 1 compute thread and a io cache
         coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout)
         tasks.append(loop.create_task(coro))
-    results = loop.run_until_complete(asyncio.gather(*tasks))
+    #results = loop.run_until_complete(asyncio.gather(*tasks))
+    loop.run_forever()
     print("loop end")
     loop.close()
     lambda_stop = time.time()
     program.decr_up(1)
     return {"up_time": [lambda_start, lambda_stop],
-            "exec_time": calculate_busy_time(results)}
+            "exec_time": calculate_busy_time(shared_state["running_times"])}
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
     while(lock[0] == 1):
@@ -178,14 +182,17 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
     return 0
 
 async def check_program_state(program, loop, shared_state):
-    while(True and shared_state["done_workers"] < shared_state["pipeline_width"]):
+    while(True):
+        if shared_state["busy_workers"] == 0:
+            if time.time() - shared_state["last_busy_time"] > 10:
+                break
         #TODO make this an s3 access as opposed to DD access since we don't *really need* atomicity here
         #TODO make this coroutine friendly
-        s = program.program_status()
-        if(s != lp.PS.RUNNING):
-            break
+        #s = program.program_status()
+        #if(s != lp.PS.RUNNING):
+        #    break
         # DD is expensive so sleep alot
-        await asyncio.sleep(10)
+        await asyncio.sleep(1)
     print("Closing loop")
     loop.stop()
 
@@ -197,9 +204,9 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     byte_string = serializer([program])[0][0]
     program = pickle.loads(byte_string)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
-    start_time = time.time()
-    running_times = []
-    last_message_time = time.time()
+    #start_time = time.time()
+    running_times = shared_state['running_times']
+    #last_message_time = time.time()
     try:
         while(True):
             await asyncio.sleep(0)
@@ -215,10 +222,11 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
                     # queue_url= messages
                     break
             if ("Messages" not in messages):
-                if time.time() - last_message_time > 10:
-                    return running_times
+                #if time.time() - last_message_time > 10:
+                #    return running_times
                 continue
-            last_message_time = time.time()
+            shared_state["busy_workers"] += 1
+            #last_message_time = time.time()
             start_processing_time = time.time()
             msg = messages["Messages"][0]
             receipt_handle = msg["ReceiptHandle"]
@@ -242,11 +250,13 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             '''
             end_processing_time = time.time()
             running_times.append((start_processing_time, end_processing_time))
-            current_time = time.time()
-            if (current_time - start_time > timeout):
-                print("Hit timeout...returning now")
-                shared_state["done_workers"] += 1
-                return running_times
+            shared_state["busy_workers"] -= 1
+            shared_state["last_busy_time"] = time.time()
+            #current_time = time.time()
+            #if (current_time - start_time > timeout):
+            #    print("Hit timeout...returning now")
+            #    shared_state["done_workers"] += 1
+            #    return running_times
     except Exception as e:
         print(e)
         traceback.print_exc()

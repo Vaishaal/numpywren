@@ -36,7 +36,7 @@ except:
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_PORT = 9000
+REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 
 class RemoteInstructionOpCodes(Enum):
     S3_LOAD = 0
