@@ -28,6 +28,7 @@ import aiohttp
 import asyncio
 import redis
 import os
+import gc
 
 try:
   DEFAULT_CONFIG = wc.default()
@@ -229,7 +230,7 @@ class RemoteLoad(RemoteInstruction):
             cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
             if (self.cache != None and cache_key in self.cache):
               t = time.time()
-              self.result = self.cache[cache_key].copy()
+              self.result = self.cache[cache_key]
               self.cache_hit = True
               self.size = sys.getsizeof(self.result)
               e = time.time()
@@ -247,7 +248,7 @@ class RemoteLoad(RemoteInstruction):
                   pass
               self.size = sys.getsizeof(self.result)
               if (self.cache != None):
-                self.cache[cache_key] = self.result.copy()
+                self.cache[cache_key] = self.result
               e = time.time()
               #print("Cache miss! {0}".format(e - t))
               #print(self.result.shape)
@@ -283,7 +284,7 @@ class RemoteWrite(RemoteInstruction):
             cache_key = (self.matrix.key, self.matrix.bucket, self.bidxs)
             if (self.cache != None):
               # write to the cache
-              self.cache[cache_key] = self.data_instr.result.copy()
+              self.cache[cache_key] = self.data_instr.result
             backoff = 0.2
             while (True):
               try:
@@ -326,8 +327,8 @@ class RemoteSYRK(RemoteInstruction):
               old_block = self.argv[0].result
               block_2 = self.argv[1].result
               block_1 = self.argv[2].result
-              old_block -= block_2.dot(block_1.T)
-              self.result = old_block
+              res = old_block - block_2.dot(block_1.T)
+              self.result = res
               self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
           else:
             raise Exception("Same Machine Replay instruction... ")
@@ -631,6 +632,8 @@ class LambdaPackProgram(object):
             #print("redis dep check time", e - t)
 
           # clear result() blocks
+
+
           if (self.eager == True and len(ready_children) >=  1):
               max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
               next_pc = ready_children[max_priority_idx]
@@ -666,10 +669,10 @@ class LambdaPackProgram(object):
           #print("Profile started: {0}".format(i))
           profile_start = time.time()
           self.inst_blocks[i].end_time = time.time()
-          self.set_profiling_info(i)
+          self.inst_blocks[i].clear()
+          await self.set_profiling_info(i)
           profile_end = time.time()
           profile_time = profile_end - profile_start
-          #print("Profile finished: {0} took {1}".format(i, profile_time))
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
           #print("Post finished : {0}, took {1}".format(i, post_op_time))
@@ -763,6 +766,7 @@ class LambdaPackProgram(object):
           #print("Profile started: {0}".format(i))
           profile_start = time.time()
           self.inst_blocks[i].end_time = time.time()
+          self.inst_blocks[i].clear()
           self.set_profiling_info(i)
           profile_end = time.time()
           profile_time = profile_end - profile_start
@@ -833,7 +837,6 @@ class LambdaPackProgram(object):
         serializer = serialize.SerializeIndependent()
         byte_string = serializer([inst_block])[0][0]
         client = boto3.client('s3', region_name='us-west-2')
-        #print("TYPE IS ", type(byte_string))
         client.put_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc), Body=byte_string)
 
 

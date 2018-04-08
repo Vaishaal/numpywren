@@ -26,7 +26,7 @@ from pylab import plt
 
 ''' OSDI numpywren optimization effectiveness experiments '''
 
-TIMEOUT = 300
+TIMEOUT = 180
 EST_FLOP_RATE = 24
 def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, cores):
     X = np.random.randn(problem_size, 1)
@@ -38,10 +38,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     XXT_sharded = binops.gemm(pwex, X_sharded, X_sharded.T, overwrite=False)
     XXT_sharded.lambdav = problem_size*10
     instructions ,L_sharded,trailing= lp._chol(XXT_sharded)
-    if (pipeline):
-        pipeline_width = 3
-    else:
-        pipeline_width = 1
+    pipeline_width = args.pipeline
     if (priority):
         num_priorities = 5
     else:
@@ -117,11 +114,12 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         running_counts.append(running_counts)
         times.append(time.time())
 
-        if (time.time() - last_run > TIMEOUT - 5):
+        if (time.time() - last_run > TIMEOUT - 10):
             new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(cores), extra_env=redis_env)
+            print(new_futures)
             print("previous status")
-            #pywren.wait(all_futures)
-            #print([f.result() for f in all_futures])
+            pywren.wait(all_futures)
+            print([f.result() for f in all_futures])
             all_futures = new_futures
             last_run = time.time()
         for i, queue_url in enumerate(program.queue_urls):
@@ -173,13 +171,6 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     lgd = plt.legend(bbox_to_anchor=(1.5, 0.8))
     plt.savefig("optimization_experiments/flop_rate_{0}.pdf".format(arg_hash), bbox_extra_artists=(lgd,), bbox_inches='tight')
 
-    sns.tsplot(np.array(running_counts) + np.array(post_op_count), np.array(times) - start_time, condition="Running workers")
-    plt.xlabel("Time since start")
-    plt.ylabel("number of workers")
-    plt.hlines(cores*pipeline_width,0,10000, label="Max number of workers", color=c)
-    lgd = plt.legend(bbox_to_anchor=(1.5, 0.8))
-    plt.savefig("optimization_experiments/workers_{0}.pdf".format(arg_hash), bbox_extra_artists=(lgd,), bbox_inches='tight')
-
     flop_rate = sum(total_flops)/max(bins)
     exp["flop_rate"] = flop_rate
     print("Average Flop rate of {0}".format(flop_rate))
@@ -190,13 +181,10 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     except FileExistsError:
         pass
     exp_bytes = pickle.dumps(exp)
-    dump_path = "optimization_experiments/{0}".format(arg_hash)
+    dump_path = "optimization_experiments/{0}.pickle".format(arg_hash)
     print("Dumping experiment pickle to {0}".format(dump_path))
     with open(dump_path, "wb+") as f:
         f.write(exp_bytes)
-
-
-
 
 
 
@@ -213,7 +201,7 @@ if __name__ == "__main__":
     parser.add_argument("--shard_size", type=int, default=4096)
     parser.add_argument('--truncate', type=int, default=None)
     parser.add_argument('--cores', type=int, default=16)
-    parser.add_argument('--pipeline', action='store_true')
+    parser.add_argument('--pipeline', type=int, default=1)
     parser.add_argument('--priority', action='store_true')
     parser.add_argument('--lru', action='store_true')
     parser.add_argument('--eager', action='store_true')

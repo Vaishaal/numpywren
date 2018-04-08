@@ -18,6 +18,7 @@ import os
 import sys
 import redis
 
+
 REDIS_IP = os.environ.get("REDIS_IP", "")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
@@ -139,19 +140,29 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
     shared_state["done_workers"] = 0
     shared_state["pipeline_width"] = pipeline_width
     loop.create_task(check_program_state(program, loop, shared_state))
-    def wrapper(coro, loop):
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return
-    executor = fs.ThreadPoolExecutor(pipeline_width)
     for i in range(pipeline_width):
         # all the async tasks share 1 compute thread and a io cache
         coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout)
         loop.create_task(coro)
         #coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout)
-        #loop.run_in_executor(executor, wrapper, coro, loop)
     res = loop.run_forever()
     #print("loop end")
     loop.close()
+    return 0
+
+async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
+    while(lock[0] == 1):
+        try:
+            receipt_handle = msg["ReceiptHandle"]
+            pc = int(msg["Body"])
+            sqs_client = boto3.client('sqs')
+            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            await asyncio.sleep(50)
+        except Exception as e:
+            print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
+            await asyncio.sleep(10)
+    pc = int(msg["Body"])
+    print("Exiting msg visibility for {0}".format(pc))
     return 0
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
@@ -175,7 +186,7 @@ async def check_program_state(program, loop, shared_state):
         if(s != lp.PS.RUNNING):
             break
         # DD is expensive so sleep alot
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)
     #print("Closing loop")
     loop.stop()
 
@@ -199,7 +210,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
                 print("Hit timeout...returning now")
                 shared_state["done_workers"] += 1
                 return
-            await asyncio.sleep(0)
+            await asyncio.sleep(1)
             # go from high priority -> low priority
             for queue_url in program.queue_urls[::-1]:
                 async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
@@ -223,12 +234,16 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
                 REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
             redis_client = REDIS_CLIENT
             redis_client.set(msg["MessageId"], str(time.time()))
-
+            print("creating lock")
+            lock = [1]
+            coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, lock)
+            loop.create_task(coro)
             pcs = await lmpk_executor.run(pc, computer=computer)
             for pc in pcs:
                 program.set_node_status(pc, lp.NS.FINISHED)
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
                 #print("Job done...Deleting message for {0}".format(pcs[0]))
+                lock[0] = 0
                 await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
     except Exception as e:
         #print(e)
