@@ -77,6 +77,7 @@ class LambdaPackExecutor(object):
             #print(self.program.inst_blocks[pc])
             t = time.time()
             node_status = self.program.get_node_status(pc)
+            #print(node_status)
             self.program.set_max_pc(pc)
             self.program.inst_blocks[pc].start_time = time.time()
             instrs = self.program.inst_blocks[pc].instrs
@@ -109,6 +110,7 @@ class LambdaPackExecutor(object):
                     #print("Re-running POST OP")
                     next_pc = self.program.post_op(pc, lp.PS.SUCCESS)
                 elif (node_status == lp.NS.NOT_READY):
+                    raise
                     #print("THIS SHOULD NEVER HAPPEN OTHER THAN DURING TEST")
                     continue
                 elif (node_status == lp.NS.FINISHED):
@@ -118,9 +120,13 @@ class LambdaPackExecutor(object):
                     raise Exception("Unknown status: {0}".format(node_status))
                 if (next_pc != None):
                     pcs.append(next_pc)
+            except fs._base.TimeoutError as e:
+                self.program.decr_up(1)
+                raise
             except RuntimeError as e:
                 raise
             except Exception as e:
+                self.program.decr_up(1)
                 traceback.print_exc()
                 tb = traceback.format_exc()
                 self.program.post_op(pc, lp.PS.EXCEPTION, tb=tb)
@@ -128,7 +134,25 @@ class LambdaPackExecutor(object):
         return pcs
         e = time.time()
 
+def calculate_busy_time(rtimes):
+    #pairs = [[(item[0], 1), (item[1], -1)] for sublist in rtimes for item in sublist]
+    pairs = [[(item[0], 1), (item[1], -1)] for item in rtimes]
+    events = sorted([item for sublist in pairs for item in sublist])
+    running = 0
+    wtimes = []
+    current_start = 0
+    for event in events:
+        if running == 0 and event[1] == 1:
+            current_start = event[0]
+        if running == 1 and event[1] == -1:
+            wtimes.append([current_start, event[0]])
+        running += event[1]
+    return wtimes
+
+
 def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, timeout=200):
+    program.incr_up(1)
+    lambda_start = time.time()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     computer = fs.ThreadPoolExecutor(1)
@@ -137,18 +161,25 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
     else:
         cache = None
     shared_state = {}
-    shared_state["done_workers"] = 0
+    shared_state["busy_workers"] = 0
     shared_state["pipeline_width"] = pipeline_width
-    loop.create_task(check_program_state(program, loop, shared_state))
+    shared_state["running_times"] = []
+    shared_state["last_busy_time"] = time.time()
+    loop.create_task(check_program_state(program, loop, shared_state, timeout))
+    tasks = []
     for i in range(pipeline_width):
         # all the async tasks share 1 compute thread and a io cache
         coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout)
-        loop.create_task(coro)
-        #coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout)
-    res = loop.run_forever()
-    #print("loop end")
+        tasks.append(loop.create_task(coro))
+    #results = loop.run_until_complete(asyncio.gather(*tasks))
+    loop.run_forever()
+    print("loop end")
     loop.close()
-    return 0
+    lambda_stop = time.time()
+    program.decr_up(1)
+    print(program.program_status())
+    return {"up_time": [lambda_start, lambda_stop],
+            "exec_time": calculate_busy_time(shared_state["running_times"])}
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
     while(lock[0] == 1):
@@ -156,8 +187,8 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
             receipt_handle = msg["ReceiptHandle"]
             pc = int(msg["Body"])
             sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(50)
+            res = sqs_client.change_message_visibility(VisibilityTimeout=10, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            await asyncio.sleep(10)
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
             await asyncio.sleep(10)
@@ -165,33 +196,26 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
     print("Exiting msg visibility for {0}".format(pc))
     return 0
 
-async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
-        try:
-            receipt_handle = msg["ReceiptHandle"]
-            pc = int(msg["Body"])
-            sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=75, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-        except Exception as e:
-            #print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
-            await asyncio.sleep(10)
-        pc = int(msg["Body"])
-        #print("Exiting msg visibility for {0}".format(pc))
-        return 0
-
-async def check_program_state(program, loop, shared_state):
-    while(True and shared_state["done_workers"] < shared_state["pipeline_width"]):
-        #TODO make this an s3 access as opposed to a redis access since we don't *really need* atomicity here
+async def check_program_state(program, loop, shared_state, timeout):
+    start_time = time.time()
+    while(True):
+        if shared_state["busy_workers"] == 0:
+            if time.time() - start_time > timeout:
+                break
+            if time.time() - shared_state["last_busy_time"] > 600:
+                break
+        #TODO make this an s3 access as opposed to DD access since we don't *really need* atomicity here
         #TODO make this coroutine friendly
         s = program.program_status()
         if(s != lp.PS.RUNNING):
-            break
-        # DD is expensive so sleep alot
-        await asyncio.sleep(30)
-    #print("Closing loop")
+           break
+        await asyncio.sleep(1)
+    print("Closing loop")
     loop.stop()
 
 REDIS_CLIENT = None
 async def lambdapack_run_async(loop, program, computer, cache, shared_state, pipeline_width=1, msg_vis_timeout=10, timeout=200):
+    global REDIS_CLIENT
     #print("LAMBDAPACK_RUN_ASYNC")
     session = aiobotocore.get_session(loop=loop)
     # every pipelined worker gets its own copy of program so we don't step on eachothers toes!
@@ -201,8 +225,8 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     program = pickle.loads(byte_string)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
     start_time = time.time()
-    sqs_client = boto3.client('sqs', use_ssl=False,  region_name='us-west-2')
-    global REDIS_CLIENT
+    running_times = shared_state['running_times']
+    #last_message_time = time.time()
     try:
         while(True):
             current_time = time.time()
@@ -223,8 +247,12 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
                     # queue_url= messages
                     break
             if ("Messages" not in messages):
+                #if time.time() - last_message_time > 10:
+                #    return running_times
                 continue
-            #print("SQS MSG PROCESS")
+            shared_state["busy_workers"] += 1
+            #last_message_time = time.time()
+            start_processing_time = time.time()
             msg = messages["Messages"][0]
             receipt_handle = msg["ReceiptHandle"]
             # if we don't finish in 75s count as a failure
@@ -234,7 +262,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
                 REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
             redis_client = REDIS_CLIENT
             redis_client.set(msg["MessageId"], str(time.time()))
-            print("creating lock")
+            #print("creating lock")
             lock = [1]
             coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, lock)
             loop.create_task(coro)
@@ -245,6 +273,20 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
                 #print("Job done...Deleting message for {0}".format(pcs[0]))
                 lock[0] = 0
                 await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            '''
+            sqs_client = boto3.client('sqs')
+            sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            '''
+            end_processing_time = time.time()
+            running_times.append((start_processing_time, end_processing_time))
+            shared_state["busy_workers"] -= 1
+            shared_state["last_busy_time"] = time.time()
+            current_time = time.time()
+            if (current_time - start_time > timeout):
+                return
+            #    print("Hit timeout...returning now")
+            #    shared_state["done_workers"] += 1
+            #    return running_times
     except Exception as e:
         #print(e)
         traceback.print_exc()

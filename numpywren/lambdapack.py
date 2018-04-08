@@ -96,10 +96,37 @@ def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
       redis_client = REDIS_CLIENT
       return redis_client.get(key)
 
+def incr(key, amount, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
+    global REDIS_CLIENT
+    #TODO: fall back to S3 here
+    if (s3):
+      # read from S3
+      raise Exception("Not Implemented")
+    else:
+      if (REDIS_CLIENT == None):
+        REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
+        #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+      redis_client = REDIS_CLIENT
+      return redis_client.incr(key, amount=amount)
+
+def decr(key, amount, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
+    global REDIS_CLIENT
+    #TODO: fall back to S3 here
+    if (s3):
+      # read from S3
+      raise Exception("Not Implemented")
+    else:
+      if (REDIS_CLIENT == None):
+        REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
+        #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
+      redis_client = REDIS_CLIENT
+      return redis_client.decr(key, amount=amount)
+
+
 
 OC = RemoteInstructionOpCodes
 
-def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_PASS):
+def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP):
   ''' Crucial atomic operation needed to insure DAG correctness
       @param key_to_incr - increment this key
       @param condition_key - only do so if this value is 1
@@ -141,44 +168,6 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP, passw=REDIS_P
         continue
   return res
 
-
-def atomic_set_and_sum(key_to_set, keys, ip=REDIS_IP, passw=REDIS_PASS, value=1):
-  ''' Crucial atomic operation needed to insure DAG correctness
-      the return value of this operation will be sum(keys) + value
-      but it will also have the side-effect of binding key_to_set to value
-      @param key_to_set - at the end of this transaction key_to_set will be bound to value
-      @param keys - keys to be summed must exclue key_to_set
-      @param ip - ip of redis server
-      @param value - the value to bind key_to_set to
-
-    '''
-
-  tot_sum = 0
-  assert key_to_set not in keys
-  keys = list(set(keys))
-  def _atomic_parent_sum(pipe):
-    nonlocal tot_sum
-    tot_sum = 0
-    for key in keys:
-      edge = pipe.get(key)
-      if (edge == None):
-        edge = 0
-      else:
-        edge = int(edge)
-        #print("Edge {0} is ".format(key), edge)
-      tot_sum += edge
-    pipe.multi()
-    pipe.set(key_to_set, value)
-    pipe.set(sum_key, tot_sum + value)
-    pipe.execute()
-  #r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
-  r = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-  keys_to_watch = keys.copy()
-  sum_key = "sum_{0}".format(keys)
-  keys_to_watch.append(sum_key)
-  keys_to_watch.append(key_to_set)
-  r.transaction(_atomic_parent_sum, *keys_to_watch)
-  return int(r.get(sum_key))
 
 OC = RemoteInstructionOpCodes
 NS = NodeStatus
@@ -488,6 +477,8 @@ class LambdaPackProgram(object):
         # this is temporary hack?
         hashed.update(str(time.time()).encode())
         self.hash = hashed.hexdigest()
+        self.up = 'up' + self.hash
+        self.set_up(0)
         client = boto3.client('sqs', region_name='us-west-2')
         self.queue_urls = []
         for i in range(num_priorities):
@@ -628,6 +619,7 @@ class LambdaPackProgram(object):
             #print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
             if (val == len(self.parents[child]) and self.get_node_status(child) != NS.FINISHED):
               ready_children.append(child)
+              self.set_node_status(child, NS.READY)
             e = time.time()
             #print("redis dep check time", e - t)
 
@@ -657,7 +649,6 @@ class LambdaPackProgram(object):
             #print("Adding {0} to sqs queue".format(child))
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
               print("SENDING MESSAGE.. {0}".format(child))
-              self.set_node_status(child, NS.READY)
               resp = await sqs_client.send_message(QueueUrl=self.queue_urls[self.inst_blocks[child].priority], MessageBody=str(child))
               print(resp)
               await asyncio.sleep(5)
@@ -731,6 +722,7 @@ class LambdaPackProgram(object):
             #print("expected is ", len(self.parents[child]))
             #print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
             if (val == len(self.parents[child]) and self.get_node_status(child) != NS.FINISHED):
+              self.set_node_status(child, NS.READY)
               ready_children.append(child)
             e = time.time()
             #print("redis dep check time", e - t)
@@ -756,7 +748,6 @@ class LambdaPackProgram(object):
           assert (i in ready_children) == False
           for child in ready_children:
             #print("Adding {0} to sqs queue".format(child))
-            self.set_node_status(child, NS.READY)
             resp = client.send_message(QueueUrl=self.queue_urls[self.inst_blocks[child].priority], MessageBody=str(child))
             if (REDIS_CLIENT == None):
               REDIS_CLIENT = redis.StrictRedis(ip=REDIS_IP, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
@@ -807,6 +798,18 @@ class LambdaPackProgram(object):
     def program_status(self):
       status = get(self.hash, ip=self.redis_ip)
       return PS(int(status))
+
+    def incr_up(self, amount):
+      incr(self.up, amount, ip=self.redis_ip)
+
+    def decr_up(self, amount):
+      decr(self.up, amount, ip=self.redis_ip)
+
+    def get_up(self):
+      return get(self.up, ip=self.redis_ip)
+
+    def set_up(self, value):
+      put(self.up, value, ip=self.redis_ip)
 
     def wait(self, sleep_time=1):
         status = self.program_status()
@@ -898,22 +901,6 @@ class LambdaPackProgram(object):
         longest_path.insert(0, current_node)
         current_node = longest_paths[current_node]
       return longest_path
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     def __str__(self):
       return "\n".join([str(i) + "\n" + str(x) + "children: \n" + str(self.children[i]) + "\n parents: \n" + str(self.parents[i]) for i,x in enumerate(self.inst_blocks)])
