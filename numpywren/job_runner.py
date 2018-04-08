@@ -255,7 +255,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             running_times.append((start_processing_time, end_processing_time))
             shared_state["busy_workers"] -= 1
             shared_state["last_busy_time"] = time.time()
-            #current_time = time.time()
+            current_time = time.time()
             if (current_time - start_time > timeout):
                 return
             #    print("Hit timeout...returning now")
