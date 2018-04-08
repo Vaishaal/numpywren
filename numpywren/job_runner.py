@@ -151,7 +151,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
     shared_state["pipeline_width"] = pipeline_width
     shared_state["running_times"] = []
     shared_state["last_busy_time"] = time.time()
-    loop.create_task(check_program_state(program, loop, shared_state))
+    loop.create_task(check_program_state(program, loop, shared_state, timeout))
     tasks = []
     for i in range(pipeline_width):
         # all the async tasks share 1 compute thread and a io cache
@@ -181,9 +181,12 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
     print("Exiting msg visibility for {0}".format(pc))
     return 0
 
-async def check_program_state(program, loop, shared_state):
+async def check_program_state(program, loop, shared_state, timeout):
+    start_time = time.time()
     while(True):
         if shared_state["busy_workers"] == 0:
+            if time.time() - start_time > timeout:
+                break
             if time.time() - shared_state["last_busy_time"] > 10:
                 break
         #TODO make this an s3 access as opposed to DD access since we don't *really need* atomicity here
@@ -204,7 +207,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     byte_string = serializer([program])[0][0]
     program = pickle.loads(byte_string)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
-    #start_time = time.time()
+    start_time = time.time()
     running_times = shared_state['running_times']
     #last_message_time = time.time()
     try:
@@ -253,7 +256,8 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             shared_state["busy_workers"] -= 1
             shared_state["last_busy_time"] = time.time()
             #current_time = time.time()
-            #if (current_time - start_time > timeout):
+            if (current_time - start_time > timeout):
+                return
             #    print("Hit timeout...returning now")
             #    shared_state["done_workers"] += 1
             #    return running_times
