@@ -138,7 +138,7 @@ class FailureTests(unittest.TestCase):
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
         config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, eager=True)
+        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config, eager=False)
         cores = 16
         program.start()
         jobs = []
