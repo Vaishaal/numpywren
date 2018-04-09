@@ -31,7 +31,7 @@ REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 
 TIMEOUT = 200
 EST_FLOP_RATE = 24
-def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial):
+def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity):
     X = np.random.randn(problem_size, 1)
     pwex = pywren.default_executor()
     shard_sizes = [shard_size, 1]
@@ -98,6 +98,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["reads"] = reads
     exp["writes"] = writes
     exp["trial"] = trial
+    exp["launch_granularity"] = launch_granularity
 
     print("Longest Path: {0}".format(program.longest_path))
     program.start()
@@ -106,6 +107,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(start_cores), extra_env=redis_env)
     start_time = time.time()
     last_run = time.time()
+
     while(program.program_status() == lp.PS.RUNNING):
         max_pc = program.get_max_pc()
         times.append(int(time.time()))
@@ -178,7 +180,8 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         writes.append(current_gbytes_write)
         #print("{0}: Total GFLOPS {1}, Total GBytes Read {2}, Total GBytes Write {3}".format(curr_time, current_gflops, current_gbytes_read, current_gbytes_write))
 
-        if (up_workers < np.ceil(waiting*0.8/pipeline_width) and up_workers < max_cores):
+        time_since_launch = last_time - time.time()
+        if (time_since_launch > launch_granularity and up_workers < np.ceil(waiting*0.5/pipeline_width) and up_workers < max_cores):
             cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
             print("launching {0} new tasks....".format(cores_to_launch))
             new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(cores_to_launch), extra_env=redis_env)
@@ -242,12 +245,13 @@ if __name__ == "__main__":
     parser.add_argument('--max_cores', type=int, default=32)
     parser.add_argument('--start_cores', type=int, default=32)
     parser.add_argument('--pipeline', type=int, default=1)
+    parser.add_argument('--launch_granularity', type=int, default=60)
     parser.add_argument('--trial', type=int, default=0)
     parser.add_argument('--priority', action='store_true')
     parser.add_argument('--lru', action='store_true')
     parser.add_argument('--eager', action='store_true')
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity)
 
 
 

@@ -132,6 +132,7 @@ class LambdaPackExecutor(object):
                 self.program.decr_up(1)
                 raise
             except RuntimeError as e:
+                self.program.decr_up(1)
                 raise
             except Exception as e:
                 self.program.decr_up(1)
@@ -140,8 +141,6 @@ class LambdaPackExecutor(object):
                 self.program.post_op(pc, lp.PS.EXCEPTION, tb=tb)
                 raise
         e = time.time()
-        for i in range(10):
-         gc.collect()
         return pcs
 
 def calculate_busy_time(rtimes):
@@ -160,7 +159,7 @@ def calculate_busy_time(rtimes):
     return wtimes
 
 #@profile
-def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, timeout=200):
+def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, timeout=200, idle_timeout=60):
     program.incr_up(1)
     lambda_start = time.time()
     loop = asyncio.new_event_loop()
@@ -176,7 +175,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
     shared_state["pipeline_width"] = pipeline_width
     shared_state["running_times"] = []
     shared_state["last_busy_time"] = time.time()
-    loop.create_task(check_program_state(program, loop, shared_state, timeout))
+    loop.create_task(check_program_state(program, loop, shared_state, timeout, idle_timeout))
     tasks = []
     for i in range(pipeline_width):
         # all the async tasks share 1 compute thread and a io cache
@@ -199,7 +198,7 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
             pc = int(msg["Body"])
             sqs_client = boto3.client('sqs')
             res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(50)
+            await asyncio.sleep(45)
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
             await asyncio.sleep(10)
@@ -207,13 +206,13 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
     print("Exiting msg visibility for {0}".format(pc))
     return 0
 
-async def check_program_state(program, loop, shared_state, timeout):
+async def check_program_state(program, loop, shared_state, timeout, idle_timeout):
     start_time = time.time()
     while(True):
         if shared_state["busy_workers"] == 0:
             if time.time() - start_time > timeout:
                 break
-            if time.time() - shared_state["last_busy_time"] > 600:
+            if time.time() - shared_state["last_busy_time"] >  idle_timeout:
                 break
         #TODO make this an s3 access as opposed to DD access since we don't *really need* atomicity here
         #TODO make this coroutine friendly
@@ -273,7 +272,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             msg = messages["Messages"][0]
             receipt_handle = msg["ReceiptHandle"]
             # if we don't finish in 75s count as a failure
-            res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            #res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             pc = int(msg["Body"])
             redis_client.set(msg["MessageId"], str(time.time()))
             #print("creating lock")
