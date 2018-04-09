@@ -29,6 +29,7 @@ import asyncio
 import redis
 import os
 import gc
+#from memory_profiler import profile
 
 try:
   DEFAULT_CONFIG = wc.default()
@@ -216,6 +217,7 @@ class RemoteLoad(RemoteInstruction):
         self.MAX_READ_TIME = 10
         self.read_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
+    #@profile
     async def __call__(self, prev=None):
         if (prev != None):
           await prev
@@ -271,6 +273,7 @@ class RemoteWrite(RemoteInstruction):
         self.MAX_WRITE_TIME = 10
         self.write_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
+    #@profile
     async def __call__(self, prev=None):
         if (prev != None):
           await prev
@@ -313,10 +316,12 @@ class RemoteSYRK(RemoteInstruction):
         assert len(argv_instr) == 3
         self.argv = argv_instr
         self.result = None
+    #@profile
     async def __call__(self, prev=None):
         if (prev != None):
           await prev
         loop = asyncio.get_event_loop()
+        #@profile
         def compute():
           self.start_time = time.time()
           if (self.result is None):
@@ -351,10 +356,12 @@ class RemoteTRSM(RemoteInstruction):
         assert len(argv_instr) == 2
         self.argv = argv_instr
         self.result = None
+    #@profile
     async def __call__(self, prev=None):
       if (prev != None):
         await prev
       loop = asyncio.get_event_loop()
+      #@profile
       def compute():
           self.start_time = time.time()
           if (self.result is None):
@@ -388,10 +395,12 @@ class RemoteCholesky(RemoteInstruction):
         assert len(argv_instr) == 1
         self.argv = argv_instr
         self.result = None
+    #@profile
     async def __call__(self, prev=None):
       if (prev != None):
           await prev
       loop = asyncio.get_event_loop()
+      #@profile
       def compute():
           self.start_time = time.time()
           s = time.time()
@@ -702,7 +711,7 @@ class LambdaPackProgram(object):
             traceback.print_exc()
             raise
 
-
+    #@profile
     def post_op(self, i, ret_code, tb=None):
         # need clean post op logic to handle
         # replays

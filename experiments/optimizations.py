@@ -139,7 +139,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         up_workers_counts.append(up_workers)
         busy_workers_counts.append(busy_workers)
         print("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
-        print("{4}: Not Ready: {0}, Ready: {1}, Running: {4}, Post OP: {2},  Done: {3}".format(not_ready_count, ready_count, post_op_count, done_count, running_count))
+        print("{5}: Not Ready: {0}, Ready: {1}, Running: {4}, Post OP: {2},  Done: {3}".format(not_ready_count, ready_count, post_op_count, done_count, running_count, curr_time))
         current_gflops = program.get_flops()
         if (current_gflops is None):
             current_gflops = 0
@@ -171,7 +171,8 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         ready_counts.append(ready_count)
         running_counts.append(running_counts)
 
-        if (time.time() - last_run > (TIMEOUT - 20)):
+        if (time.time() - last_run > (TIMEOUT - 30)):
+            last_run = time.time()
             new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(cores), extra_env=redis_env)
             pywren.wait(all_futures)
             [f.result() for f in all_futures]
@@ -179,7 +180,6 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             with open("futures_list.pickle", "wb+") as f:
                 f.write(pickle.dumps(all_futures))
             all_futures = new_futures
-            last_run = time.time()
         for i, queue_url in enumerate(program.queue_urls):
             client = boto3.client('sqs')
             attrs = client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'])['Attributes']

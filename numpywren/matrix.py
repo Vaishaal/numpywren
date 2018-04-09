@@ -291,7 +291,7 @@ class BigMatrix(object):
             X_block = self.parent_fn(self, *block_idx)
         else:
             bio = await self.__s3_key_to_byte_io__(key, loop=loop)
-            X_block = np.load(bio).astype(self.dtype)
+            X_block = np.load(bio)
         return X_block
 
     def put_block(self, block, *block_idx):
@@ -339,7 +339,7 @@ class BigMatrix(object):
         if (block.shape != current_shape):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
 
-        block = block.astype(self.dtype)
+        #block = block.astype(self.dtype)
         return await self.__save_matrix_to_s3__(block, key, loop)
 
     def delete_block(self, block, *block_idx):
@@ -515,7 +515,9 @@ class BigMatrix(object):
                                          Bucket=self.bucket,
                                          Body=outb.getvalue(),
                                          ACL="bucket-owner-full-control")
-        return response
+            del outb
+            del X
+        return None
 
     def __write_header__(self):
         key = os.path.join(self.key_base, "header")
@@ -856,12 +858,12 @@ class BigSymmetricMatrix(BigMatrix):
         exists = await key_exists_async(self.bucket, key)
         if (not exists and self.parent_fn == None):
             raise Exception("Key {0} does not exist, and no parent function prescripted".format(key))
-            
         elif (not exists and self.parent_fn != None):
             X_block = self.parent_fn(self, *block_idx_sym)
         else:
             bio = await self.__s3_key_to_byte_io__(key, loop=loop)
             X_block = np.load(bio).astype(self.dtype, loop)
+            del bio
         if (flipped):
             X_block = X_block.T
         if (len(list(set(block_idx))) == 1):

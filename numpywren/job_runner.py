@@ -17,6 +17,7 @@ import gc
 import os
 import sys
 import redis
+import tracemalloc
 
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
@@ -70,11 +71,12 @@ class LambdaPackExecutor(object):
         self.cache = cache
         self.block_ends= set()
 
+    #@profile
     async def run(self, pc, computer=None, profile=True):
         pcs = [pc]
         for pc in pcs:
-            #print("STARTING INSTRUCTION ", pc)
-            #print(self.program.inst_blocks[pc])
+            print("STARTING INSTRUCTION ", pc)
+            print(self.program.inst_blocks[pc])
             t = time.time()
             node_status = self.program.get_node_status(pc)
             #print(node_status)
@@ -157,7 +159,7 @@ def calculate_busy_time(rtimes):
         running += event[1]
     return wtimes
 
-
+#@profile
 def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, timeout=200):
     program.incr_up(1)
     lambda_start = time.time()
@@ -170,6 +172,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
         cache = None
     shared_state = {}
     shared_state["busy_workers"] = 0
+    shared_state["done_workers"] = 0
     shared_state["pipeline_width"] = pipeline_width
     shared_state["running_times"] = []
     shared_state["last_busy_time"] = time.time()
@@ -222,6 +225,8 @@ async def check_program_state(program, loop, shared_state, timeout):
     loop.stop()
 
 REDIS_CLIENT = None
+
+#@profile
 async def lambdapack_run_async(loop, program, computer, cache, shared_state, pipeline_width=1, msg_vis_timeout=10, timeout=200):
     global REDIS_CLIENT
     #print("LAMBDAPACK_RUN_ASYNC")
@@ -276,7 +281,14 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, lock)
             loop.create_task(coro)
             redis_client.incr("{0}_{1}_start".format(program.hash, pc))
+            #snapshot_before = tracemalloc.take_snapshot()
             pcs = await lmpk_executor.run(pc, computer=computer)
+            #snapshot_after = tracemalloc.take_snapshot()
+            #top_stats = snapshot_after.compare_to(snapshot_before, 'lineno')
+            #print("[ Top 100 differences for PC:{0} ]".format(pc))
+            #for stat in top_stats[:10]:
+            #   print(stat)
+
             for pc in pcs:
                 program.set_node_status(pc, lp.NS.FINISHED)
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
