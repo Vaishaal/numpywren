@@ -29,9 +29,9 @@ REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 
 ''' OSDI numpywren optimization effectiveness experiments '''
 
-TIMEOUT = 150
+TIMEOUT = 200
 EST_FLOP_RATE = 24
-def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, cores):
+def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial):
     X = np.random.randn(problem_size, 1)
     pwex = pywren.default_executor()
     shard_sizes = [shard_size, 1]
@@ -90,27 +90,30 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["priority"] = priority
     exp["eager"] = eager
     exp["truncate"] = truncate
-    exp["cores"] = cores
+    exp["max_cores"] = max_cores
     exp["problem_size"] = problem_size
     exp["shard_size"] = shard_size
     exp["pipeline"] = pipeline
     exp["flops"] = flops
     exp["reads"] = reads
     exp["writes"] = writes
+    exp["trial"] = trial
 
     print("Longest Path: {0}".format(program.longest_path))
     program.start()
     t = time.time()
-    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(cores), extra_env=redis_env)
+    print("Starting with {0}".format(start_cores))
+    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(start_cores), extra_env=redis_env)
     start_time = time.time()
     last_run = time.time()
     while(program.program_status() == lp.PS.RUNNING):
         max_pc = program.get_max_pc()
         times.append(int(time.time()))
         print("Max PC is {0}".format(max_pc))
-        time.sleep(5)
+        time.sleep(30)
         waiting = 0
         running = 0
+        '''
         done_count = 0
         ready_count = 0
         post_op_count = 0
@@ -123,13 +126,26 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             post_op_count += (ns  == lp.NS.POST_OP)
             ready_count += (ns == lp.NS.READY)
             running_count += (ns == lp.NS.RUNNING)
+        done_counts.append(done_count)
+        not_ready_counts.append(not_ready_count)
+        post_op_counts.append(post_op_count)
+        ready_counts.append(ready_count)
+        running_counts.append(running_counts)
+        '''
+        for i, queue_url in enumerate(program.queue_urls):
+            client = boto3.client('sqs')
+            attrs = client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'])['Attributes']
+            waiting += int(attrs["ApproximateNumberOfMessages"])
+            running += int(attrs["ApproximateNumberOfMessagesNotVisible"])
+        sqs_invis_counts.append(running)
+        sqs_vis_counts.append(waiting)
+        print("Waiting: {0}, Currently Processing: {1}".format(waiting, running))
         curr_time = int(time.time() - start_time)
         busy_workers = REDIS_CLIENT.get("{0}_busy".format(program.hash))
         if (busy_workers == None):
             busy_workers = 0
         else:
             busy_workers = int(busy_workers)
-
         up_workers = program.get_up()
 
         if (up_workers == None):
@@ -139,7 +155,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         up_workers_counts.append(up_workers)
         busy_workers_counts.append(busy_workers)
         print("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
-        print("{5}: Not Ready: {0}, Ready: {1}, Running: {4}, Post OP: {2},  Done: {3}".format(not_ready_count, ready_count, post_op_count, done_count, running_count, curr_time))
+        #print("{5}: Not Ready: {0}, Ready: {1}, Running: {4}, Post OP: {2},  Done: {3}".format(not_ready_count, ready_count, post_op_count, done_count, running_count, curr_time))
         current_gflops = program.get_flops()
         if (current_gflops is None):
             current_gflops = 0
@@ -160,35 +176,16 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         else:
             current_gbytes_write = int(current_gbytes_write)/1e9
         writes.append(current_gbytes_write)
-        print("{0}: Total GFLOPS {1}, Total GBytes Read {2}, Total GBytes Write {3}".format(curr_time, current_gflops, current_gbytes_read, current_gbytes_write))
+        #print("{0}: Total GFLOPS {1}, Total GBytes Read {2}, Total GBytes Write {3}".format(curr_time, current_gflops, current_gbytes_read, current_gbytes_write))
 
+        if (up_workers < np.ceil(waiting*0.8/pipeline_width) and up_workers < max_cores):
+            cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
+            print("launching {0} new tasks....".format(cores_to_launch))
+            new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(cores_to_launch), extra_env=redis_env)
+            # check if we OOM-erred
+           # [x.result() for x in all_futures]
+            all_futures.extend(new_futures)
 
-
-
-        done_counts.append(done_count)
-        not_ready_counts.append(not_ready_count)
-        post_op_counts.append(post_op_count)
-        ready_counts.append(ready_count)
-        running_counts.append(running_counts)
-
-        if (time.time() - last_run > (TIMEOUT - 30)):
-            last_run = time.time()
-            new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(cores), extra_env=redis_env)
-            pywren.wait(all_futures)
-            [f.result() for f in all_futures]
-            print("writing futures pickle....")
-            with open("futures_list.pickle", "wb+") as f:
-                f.write(pickle.dumps(all_futures))
-            all_futures = new_futures
-        for i, queue_url in enumerate(program.queue_urls):
-            client = boto3.client('sqs')
-            attrs = client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'])['Attributes']
-            waiting += int(attrs["ApproximateNumberOfMessages"])
-            running += int(attrs["ApproximateNumberOfMessagesNotVisible"])
-        sqs_invis_counts.append(running)
-        sqs_vis_counts.append(waiting)
-
-        print("SQS INVIS : {0},  SQS VIS {1}".format(running, waiting))
 
     for pc, block in enumerate(program.inst_blocks):
         print("PC: {0}, Run Count: {1}".format(pc, REDIS_CLIENT.get("{0}_{1}_start".format(program.hash, pc))))
@@ -215,14 +212,14 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     c = sns.palettes.color_palette()[1]
     plt.xlabel("Time since start")
     plt.ylabel("aggregate Gflops/s")
-    plt.hlines(EST_FLOP_RATE*cores,0,10000, label="Theoretical Performance", color=c)
+    plt.hlines(EST_FLOP_RATE*max_cores,0,10000, label="Theoretical Performance", color=c)
     lgd = plt.legend(bbox_to_anchor=(1.5, 0.8))
 
     flop_rate = sum(total_flops)/max(bins)
     exp["flop_rate"] = flop_rate
     print("Average Flop rate of {0}".format(flop_rate))
     # save other stuff
-    arg_bytes = pickle.dumps((problem_size, shard_size, pipeline, priority, lru, eager, truncate, cores))
+    arg_bytes = pickle.dumps((problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores))
     arg_hash = hashlib.md5(arg_bytes).hexdigest()
     print("Args Hash is {0}".format(arg_hash))
     plt.savefig("optimization_experiments/flop_rate_{0}.pdf".format(arg_hash), bbox_extra_artists=(lgd,), bbox_inches='tight')
@@ -237,29 +234,20 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         f.write(exp_bytes)
 
 
-
-
-
-
-
-
-
-
-
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run OSDI optimization effectiveness experiments')
     parser.add_argument("problem_size", type=int)
     parser.add_argument("--shard_size", type=int, default=4096)
     parser.add_argument('--truncate', type=int, default=None)
-    parser.add_argument('--cores', type=int, default=32)
+    parser.add_argument('--max_cores', type=int, default=32)
+    parser.add_argument('--start_cores', type=int, default=32)
     parser.add_argument('--pipeline', type=int, default=1)
+    parser.add_argument('--trial', type=int, default=0)
     parser.add_argument('--priority', action='store_true')
     parser.add_argument('--lru', action='store_true')
     parser.add_argument('--eager', action='store_true')
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.cores)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial)
 
 
 
