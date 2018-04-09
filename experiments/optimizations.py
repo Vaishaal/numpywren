@@ -23,6 +23,9 @@ import seaborn as sns
 from pylab import plt
 
 
+REDIS_IP = os.environ.get("REDIS_IP", "")
+REDIS_PASS = os.environ.get("REDIS_PASS", "")
+REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 
 ''' OSDI numpywren optimization effectiveness experiments '''
 
@@ -38,10 +41,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     XXT_sharded = binops.gemm(pwex, X_sharded, X_sharded.T, overwrite=False)
     XXT_sharded.lambdav = problem_size*10
     instructions ,L_sharded,trailing= lp._chol(XXT_sharded)
-    if (pipeline):
-        pipeline_width = 3
-    else:
-        pipeline_width = 1
+    pipeline_width = args.pipeline
     if (priority):
         num_priorities = 5
     else:
@@ -50,6 +50,8 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         cache_size = 5
     else:
         cache_size = 0
+
+    REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
 
     if (truncate is not None):
         instructions = instructions[:truncate]
@@ -66,6 +68,12 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     running_counts = []
     sqs_invis_counts = []
     sqs_vis_counts = []
+    up_workers_counts = []
+    busy_workers_counts = []
+    times = []
+    flops = []
+    reads = []
+    writes = []
 
     exp = {}
     exp["redis_done_counts"] = done_counts
@@ -75,6 +83,9 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["redis_running_counts"] = running_counts
     exp["sqs_invis_counts"] = sqs_invis_counts
     exp["sqs_vis_counts"] = sqs_vis_counts
+    exp["busy_workers"] = busy_workers_counts
+    exp["up_workers"] = up_workers_counts
+    exp["times"] = times
     exp["lru"] = lru
     exp["priority"] = priority
     exp["eager"] = eager
@@ -83,15 +94,19 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["problem_size"] = problem_size
     exp["shard_size"] = shard_size
     exp["pipeline"] = pipeline
+    exp["flops"] = flops
+    exp["reads"] = reads
+    exp["writes"] = writes
 
     print("Longest Path: {0}".format(program.longest_path))
     program.start()
     t = time.time()
-    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=200), range(cores), extra_env=redis_env)
+    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(cores), extra_env=redis_env)
     start_time = time.time()
     last_run = time.time()
     while(program.program_status() == lp.PS.RUNNING):
         max_pc = program.get_max_pc()
+        times.append(int(time.time()))
         print("Max PC is {0}".format(max_pc))
         time.sleep(5)
         waiting = 0
@@ -109,22 +124,60 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             ready_count += (ns == lp.NS.READY)
             running_count += (ns == lp.NS.RUNNING)
         curr_time = int(time.time() - start_time)
-        print("{1}: Up Workers: {0}".format(program.get_up(), curr_time))
+        busy_workers = REDIS_CLIENT.get("{0}_busy".format(program.hash))
+        if (busy_workers == None):
+            busy_workers = 0
+        else:
+            busy_workers = int(busy_workers)
+
+        up_workers = program.get_up()
+
+        if (up_workers == None):
+            up_workers = 0
+        else:
+            up_workers = int(up_workers)
+        up_workers_counts.append(up_workers)
+        busy_workers_counts.append(busy_workers)
+        print("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
         print("{4}: Not Ready: {0}, Ready: {1}, Running: {4}, Post OP: {2},  Done: {3}".format(not_ready_count, ready_count, post_op_count, done_count, running_count))
+        current_gflops = program.get_flops()
+        if (current_gflops is None):
+            current_gflops = 0
+        else:
+            current_gflops = int(current_gflops)/1e9
+
+        flops.append(current_gflops)
+        current_gbytes_read = program.get_read()
+        if (current_gbytes_read is None):
+            current_gbytes_read = 0
+        else:
+            current_gbytes_read = int(current_gbytes_read)/1e9
+
+        reads.append(current_gbytes_read)
+        current_gbytes_write = program.get_write()
+        if (current_gbytes_write is None):
+            current_gbytes_write = 0
+        else:
+            current_gbytes_write = int(current_gbytes_write)/1e9
+        writes.append(current_gbytes_write)
+        print("{0}: Total GFLOPS {1}, Total GBytes Read {2}, Total GBytes Write {3}".format(curr_time, current_gflops, current_gbytes_read, current_gbytes_write))
+
+
+
+
         done_counts.append(done_count)
         not_ready_counts.append(not_ready_count)
         post_op_counts.append(post_op_count)
         ready_counts.append(ready_count)
         running_counts.append(running_counts)
 
-        if (time.time() - last_run > (TIMEOUT - 10)):
+        if (time.time() - last_run > (TIMEOUT - 20)):
             new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(cores), extra_env=redis_env)
             pywren.wait(all_futures)
+            [f.result() for f in all_futures]
             print("writing futures pickle....")
             with open("futures_list.pickle", "wb+") as f:
                 f.write(pickle.dumps(all_futures))
-            [f.result() for f in all_futures]
-
             all_futures = new_futures
             last_run = time.time()
         for i, queue_url in enumerate(program.queue_urls):
@@ -136,6 +189,11 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         sqs_vis_counts.append(waiting)
 
         print("SQS INVIS : {0},  SQS VIS {1}".format(running, waiting))
+
+    for pc, block in enumerate(program.inst_blocks):
+        print("PC: {0}, Run Count: {1}".format(pc, REDIS_CLIENT.get("{0}_{1}_start".format(program.hash, pc))))
+
+
     e = time.time()
     print(program.program_status())
     print("PROGRAM STATUS ", program.program_status())
@@ -173,7 +231,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     except FileExistsError:
         pass
     exp_bytes = pickle.dumps(exp)
-    dump_path = "optimization_experiments/{0}".format(arg_hash)
+    dump_path = "optimization_experiments/{0}.pickle".format(arg_hash)
     print("Dumping experiment pickle to {0}".format(dump_path))
     with open(dump_path, "wb+") as f:
         f.write(exp_bytes)

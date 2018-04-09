@@ -186,6 +186,11 @@ class RemoteInstruction(object):
         self.executor = None
         self.cache = None
         self.run = False
+        self.read_size = 0
+        self.write_size = 0
+
+    def get_flops(self):
+      return 0
 
     def clear(self):
         self.result = None
@@ -209,6 +214,7 @@ class RemoteLoad(RemoteInstruction):
         self.result = None
         self.cache_hit = False
         self.MAX_READ_TIME = 10
+        self.read_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     async def __call__(self, prev=None):
         if (prev != None):
@@ -263,6 +269,7 @@ class RemoteWrite(RemoteInstruction):
         self.data_instr = data_instr
         self.result = None
         self.MAX_WRITE_TIME = 10
+        self.write_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     async def __call__(self, prev=None):
         if (prev != None):
@@ -313,18 +320,26 @@ class RemoteSYRK(RemoteInstruction):
         def compute():
           self.start_time = time.time()
           if (self.result is None):
-              old_block = self.argv[0].result
-              block_2 = self.argv[1].result
-              block_1 = self.argv[2].result
-              res = old_block - block_2.dot(block_1.T)
-              self.result = res
-              self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
+            old_block = self.argv[0].result
+            block_2 = self.argv[1].result
+            block_1 = self.argv[2].result
+            res = old_block - block_2.dot(block_1.T)
+            self.result = res
+            self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
           else:
             raise Exception("Same Machine Replay instruction... ")
           self.ret_code = 0
           self.end_time = time.time()
           return self.result
         return await loop.run_in_executor(self.executor, compute)
+
+    def get_flops(self):
+      old_block = self.argv[0].result
+      block_2 = self.argv[1].result
+      block_1 = self.argv[2].result
+      self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
+      return self.flops
+
 
     def __str__(self):
         return "{0} = SYRK {1} {2} {3}".format(self.id, self.argv[0].id,  self.argv[1].id,  self.argv[2].id)
@@ -357,6 +372,12 @@ class RemoteTRSM(RemoteInstruction):
     def clear(self):
         self.result = None
 
+    def get_flops(self):
+      L_bb = self.argv[1].result
+      col_block = self.argv[0].result
+      self.flops =  col_block.shape[1] * L_bb.shape[0] * L_bb.shape[1]
+      return self.flops
+
     def __str__(self):
         return "{0} = TRSM {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
 
@@ -388,6 +409,11 @@ class RemoteCholesky(RemoteInstruction):
 
     def clear(self):
         self.result = None
+
+    def get_flops(self):
+        L_bb = self.argv[0].result
+        self.flops = 1.0/3.0*(L_bb.shape[0]**3)
+        return self.flops
 
     def __str__(self):
         return "{0} = CHOL {1}".format(self.id, self.argv[0].id)
@@ -802,11 +828,45 @@ class LambdaPackProgram(object):
     def incr_up(self, amount):
       incr(self.up, amount, ip=self.redis_ip)
 
+    def incr_flops(self, amount):
+      if (amount > 0):
+        incr("{0}_flops".format(self.hash), amount, ip=self.redis_ip)
+
+    def incr_read(self, amount):
+      if (amount > 0):
+        incr("{0}_read".format(self.hash), amount, ip=self.redis_ip)
+
+    def incr_write(self, amount):
+      if (amount > 0):
+        incr("{0}_write".format(self.hash), amount, ip=self.redis_ip)
+
+    def decr_flops(self, amount):
+      if (amount > 0):
+        decr("{0}_flops".format(self.hash), amount, ip=self.redis_ip)
+
+    def decr_read(self, amount):
+      if (amount > 0):
+        decr("{0}_read".format(self.hash), amount, ip=self.redis_ip)
+
+    def decr_write(self, amount):
+      if (amount > 0):
+        decr("{0}_write".format(self.hash), amount, ip=self.redis_ip)
+
     def decr_up(self, amount):
       decr(self.up, amount, ip=self.redis_ip)
 
     def get_up(self):
       return get(self.up, ip=self.redis_ip)
+
+    def get_flops(self):
+      return get("{0}_flops".format(self.hash), ip=self.redis_ip)
+
+    def get_read(self):
+      return get("{0}_read".format(self.hash), ip=self.redis_ip)
+
+    def get_write(self):
+      return get("{0}_write".format(self.hash), ip=self.redis_ip)
+
 
     def set_up(self, value):
       put(self.up, value, ip=self.redis_ip)

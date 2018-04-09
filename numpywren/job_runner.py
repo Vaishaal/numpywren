@@ -70,7 +70,7 @@ class LambdaPackExecutor(object):
         self.cache = cache
         self.block_ends= set()
 
-    async def run(self, pc, computer=None):
+    async def run(self, pc, computer=None, profile=True):
         pcs = [pc]
         for pc in pcs:
             #print("STARTING INSTRUCTION ", pc)
@@ -94,6 +94,12 @@ class LambdaPackExecutor(object):
                         if (instr.run):
                             e_str = "EXCEPTION: Same machine replay instruction: " + str(instr) + " PC: {0}, time: {1}, pid: {2}".format(pc, time.time(), os.getpid())
                             raise Exception(e_str)
+                        flops = int(instr.get_flops())
+                        read_size = instr.read_size
+                        write_size = instr.write_size
+                        self.program.incr_flops(flops)
+                        self.program.incr_read(read_size)
+                        self.program.incr_write(write_size)
                         res = await instr()
                         #print("END: {0}, PC: {1}, time: {2}, pid: {3}".format(instr, pc, time.time(), os.getpid()))
                         sys.stdout.flush()
@@ -131,8 +137,10 @@ class LambdaPackExecutor(object):
                 tb = traceback.format_exc()
                 self.program.post_op(pc, lp.PS.EXCEPTION, tb=tb)
                 raise
-        return pcs
         e = time.time()
+        for i in range(10):
+         gc.collect()
+        return pcs
 
 def calculate_busy_time(rtimes):
     #pairs = [[(item[0], 1), (item[1], -1)] for sublist in rtimes for item in sublist]
@@ -187,8 +195,8 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
             receipt_handle = msg["ReceiptHandle"]
             pc = int(msg["Body"])
             sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=10, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(10)
+            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            await asyncio.sleep(50)
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
             await asyncio.sleep(10)
@@ -227,6 +235,9 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     start_time = time.time()
     running_times = shared_state['running_times']
     #last_message_time = time.time()
+    if (REDIS_CLIENT == None):
+      REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
+    redis_client = REDIS_CLIENT
     try:
         while(True):
             current_time = time.time()
@@ -251,6 +262,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
                 #    return running_times
                 continue
             shared_state["busy_workers"] += 1
+            redis_client.incr("{0}_busy".format(program.hash))
             #last_message_time = time.time()
             start_processing_time = time.time()
             msg = messages["Messages"][0]
@@ -258,14 +270,12 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             # if we don't finish in 75s count as a failure
             res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             pc = int(msg["Body"])
-            if (REDIS_CLIENT == None):
-                REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
-            redis_client = REDIS_CLIENT
             redis_client.set(msg["MessageId"], str(time.time()))
             #print("creating lock")
             lock = [1]
             coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, lock)
             loop.create_task(coro)
+            redis_client.incr("{0}_{1}_start".format(program.hash, pc))
             pcs = await lmpk_executor.run(pc, computer=computer)
             for pc in pcs:
                 program.set_node_status(pc, lp.NS.FINISHED)
@@ -280,6 +290,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             end_processing_time = time.time()
             running_times.append((start_processing_time, end_processing_time))
             shared_state["busy_workers"] -= 1
+            redis_client.decr("{0}_busy".format(program.hash))
             shared_state["last_busy_time"] = time.time()
             current_time = time.time()
             if (current_time - start_time > timeout):
