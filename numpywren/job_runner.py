@@ -159,6 +159,52 @@ def calculate_busy_time(rtimes):
         running += event[1]
     return wtimes
 
+async def check_failure(loop, failure_key):
+    global REDIS_CLIENT
+    if (REDIS_CLIENT == None):
+      REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
+    while (True):
+      f_key = REDIS_CLIENT.get(failure_key)
+      if (f_key is not None):
+         loop.stop()
+      await asyncio.sleep(5)
+
+
+
+
+def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
+    program.incr_up(1)
+    lambda_start = time.time()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    computer = fs.ThreadPoolExecutor(1)
+    if (cache_size > 0):
+        cache = LRUCache(max_items=cache_size)
+    else:
+        cache = None
+    shared_state = {}
+    shared_state["busy_workers"] = 0
+    shared_state["done_workers"] = 0
+    shared_state["pipeline_width"] = pipeline_width
+    shared_state["running_times"] = []
+    shared_state["last_busy_time"] = time.time()
+    loop.create_task(check_program_state(program, loop, shared_state, timeout, idle_timeout))
+    loop.create_task(check_failure(loop, failure_key))
+    tasks = []
+    for i in range(pipeline_width):
+        # all the async tasks share 1 compute thread and a io cache
+        coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout, msg_vis_timeout=msg_vis_timeout, msg_vis_timeout_jitter=msg_vis_timeout_jitter)
+        tasks.append(loop.create_task(coro))
+    #results = loop.run_until_complete(asyncio.gather(*tasks))
+    loop.run_forever()
+    print("loop end")
+    loop.close()
+    lambda_stop = time.time()
+    program.decr_up(1)
+    print(program.program_status())
+    return {"up_time": [lambda_start, lambda_stop],
+            "exec_time": calculate_busy_time(shared_state["running_times"])}
+
 #@profile
 def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
     program.incr_up(1)
