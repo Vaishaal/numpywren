@@ -18,6 +18,7 @@ import os
 import sys
 import redis
 import tracemalloc
+import copy
 
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
@@ -96,13 +97,13 @@ class LambdaPackExecutor(object):
                         if (instr.run):
                             e_str = "EXCEPTION: Same machine replay instruction: " + str(instr) + " PC: {0}, time: {1}, pid: {2}".format(pc, time.time(), os.getpid())
                             raise Exception(e_str)
+                        res = await instr()
                         flops = int(instr.get_flops())
                         read_size = instr.read_size
                         write_size = instr.write_size
                         self.program.incr_flops(flops)
                         self.program.incr_read(read_size)
                         self.program.incr_write(write_size)
-                        res = await instr()
                         #print("END: {0}, PC: {1}, time: {2}, pid: {3}".format(instr, pc, time.time(), os.getpid()))
                         sys.stdout.flush()
 
@@ -159,7 +160,7 @@ def calculate_busy_time(rtimes):
     return wtimes
 
 #@profile
-def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, timeout=200, idle_timeout=60):
+def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
     program.incr_up(1)
     lambda_start = time.time()
     loop = asyncio.new_event_loop()
@@ -179,7 +180,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
     tasks = []
     for i in range(pipeline_width):
         # all the async tasks share 1 compute thread and a io cache
-        coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout)
+        coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout, msg_vis_timeout=msg_vis_timeout, msg_vis_timeout_jitter=msg_vis_timeout_jitter)
         tasks.append(loop.create_task(coro))
     #results = loop.run_until_complete(asyncio.gather(*tasks))
     loop.run_forever()
@@ -191,14 +192,15 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=30, cache_size=5, 
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"])}
 
-async def reset_msg_visibility(msg, queue_url, loop, timeout, lock):
+async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lock):
+    assert(timeout > timeout_jitter)
     while(lock[0] == 1):
         try:
             receipt_handle = msg["ReceiptHandle"]
             pc = int(msg["Body"])
             sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(45)
+            res = sqs_client.change_message_visibility(VisibilityTimeout=timeout, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            await asyncio.sleep(timeout - timeout_jitter)
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
             await asyncio.sleep(10)
@@ -226,15 +228,12 @@ async def check_program_state(program, loop, shared_state, timeout, idle_timeout
 REDIS_CLIENT = None
 
 #@profile
-async def lambdapack_run_async(loop, program, computer, cache, shared_state, pipeline_width=1, msg_vis_timeout=10, timeout=200):
+async def lambdapack_run_async(loop, program, computer, cache, shared_state, pipeline_width=1, msg_vis_timeout=60, timeout=200, msg_vis_timeout_jitter=15):
     global REDIS_CLIENT
     #print("LAMBDAPACK_RUN_ASYNC")
     session = aiobotocore.get_session(loop=loop)
     # every pipelined worker gets its own copy of program so we don't step on eachothers toes!
-    orig_program = program
-    serializer = serialize.SerializeIndependent()
-    byte_string = serializer([program])[0][0]
-    program = pickle.loads(byte_string)
+    program = copy.deepcopy(program)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
     start_time = time.time()
     running_times = shared_state['running_times']
@@ -277,7 +276,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             redis_client.set(msg["MessageId"], str(time.time()))
             #print("creating lock")
             lock = [1]
-            coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, lock)
+            coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, msg_vis_timeout_jitter, lock)
             loop.create_task(coro)
             redis_client.incr("{0}_{1}_start".format(program.hash, pc))
             #snapshot_before = tracemalloc.take_snapshot()
