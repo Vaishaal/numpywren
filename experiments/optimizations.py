@@ -21,17 +21,36 @@ import matplotlib
 matplotlib.use('Agg')
 import seaborn as sns
 from pylab import plt
+import logging
+import copy
 
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
+INFO_FREQ = 60
 
 ''' OSDI numpywren optimization effectiveness experiments '''
 
-TIMEOUT = 200
-EST_FLOP_RATE = 24
-def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity):
+def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy):
+    # set up logging
+    logger = logging.getLogger()
+    for key in logging.Logger.manager.loggerDict:
+        logging.getLogger(key).setLevel(logging.CRITICAL)
+    logger.setLevel(logging.DEBUG)
+    arg_bytes = pickle.dumps((problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy))
+    arg_hash = hashlib.md5(arg_bytes).hexdigest()
+    log_file = "optimization_experiments/{0}.log".format(arg_hash)
+    fh = logging.FileHandler(log_file)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(formatter)
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    logger.info("Logging to {0}".format(log_file))
+
     X = np.random.randn(problem_size, 1)
     pwex = pywren.default_executor()
     shard_sizes = [shard_size, 1]
@@ -99,41 +118,24 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["writes"] = writes
     exp["trial"] = trial
     exp["launch_granularity"] = launch_granularity
+    exp["log_granularity"] = log_granularity
 
-    print("Longest Path: {0}".format(program.longest_path))
+
+    logger.info("Longest Path: {0}".format(program.longest_path))
     program.start()
     t = time.time()
-    print("Starting with {0}".format(start_cores))
-    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(start_cores), extra_env=redis_env)
+    logger.info("Starting with {0} cores".format(start_cores))
+    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=redis_env)
     start_time = time.time()
-    last_run = time.time()
+    last_run_time = start_time
 
     while(program.program_status() == lp.PS.RUNNING):
+        curr_time = int(time.time() - start_time)
         max_pc = program.get_max_pc()
         times.append(int(time.time()))
-        print("Max PC is {0}".format(max_pc))
-        time.sleep(30)
+        time.sleep(log_granularity)
         waiting = 0
         running = 0
-        '''
-        done_count = 0
-        ready_count = 0
-        post_op_count = 0
-        not_ready_count = 0
-        running_count = 0
-        for pc in range(len(program.inst_blocks)):
-            ns = program.get_node_status(pc)
-            done_count += (ns  == lp.NS.FINISHED)
-            not_ready_count += (ns  == lp.NS.NOT_READY)
-            post_op_count += (ns  == lp.NS.POST_OP)
-            ready_count += (ns == lp.NS.READY)
-            running_count += (ns == lp.NS.RUNNING)
-        done_counts.append(done_count)
-        not_ready_counts.append(not_ready_count)
-        post_op_counts.append(post_op_count)
-        ready_counts.append(ready_count)
-        running_counts.append(running_counts)
-        '''
         for i, queue_url in enumerate(program.queue_urls):
             client = boto3.client('sqs')
             attrs = client.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'])['Attributes']
@@ -141,8 +143,6 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             running += int(attrs["ApproximateNumberOfMessagesNotVisible"])
         sqs_invis_counts.append(running)
         sqs_vis_counts.append(waiting)
-        print("Waiting: {0}, Currently Processing: {1}".format(waiting, running))
-        curr_time = int(time.time() - start_time)
         busy_workers = REDIS_CLIENT.get("{0}_busy".format(program.hash))
         if (busy_workers == None):
             busy_workers = 0
@@ -156,7 +156,14 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             up_workers = int(up_workers)
         up_workers_counts.append(up_workers)
         busy_workers_counts.append(busy_workers)
-        print("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
+
+        logger.debug("Waiting: {0}, Currently Processing: {1}".format(waiting, running))
+        logger.debug("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
+        if ((curr_time % INFO_FREQ) == 0):
+            logger.info("Max PC is {0}".format(max_pc))
+            logger.info("Waiting: {0}, Currently Processing: {1}".format(waiting, running))
+            logger.info("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
+
         #print("{5}: Not Ready: {0}, Ready: {1}, Running: {4}, Post OP: {2},  Done: {3}".format(not_ready_count, ready_count, post_op_count, done_count, running_count, curr_time))
         current_gflops = program.get_flops()
         if (current_gflops is None):
@@ -180,25 +187,45 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         writes.append(current_gbytes_write)
         #print("{0}: Total GFLOPS {1}, Total GBytes Read {2}, Total GBytes Write {3}".format(curr_time, current_gflops, current_gbytes_read, current_gbytes_write))
 
-        time_since_launch = last_time - time.time()
-        if (time_since_launch > launch_granularity and up_workers < np.ceil(waiting*0.5/pipeline_width) and up_workers < max_cores):
-            cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
-            print("launching {0} new tasks....".format(cores_to_launch))
-            new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=TIMEOUT), range(cores_to_launch), extra_env=redis_env)
-            # check if we OOM-erred
-           # [x.result() for x in all_futures]
-            all_futures.extend(new_futures)
+        time_since_launch = time.time() - last_run_time
+        if (autoscale_policy == "dynamic"):
+            if (time_since_launch > launch_granularity and up_workers < np.ceil(waiting*0.5/pipeline_width) and up_workers < max_cores):
+                cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
+                logger.info("launching {0} new tasks....".format(cores_to_launch))
+                new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
+                last_run_time = time.time()
+                # check if we OOM-erred
+               # [x.result() for x in all_futures]
+                all_futures.extend(new_futures)
+        elif (autoscale_policy == "constant_timeout"):
+            if (time_since_launch > (0.75*timeout)):
+                cores_to_launch = max_cores
+                logger.info("launching {0} new tasks....".format(cores_to_launch))
+                new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
+                last_run_time = time.time()
+                # check if we OOM-erred
+               # [x.result() for x in all_futures]
+                all_futures.extend(new_futures)
+        else:
+            raise Exception("unknown autoscale policy")
 
 
+    exp["all_futures"] = all_futures
     for pc, block in enumerate(program.inst_blocks):
-        print("PC: {0}, Run Count: {1}".format(pc, REDIS_CLIENT.get("{0}_{1}_start".format(program.hash, pc))))
+        run_count = REDIS_CLIENT.get("{0}_{1}_start".format(program.hash, pc))
+        if (run_count is None):
+            run_count = 0
+        else:
+            run_count = int(run_count)
 
+        if (run_count != 1):
+            logger.info("PC: {0}, Run Count: {1}".format(pc, run_count))
 
     e = time.time()
-    print(program.program_status())
-    print("PROGRAM STATUS ", program.program_status())
-    print("PROGRAM HASH", program.hash)
-    print("Took {0} seconds".format(e - t))
+    logger.info(program.program_status())
+    logger.info("PROGRAM STATUS " + str(program.program_status()))
+    logger.info("PROGRAM HASH " + str(program.hash))
+    logger.info("Took {0} seconds".format(e - t))
     # collect in
     executor = fs.ThreadPoolExecutor(72)
     futures = []
@@ -211,21 +238,10 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["profiled_block_pickle_bytes"] = byte_string
 
     read,write,total_flops,bins, instructions, runtimes = lp.perf_profile(profiled_blocks, num_bins=100)
-    sns.tsplot(total_flops, time=(bins - min(bins)), condition="Observed Performance")
-    c = sns.palettes.color_palette()[1]
-    plt.xlabel("Time since start")
-    plt.ylabel("aggregate Gflops/s")
-    plt.hlines(EST_FLOP_RATE*max_cores,0,10000, label="Theoretical Performance", color=c)
-    lgd = plt.legend(bbox_to_anchor=(1.5, 0.8))
-
     flop_rate = sum(total_flops)/max(bins)
     exp["flop_rate"] = flop_rate
     print("Average Flop rate of {0}".format(flop_rate))
     # save other stuff
-    arg_bytes = pickle.dumps((problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores))
-    arg_hash = hashlib.md5(arg_bytes).hexdigest()
-    print("Args Hash is {0}".format(arg_hash))
-    plt.savefig("optimization_experiments/flop_rate_{0}.pdf".format(arg_hash), bbox_extra_artists=(lgd,), bbox_inches='tight')
     try:
         os.mkdir("optimization_experiments/")
     except FileExistsError:
@@ -245,13 +261,16 @@ if __name__ == "__main__":
     parser.add_argument('--max_cores', type=int, default=32)
     parser.add_argument('--start_cores', type=int, default=32)
     parser.add_argument('--pipeline', type=int, default=1)
+    parser.add_argument('--timeout', type=int, default=200)
+    parser.add_argument('--autoscale_policy', type=str, default="constant_timeout")
+    parser.add_argument('--log_granularity', type=int, default=1)
     parser.add_argument('--launch_granularity', type=int, default=60)
     parser.add_argument('--trial', type=int, default=0)
     parser.add_argument('--priority', action='store_true')
     parser.add_argument('--lru', action='store_true')
     parser.add_argument('--eager', action='store_true')
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy)
 
 
 
