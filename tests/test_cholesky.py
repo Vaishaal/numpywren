@@ -176,6 +176,19 @@ class CholeskyTest(unittest.TestCase):
         print(L_npw)
         print(L)
         assert(np.allclose(L_npw, L))
+        for pc in range(len(program.inst_blocks)):
+            edge_sum = lp.get(program._node_edge_sum_key(pc))
+            if (edge_sum == None):
+                edge_sum = 0
+            edge_sum = int(edge_sum)
+            indegree = len(program.parents[pc])
+            node_status =  program.get_node_status(pc)
+            redis_str = "PC: {0}, Edge Sum: {1}, Indegree: {2}, Node Status {3}".format(pc, edge_sum, indegree, node_status)
+            if (edge_sum != indegree):
+                print(redis_str)
+            assert(edge_sum == indegree)
+
+
 
     def test_cholesky_multi_lambda(self):
         print("RUNNING many lambda")
