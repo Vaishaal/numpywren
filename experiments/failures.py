@@ -25,14 +25,14 @@ import logging
 import copy
 
 
-REDIS_IP = os.environ.get("REDIS_IP", "127.0.0.1")
+REDIS_IP = os.environ.get("REDIS_IP", "")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 INFO_FREQ = 5
 
 ''' OSDI numpywren optimization effectiveness experiments '''
 
-def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy):
+def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, failure_percentage, max_failure_events, failure_time):
     # set up logging
     logger = logging.getLogger()
     for key in logging.Logger.manager.loggerDict:
@@ -93,7 +93,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     flops = []
     reads = []
     writes = []
-
+    failure_times = []
     exp = {}
     exp["redis_done_counts"] = done_counts
     exp["redis_ready_counts"] = ready_counts
@@ -120,15 +120,19 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["launch_granularity"] = launch_granularity
     exp["log_granularity"] = log_granularity
     exp["autoscale_policy"] = autoscale_policy 
+    exp["failure_times"] = failure_times
 
 
     logger.info("Longest Path: {0}".format(program.longest_path))
     program.start()
     t = time.time()
     logger.info("Starting with {0} cores".format(start_cores))
-    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=redis_env)
+    failure_keys = ["{0}_failure_{1}".format(program.hash, i) for i in range(start_cores)]
+    all_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=redis_env)
     start_time = time.time()
     last_run_time = start_time
+    last_failure = time.time()
+    num_failure_events = 0
 
     while(program.program_status() == lp.PS.RUNNING):
         curr_time = int(time.time() - start_time)
@@ -193,7 +197,8 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             if (time_since_launch > launch_granularity and up_workers < np.ceil(waiting*0.5/pipeline_width) and up_workers < max_cores):
                 cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
                 logger.info("launching {0} new tasks....".format(cores_to_launch))
-                new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
+                failure_keys = ["{0}_failure_{1}".format(program.hash, i) for i in range(cores_to_launch)]
+                new_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
                 last_run_time = time.time()
                 # check if we OOM-erred
                # [x.result() for x in all_futures]
@@ -202,13 +207,28 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             if (time_since_launch > (0.75*timeout)):
                 cores_to_launch = max_cores
                 logger.info("launching {0} new tasks....".format(cores_to_launch))
-                new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
+                failure_keys = ["{0}_failure_{1}".format(program.hash, i) for i in range(cores_to_launch)]
+                new_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
                 last_run_time = time.time()
                 # check if we OOM-erred
                # [x.result() for x in all_futures]
                 all_futures.extend(new_futures)
         else:
             raise Exception("unknown autoscale policy")
+
+        if ((time.time() - last_failure) > failure_time and num_failure_events < max_failure_events):
+            logging.info("Killing some jobs")
+            idxs = np.random.choice(len(failure_keys), int(failure_percentage*len(failure_keys)), replace=False)
+            num_failure_events += 1
+            last_failure = time.time()
+            failure_times.append(last_failure)
+            for i in idxs:
+                logging.info("Killing: job {0}".format(i))
+                REDIS_CLIENT.set(failure_keys[i], 1)
+
+
+
+
 
 
     exp["all_futures"] = all_futures
@@ -227,6 +247,8 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     logger.info("PROGRAM STATUS " + str(program.program_status()))
     logger.info("PROGRAM HASH " + str(program.hash))
     logger.info("Took {0} seconds".format(e - t))
+    exp["total_runtime"] = e - t
+    exp["num_failure_events"] = num_failure_events
     # collect in
     executor = fs.ThreadPoolExecutor(72)
     futures = []
@@ -262,6 +284,9 @@ if __name__ == "__main__":
     parser.add_argument('--max_cores', type=int, default=32)
     parser.add_argument('--start_cores', type=int, default=32)
     parser.add_argument('--pipeline', type=int, default=1)
+    parser.add_argument('--failure_percentage', type=float, default=0.25)
+    parser.add_argument('--max_failure_events', type=float, default=1)
+    parser.add_argument('--failure_time', type=int, default=250)
     parser.add_argument('--timeout', type=int, default=200)
     parser.add_argument('--autoscale_policy', type=str, default="constant_timeout")
     parser.add_argument('--log_granularity', type=int, default=1)
@@ -271,7 +296,7 @@ if __name__ == "__main__":
     parser.add_argument('--lru', action='store_true')
     parser.add_argument('--eager', action='store_true')
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.failure_percentage, args.max_failure_events, args.failure_time)
 
 
 

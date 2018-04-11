@@ -643,9 +643,6 @@ class LambdaPackProgram(object):
         put(self.hash, PS.NOT_STARTED.value, ip=self.redis_ip)
 
 
-
-
-
     def _node_key(self, i):
       return "{0}_{1}".format(self.hash, i)
 
