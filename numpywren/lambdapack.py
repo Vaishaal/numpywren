@@ -1008,10 +1008,8 @@ class LambdaPackProgram(object):
             # find all places inst_0 reads
             for inst in inst_0.instrs:
               if inst.i_code == OC.S3_LOAD:
-                print("============", inst.i_code, inst.bidxs, inst.matrix, "\n\n\n\n")
                 read_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))].add(i)
               if inst.i_code == OC.S3_WRITE:
-                print("============", inst.i_code, inst.bidxs, inst.matrix, "\n\n\n\n\n")
                 write_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))].add(i)
                 assert len(write_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))]) == 1
 
@@ -1131,29 +1129,30 @@ def make_remote_gemm(pc, XY, X, Y, label=None):
     return InstructionBlock([block_0_load, block_1_load, matmul, write_out], label=label), 4
 
 def make_remote_reduce(pc, op, out_block, in_blocks, reduce_blocks, reduce_width=2, label=None):
-    num_reduces = int(np.ceil(len(in_blocks._block_idxs(0)) / reduce_width))
+    in_block_width = len(in_blocks._block_idxs(1))
+    blocks_per_reduce = in_block_width // reduce_width
     block_loads = []
     instruction_blocks = []
-    assert num_reduces >= 1
-    if num_reduces == 1:
-        for i in in_blocks._block_idxs(0):
-            block_loads.append(RemoteLoad(pc, in_blocks, i))
+    assert in_block_width >= 1
+    if in_block_width <= reduce_width:
+        for i in in_blocks._block_idxs(1):
+            block_loads.append(RemoteLoad(pc, in_blocks.submatrix(0, i)))
             pc += 1
     else:
-        for i in range(num_reduces):
-            start = i * reduce_width
-            if i < num_reduces - 1:
-                end = start + reduce_width
+        for i in range(reduce_width):
+            start = i * blocks_per_reduce 
+            if i < reduce_width - 1:
+                end = start + blocks_per_reduce
             else:
-                end = len(reduce_blocks.block_idxs(1))
-            instr, pc = make_remote_reduce(pc, reduce_blocks.submatrix(0, i),
+                end = in_block_width
+            instr, pc = make_remote_reduce(pc, op, reduce_blocks.submatrix(0, i),
                                            in_blocks.submatrix([None], [start, end]),
                                            reduce_blocks.submatrix([1, None], [start, end]),
                                            reduce_width=reduce_width,
                                            label=label)
-            instruction_blocks.append(instr)
-        for i in range(num_reduces):
-            block_loads.append(RemoteLoad(pc, reduce_blocks, 0, i))
+            instruction_blocks += instr
+        for i in range(reduce_width):
+            block_loads.append(RemoteLoad(pc, reduce_blocks.submatrix(0, i)))
             pc += 1   
     acc = block_loads[0]
     block_ops = []
@@ -1164,7 +1163,7 @@ def make_remote_reduce(pc, op, out_block, in_blocks, reduce_blocks, reduce_width
     block_write = RemoteWrite(pc, out_block, acc) 
     pc += 1
     instruction_blocks.append(InstructionBlock(block_loads + block_ops + [block_write], label=label))
-    return pc, instruction_blocks
+    return instruction_blocks, pc
 
 def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
     reduce_idxs = Y._block_idxs(axis=1)
@@ -1235,18 +1234,16 @@ def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):
                 all_instructions.append(instructions)
                 pc += count
 
-            # acc_load = RemoteLoad(pc, B, j, i)
-            # pc += 1
-            # sub_instructions = [acc_load]
-            if end - start != 0:
-                row_len = int(np.ceil((end - start) * scratch[i].shard_sizes[1] / reduce_width))
+            if end - start >= 1:
+                shard_sizes = scratch[i].submatrix(j, j).shape
+                row_len = end - start
                 reduce_blocks = BigMatrix(
                     out_key + "_reduce_{0}_{1}".format(i, j),
-                    shape=[int(np.ceil(math.log(row_len, reduce_width))) + 1, row_len],
+                    shape=[(int(np.ceil(math.log(row_len, reduce_width)) + 1)) * shard_sizes[0], row_len * shard_sizes[1]],
                     bucket=out_bucket,
-                    shard_sizes=scratch[i].shard_sizes,
+                    shard_sizes=shard_sizes,
                     write_header=True)
-                pc, instr_blocks = make_remote_reduce(pc,
+                instr_blocks, pc = make_remote_reduce(pc,
                                                       RemoteAdd,
                                                       reduce_blocks.submatrix(0, 0),
                                                       scratch[i].submatrix(j, [start, end]),
@@ -1261,18 +1258,17 @@ def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):
                                                   label="sub_{0}_{1}".format(i, j))
                 all_instructions.append(instruction)
                 trisolve_block = scratch[i].submatrix(j, j)
-                # for k in A._block_idxs(1)[start:end]:
-                #     block_load = RemoteLoad(pc, scratch[i], j, k)
-                #     pc += 1
-                #     acc_load = RemoteSub(pc, [acc_load, block_load])
-                #     pc += 1
-                #     sub_instructions += [block_load, acc_load]
+            elif end - start == 1:
+                instruction, pc = make_remote_sub(pc,
+                                                  scratch[i].submatrix(j, j),
+                                                  B.submatrix(j, i),
+                                                  scratch[i].submatrix(j, start),
+                                                  label="sub_{0}_{1}".format(i, j))
+                
+                all_instructions.append(instruction)
+                trisolve_block = scratch[i].submatrix(j, j)
             else:
                 trisolve_block = B.submatrix(j, i)
-            # write_out = RemoteWrite(pc, scratch[i], acc_load, j, j)
-            # pc += 1
-            # sub_instructions.append(write_out)
-            # all_instructions.append(InstructionBlock(sub_instructions, label="sub_{0}_{1}".format(i, j)))
             instructions, count = make_remote_trisolve(pc, X.submatrix(j, i),
                                                        A.submatrix(j, j),
                                                        trisolve_block,

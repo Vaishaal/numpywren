@@ -744,7 +744,6 @@ class BigMatrixView(BigMatrix):
     def __str__(self):
         slice_reps = [] 
         last_slice = 0 
-        ''' 
         for i, (parent_slice, axis_len) in enumerate(zip(self.parent_slices, self.axis_lens)):
             if parent_slice != slice(0, axis_len, 1):
                 last_slice = i 
@@ -764,12 +763,12 @@ class BigMatrixView(BigMatrix):
                 else:
                     stop_rep = str(parent_slice.stop)
                 slice_reps.append(start_rep + ":" + stop_rep + step_rep)
-        '''
         rep = self.parent.__str__() 
         if last_slice != 0:
             rep += "[" + ",".join(slice_reps[:last_slice + 1]) + "]"
         if self.transposed:
             rep += ".T"
+        rep += str(tuple(self.shape))
         return rep
 
 class Scalar(BigMatrix):
