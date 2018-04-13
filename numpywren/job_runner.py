@@ -19,6 +19,7 @@ import sys
 import redis
 import tracemalloc
 import copy
+import random
 
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
@@ -77,13 +78,13 @@ class LambdaPackExecutor(object):
         pcs = [pc]
         for pc in pcs:
             print("STARTING INSTRUCTION ", pc)
-            print(self.program.inst_blocks[pc])
             t = time.time()
             node_status = self.program.get_node_status(pc)
             #print(node_status)
             self.program.set_max_pc(pc)
-            self.program.inst_blocks[pc].start_time = time.time()
-            instrs = self.program.inst_blocks[pc].instrs
+            inst_block = self.program.inst_blocks(pc)
+            inst_block.start_time = time.time()
+            instrs = inst_block.instrs
             next_pc = None
             if (len(instrs) != len(set(instrs))):
                 raise Exception("Duplicate instruction in instruction stream")
@@ -97,7 +98,9 @@ class LambdaPackExecutor(object):
                         if (instr.run):
                             e_str = "EXCEPTION: Same machine replay instruction: " + str(instr) + " PC: {0}, time: {1}, pid: {2}".format(pc, time.time(), os.getpid())
                             raise Exception(e_str)
+                        instr.start_time = time.time()
                         res = await instr()
+                        instr.end_time = time.time()
                         flops = int(instr.get_flops())
                         read_size = instr.read_size
                         write_size = instr.write_size
@@ -114,10 +117,10 @@ class LambdaPackExecutor(object):
                         instr.run = False
                         instr.result = None
 
-                    next_pc = self.program.post_op(pc, lp.PS.SUCCESS)
+                    next_pc = self.program.post_op(pc, lp.PS.SUCCESS, inst_block)
                 elif (node_status == lp.NS.POST_OP):
                     #print("Re-running POST OP")
-                    next_pc = self.program.post_op(pc, lp.PS.SUCCESS)
+                    next_pc = self.program.post_op(pc, lp.PS.SUCCESS, inst_block)
                 elif (node_status == lp.NS.NOT_READY):
                     raise
                     #print("THIS SHOULD NEVER HAPPEN OTHER THAN DURING TEST")
@@ -136,10 +139,13 @@ class LambdaPackExecutor(object):
                 self.program.decr_up(1)
                 raise
             except Exception as e:
+                instr.run = True
+                instr.cache = None
+                instr.executor = None
                 self.program.decr_up(1)
                 traceback.print_exc()
                 tb = traceback.format_exc()
-                self.program.post_op(pc, lp.PS.EXCEPTION, tb=tb)
+                self.program.post_op(pc, lp.PS.EXCEPTION, inst_block, tb=tb)
                 raise
         e = time.time()
         return pcs
@@ -229,6 +235,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
         coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout, msg_vis_timeout=msg_vis_timeout, msg_vis_timeout_jitter=msg_vis_timeout_jitter)
         tasks.append(loop.create_task(coro))
     #results = loop.run_until_complete(asyncio.gather(*tasks))
+    #return results
     loop.run_forever()
     print("loop end")
     loop.close()
@@ -245,8 +252,8 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lo
             receipt_handle = msg["ReceiptHandle"]
             pc = int(msg["Body"])
             sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=timeout, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(timeout - timeout_jitter)
+            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            await asyncio.sleep(45)
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
             await asyncio.sleep(10)
@@ -279,8 +286,14 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     #print("LAMBDAPACK_RUN_ASYNC")
     session = aiobotocore.get_session(loop=loop)
     # every pipelined worker gets its own copy of program so we don't step on eachothers toes!
+    #snapshot_before = tracemalloc.take_snapshot()
     program = copy.deepcopy(program)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
+    #snapshot_after = tracemalloc.take_snapshot()
+    #top_stats = snapshot_after.compare_to(snapshot_before, 'lineno')
+    #print("[ Top 100 differences for copy ]".format(pc))
+    #for stat in top_stats[:10]:
+    #   print(stat)
     start_time = time.time()
     running_times = shared_state['running_times']
     #last_message_time = time.time()
@@ -294,7 +307,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
                 print("Hit timeout...returning now")
                 shared_state["done_workers"] += 1
                 return
-            await asyncio.sleep(1)
+            await asyncio.sleep(0)
             # go from high priority -> low priority
             for queue_url in program.queue_urls[::-1]:
                 async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:

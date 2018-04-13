@@ -29,6 +29,7 @@ import asyncio
 import redis
 import os
 import gc
+from multiprocessing import Process
 #from memory_profiler import profile
 
 try:
@@ -83,6 +84,12 @@ def put(key, value, ip=REDIS_IP, passw=REDIS_PASS , s3=False, s3_bucket=""):
       # flush write to S3
       raise Exception("Not Implemented")
 
+
+def upload(key, bucket, data):
+    client = boto3.client('s3')
+    #print("key", key)
+    #print("bucket", bucket)
+    client.put_object(Bucket=bucket, Key=key, Body=data)
 
 def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
     global REDIS_CLIENT
@@ -404,6 +411,7 @@ class RemoteCholesky(RemoteInstruction):
       def compute():
           self.start_time = time.time()
           s = time.time()
+          print(self.result)
           if (self.result is None):
               L_bb = self.argv[0].result
               self.result = np.linalg.cholesky(L_bb)
@@ -493,7 +501,7 @@ class LambdaPackProgram(object):
        Maintains global state information
     '''
 
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9, eager=False):
+    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9, eager=False, num_program_shards=1000):
         t = time.time()
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
@@ -501,13 +509,12 @@ class LambdaPackProgram(object):
         self.bucket = pywren_config['s3']['bucket']
         self.redis_ip = redis_ip
         self.inst_blocks = [copy.copy(x) for x in inst_blocks]
-        self.program_string = "\n".join([str(x) for x in inst_blocks])
         self.max_priority = num_priorities - 1
         self.io_rate = io_rate
         self.flop_rate = flop_rate
         self.eager = eager
-        program_string = "\n".join([str(x) for x in self.inst_blocks])
         hashed = hashlib.sha1()
+        program_string = "\n".join([str(x) for x in self.inst_blocks])
         hashed.update(program_string.encode())
         # this is temporary hack?
         hashed.update(str(time.time()).encode())
@@ -545,6 +552,7 @@ class LambdaPackProgram(object):
         self.remote_return = RemoteReturn(max_i_id + 1, self.hash)
         self.return_block = InstructionBlock([self.remote_return], label="EXIT")
         self.inst_blocks.append(self.return_block)
+        self.program_shard_map = {}
 
         for i in self.terminators:
           self.children[i].add(len(self.inst_blocks) - 1)
@@ -553,8 +561,62 @@ class LambdaPackProgram(object):
         self.parents[len(self.inst_blocks) - 1] = self.terminators
         longest_path = self._find_critical_path()
         self.longest_path = longest_path
+        self.priorities = [0 for _ in range(len(self.inst_blocks))]
         self._recursive_priority_donate(self.longest_path, self.max_priority)
+        self.num_program_shards = num_program_shards
         put(self.hash, PS.NOT_STARTED.value, ip=self.redis_ip)
+        self._shard_program()
+        self.num_inst_blocks = len(self.inst_blocks)
+        del self.inst_blocks
+
+    def inst_blocks(self, i):
+        t = time.time()
+        client = boto3.client('s3')
+        (shard_idx, idx_in_shard) = self.program_shard_map[i]
+        out_key = "{0}/{1}/{2}".format("lambdapack", self.hash, "program_shard_{0}".format(shard_idx))
+        #print("READING", out_key)
+        #TODO we can cache these
+        serialized_blocks = pickle.loads(client.get_object(Bucket=self.bucket, Key=out_key)["Body"].read())
+        res = pickle.loads(serialized_blocks[idx_in_shard])
+        e = time.time()
+        #print("block fetch took {0} seconds".format(e - t))
+        return res
+
+
+
+    def _shard_program(self, num_cores=32):
+        print("serializing program before sharding")
+        t = time.time()
+        serializer = serialize.SerializeIndependent()
+        serialized_blocks, modules = serializer(self.inst_blocks)
+        program_shard_dict = defaultdict(list)
+        for i, serialized_block in enumerate(serialized_blocks):
+          idx_in_shard = len(program_shard_dict[(i % self.num_program_shards)])
+          shard_idx = (i % self.num_program_shards)
+          #print(shard_idx)
+          program_shard_dict[shard_idx].append(serialized_block)
+          self.program_shard_map[i] = (shard_idx, idx_in_shard)
+        print("sharding program")
+        executor = fs.ProcessPoolExecutor(num_cores)
+        futures = []
+        for key,value in program_shard_dict.items():
+          out_key = "{0}/{1}/{2}".format("lambdapack", self.hash, "program_shard_{0}".format(key))
+          data = pickle.dumps(value)
+          bucket = self.bucket
+          futures.append(executor.submit(upload, out_key, bucket, data))
+        [f.result() for f in futures]
+        e = time.time()
+        print("Sharding program took {0} seconds".format(e - t))
+        return 0
+
+
+
+
+
+
+
+
+
 
 
     def _node_key(self, i):
@@ -604,112 +666,8 @@ class LambdaPackProgram(object):
         max_pc = 0
       return int(max_pc)
 
-    async def post_op_async(self, i, ret_code, tb=None):
-        loop = asyncio.get_event_loop()
-        # need clean post op logic to handle
-        # replays
-        # avoid double increments
-        # failures at ANY POINT
-
-        # for each dependency2
-        # post op needs to ATOMICALLY check dependencies
-        global REDIS_CLIENT
-        try:
-          post_op_start = time.time()
-          #print("Post OP STARTED: {0}".format(i))
-          node_status = self.get_node_status(i)
-          # if we had 2 racing tasks and one finished no need to go through rigamarole
-          # of re-enqueeuing children
-          if (node_status == NS.FINISHED):
-            return
-          self.set_node_status(i, NS.POST_OP)
-          inst_block = self.inst_blocks[i]
-          if (ret_code == PS.EXCEPTION and tb != None):
-            #print("EXCEPTION ")
-            #print(inst_block)
-            self.handle_exception(" EXCEPTION", tb=tb, block=i)
-          children = self.children[i]
-          parents = self.parents[i]
-          ready_children = []
-          for child in children:
-            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), "STILL IN POST OP")
-            t = time.time()
-            my_child_edge = self._edge_key(i,child)
-            child_edge_sum_key = self._node_edge_sum_key(child)
-            #print("CHILD EDGE SUM KEY ", child_edge_sum_key)
-            #self.set_edge_status(i, child, ES.READY)
-            # redis transaction should be atomic
-            tp = fs.ThreadPoolExecutor(1)
-            val_future = tp.submit(conditional_increment, child_edge_sum_key, my_child_edge, ip=self.redis_ip)
-            #val_future = tp.submit(atomic_sum, parent_keys, ip=self.redis_ip)
-            done, not_done = fs.wait([val_future], timeout=60)
-            if len(done) == 0:
-              raise Exception("Redis Atomic Set and Sum timed out!")
-            val = val_future.result()
-            #print("parent_sum is ", val)
-            #print("expected is ", len(self.parents[child]))
-            #print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
-            if (val == len(self.parents[child]) and self.get_node_status(child) != NS.FINISHED):
-              ready_children.append(child)
-              self.set_node_status(child, NS.READY)
-            e = time.time()
-            #print("redis dep check time", e - t)
-
-          # clear result() blocks
-
-
-          if (self.eager == True and len(ready_children) >=  1):
-              max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
-              next_pc = ready_children[max_priority_idx]
-              eager_child = ready_children[max_priority_idx]
-              del ready_children[max_priority_idx]
-          else:
-            next_pc = None
-            eager_child = None
-
-          # move the highest priority job thats ready onto the local task queue
-          # this is JRK's idea of dynamic node fusion or eager scheduling
-          # the idea is that if we do something like a local cholesky decomposition
-          # we would run its highest priority child *locally* by adding the instructions to the local instruction queue
-          # this has 2 key benefits, first we completely obliviete scheduling overhead between these two nodes but also because of the local LRU cache the first read of this node will be saved this will translate
-
-          session = aiobotocore.get_session(loop=loop)
-          client = boto3.client('sqs', region_name='us-west-2')
-          # this should NEVER happen...
-          assert (i in ready_children) == False
-          for child in ready_children:
-            #print("Adding {0} to sqs queue".format(child))
-            async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
-              print("SENDING MESSAGE.. {0}".format(child))
-              resp = await sqs_client.send_message(QueueUrl=self.queue_urls[self.inst_blocks[child].priority], MessageBody=str(child))
-              print(resp)
-              await asyncio.sleep(5)
-            if (REDIS_CLIENT == None):
-              REDIS_CLIENT = redis.StrictRedis(ip=REDIS_IP, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
-              #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), str(resp))
-
-          #print("Profile started: {0}".format(i))
-          profile_start = time.time()
-          self.inst_blocks[i].end_time = time.time()
-          self.inst_blocks[i].clear()
-          await self.set_profiling_info(i)
-          profile_end = time.time()
-          profile_time = profile_end - profile_start
-          post_op_end = time.time()
-          post_op_time = post_op_end - post_op_start
-          #print("Post finished : {0}, took {1}".format(i, post_op_time))
-          return next_pc
-        except Exception as e:
-            #print("POST OP EXCEPTION ", e)
-            #print(self.inst_blocks[i])
-            # clear all intermediate state
-            tb = traceback.format_exc()
-            traceback.print_exc()
-            raise
-
     #@profile
-    def post_op(self, i, ret_code, tb=None):
+    def post_op(self, i, ret_code, inst_block, tb=None):
         # need clean post op logic to handle
         # replays
         # avoid double increments
@@ -727,7 +685,6 @@ class LambdaPackProgram(object):
           if (node_status == NS.FINISHED):
             return
           self.set_node_status(i, NS.POST_OP)
-          inst_block = self.inst_blocks[i]
           if (ret_code == PS.EXCEPTION and tb != None):
             #print("EXCEPTION ")
             #print(inst_block)
@@ -761,7 +718,7 @@ class LambdaPackProgram(object):
 
           # clear result() blocks
           if (self.eager == True and len(ready_children) >=  1):
-              max_priority_idx = max(range(len(ready_children)), key=lambda i: self.inst_blocks[ready_children[i]].priority)
+              max_priority_idx = max(range(len(ready_children)), key=lambda i: self.priorities[i])
               next_pc = ready_children[max_priority_idx]
               eager_child = ready_children[max_priority_idx]
               del ready_children[max_priority_idx]
@@ -780,18 +737,18 @@ class LambdaPackProgram(object):
           assert (i in ready_children) == False
           for child in ready_children:
             #print("Adding {0} to sqs queue".format(child))
-            resp = client.send_message(QueueUrl=self.queue_urls[self.inst_blocks[child].priority], MessageBody=str(child))
+            resp = client.send_message(QueueUrl=self.queue_urls[self.priorities[child]], MessageBody=str(child))
             if (REDIS_CLIENT == None):
               REDIS_CLIENT = redis.StrictRedis(ip=REDIS_IP, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
               #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
             REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), str(resp))
 
-          #print("Profile started: {0}".format(i))
           profile_start = time.time()
-          self.inst_blocks[i].end_time = time.time()
-          self.inst_blocks[i].clear()
-          self.set_profiling_info(i)
+          inst_block.end_time = time.time()
+          inst_block.clear()
+          self.set_profiling_info(i, inst_block)
           profile_end = time.time()
+          #print("Profile started: {0}".format(i))
           profile_time = profile_end - profile_start
           #print("Profile finished: {0} took {1}".format(i, profile_time))
           post_op_end = time.time()
@@ -813,17 +770,15 @@ class LambdaPackProgram(object):
         sqs = boto3.resource('sqs')
         for starter in self.starters:
           #print("Enqueuing ", starter)
-          inst_block = self.inst_blocks[starter]
           self.set_node_status(starter, NS.READY)
-          priority = inst_block.priority
+          priority = self.priorities[starter]
           queue = sqs.Queue(self.queue_urls[priority])
           queue.send_message(MessageBody=str(starter))
-
         return 0
 
     def handle_exception(self, error, tb, block):
         client = boto3.client('s3')
-        client.put_object(Key=self.hash + "/EXCEPTION.{0}".format(block), Bucket=self.bucket, Body=tb + str(error))
+        client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTION.{0}".format(block), Bucket=self.bucket, Body=tb + str(error))
         e = PS.EXCEPTION.value
         put(self.hash, e, ip=self.redis_ip)
 
@@ -889,24 +844,23 @@ class LambdaPackProgram(object):
           client.delete_queue(QueueUrl=queue_url)
 
     def get_all_profiling_info(self):
-        return [self.get_profiling_info(i) for i in range(len(self.inst_blocks))]
+        return [self.get_profiling_info(i) for i in range(self.num_inst_blocks)]
 
     def get_profiling_info(self, pc):
         try:
           client = boto3.client('s3')
-          byte_string = client.get_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc))["Body"].read()
+          byte_string = client.get_object(Bucket=self.bucket, Key="{0}/{1}/{2}".format("lambdapack", self.hash, pc))["Body"].read()
           return pickle.loads(byte_string)
         except:
           print("key {0}/{1} not found in bucket {2}".format(self.hash, pc, self.bucket))
 
 
 
-    def set_profiling_info(self, pc):
-        inst_block = self.inst_blocks[pc]
+    def set_profiling_info(self, pc, inst_block):
         serializer = serialize.SerializeIndependent()
         byte_string = serializer([inst_block])[0][0]
         client = boto3.client('s3', region_name='us-west-2')
-        client.put_object(Bucket=self.bucket, Key="{0}/{1}".format(self.hash, pc), Body=byte_string)
+        client.put_object(Bucket=self.bucket, Key="{0}/{1}/{2}".format("lambdapack", self.hash, pc), Body=byte_string)
 
 
     def _io_dependency_analyze(self, instruction_blocks, barrier_look_ahead=2):
@@ -940,6 +894,7 @@ class LambdaPackProgram(object):
         return
       for node in nodes:
          self.inst_blocks[node].priority = max(min(priority, self.max_priority), self.inst_blocks[node].priority)
+         self.priorities[node] = self.inst_blocks[node].priority
          self._recursive_priority_donate(self.parents[node], priority - 1)
 
 
@@ -968,9 +923,11 @@ class LambdaPackProgram(object):
         current_node = longest_paths[current_node]
       return longest_path
 
+    '''
     def __str__(self):
       return "\n".join([str(i) + "\n" + str(x) + "children: \n" + str(self.children[i]) + "\n parents: \n" + str(self.parents[i]) for i,x in enumerate(self.inst_blocks)])
 
+    '''
 
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     L_load = RemoteLoad(pc, L_in, b0, b1)
@@ -1100,10 +1057,16 @@ def _chol(X, out_bucket=None):
 
 
 def perf_profile(blocks, num_bins=100):
+    print(blocks)
     READ_INSTRUCTIONS = [OC.S3_LOAD]
     WRITE_INSTRUCTIONS = [OC.S3_WRITE, OC.RET]
     COMPUTE_INSTRUCTIONS = [OC.SYRK, OC.TRSM, OC.INVRS, OC.CHOL]
     # first flatten into a single instruction list
+    instructions_full = [inst for block in blocks for inst in block.instrs]
+    print("start")
+    print(instructions_full[0].start_time)
+    print("end")
+    print(instructions_full[0].end_time)
     instructions = [inst for block in blocks for inst in block.instrs if inst.end_time != None and inst.start_time != None]
     start_times = [inst.start_time for inst in instructions]
     end_times = [inst.end_time for inst in instructions]

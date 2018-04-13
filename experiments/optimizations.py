@@ -23,6 +23,7 @@ import seaborn as sns
 from pylab import plt
 import logging
 import copy
+import pywren.wrenconfig as wc
 
 
 REDIS_IP = os.environ.get("REDIS_IP", "")
@@ -32,7 +33,7 @@ INFO_FREQ = 5
 
 ''' OSDI numpywren optimization effectiveness experiments '''
 
-def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy):
+def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone):
     # set up logging
     logger = logging.getLogger()
     for key in logging.Logger.manager.loggerDict:
@@ -52,7 +53,19 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     logger.info("Logging to {0}".format(log_file))
 
     X = np.random.randn(problem_size, 1)
-    pwex = pywren.default_executor()
+    if standalone:
+        redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", ""), "AWS_ACCESS_KEY_ID" : "AKIAIV3ENRQOI3FET2YA", "AWS_SECRET_ACCESS_KEY": "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", "OMP_NUM_THREADS":"1"}
+        config = wc.default()
+        config['runtime']['s3_bucket'] = 'pictureweb'
+        config['runtime']['s3_key'] = 'pywren.runtime/pywren_runtime-3.6-numpywren_avx512.tar.gz'
+        pwex = pywren.standalone_executor(config=config)
+    else:
+        redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
+        config = wc.default()
+        config['runtime']['s3_bucket'] = 'pictureweb'
+        config['runtime']['s3_key'] = 'pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz'
+        pwex = pywren.default_executor(config=config)
+
     shard_sizes = [shard_size, 1]
     X_sharded = BigMatrix("cholesky_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True)
     shard_matrix(X_sharded, X)
@@ -77,7 +90,6 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     config = pwex.config
 
     program = lp.LambdaPackProgram(instructions, executor=pywren.lambda_executor, pywren_config=config, num_priorities=num_priorities, eager=eager)
-    redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
 
 
     done_counts = []
@@ -127,6 +139,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     t = time.time()
     logger.info("Starting with {0} cores".format(start_cores))
     all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=redis_env)
+   # print([f.result() for f in all_futures])
     start_time = time.time()
     last_run_time = start_time
 
@@ -212,7 +225,9 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
 
 
     exp["all_futures"] = all_futures
-    for pc, block in enumerate(program.inst_blocks):
+    doubles = 0
+
+    for pc in range(program.num_inst_blocks):
         run_count = REDIS_CLIENT.get("{0}_{1}_start".format(program.hash, pc))
         if (run_count is None):
             run_count = 0
@@ -221,7 +236,10 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
 
         if (run_count != 1):
             logger.info("PC: {0}, Run Count: {1}".format(pc, run_count))
+            doubles += 1
 
+    print("Number of repeats: {0}".format(doubles))
+    time.sleep(30)
     e = time.time()
     logger.info(program.program_status())
     logger.info("PROGRAM STATUS " + str(program.program_status()))
@@ -230,7 +248,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     # collect in
     executor = fs.ThreadPoolExecutor(72)
     futures = []
-    for i in range(0,len(program.inst_blocks),1):
+    for i in range(0,program.num_inst_blocks,1):
         futures.append(executor.submit(program.get_profiling_info, i))
     res = fs.wait(futures)
     profiled_blocks = [f.result() for f in futures]
@@ -270,8 +288,9 @@ if __name__ == "__main__":
     parser.add_argument('--priority', action='store_true')
     parser.add_argument('--lru', action='store_true')
     parser.add_argument('--eager', action='store_true')
+    parser.add_argument('--standalone', action='store_true')
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone)
 
 
 

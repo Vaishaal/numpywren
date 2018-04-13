@@ -38,7 +38,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     for key in logging.Logger.manager.loggerDict:
         logging.getLogger(key).setLevel(logging.CRITICAL)
     logger.setLevel(logging.DEBUG)
-    arg_bytes = pickle.dumps((problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy))
+    arg_bytes = pickle.dumps((problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, failure_percentage, max_failure_events, failure_time))
     arg_hash = hashlib.md5(arg_bytes).hexdigest()
     log_file = "optimization_experiments/{0}.log".format(arg_hash)
     fh = logging.FileHandler(log_file)
@@ -127,7 +127,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     program.start()
     t = time.time()
     logger.info("Starting with {0} cores".format(start_cores))
-    failure_keys = ["{0}_failure_{1}".format(program.hash, i) for i in range(start_cores)]
+    failure_keys = ["{0}_failure_{1}_{2}".format(program.hash, i, 0) for i in range(start_cores)]
     all_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=redis_env)
     start_time = time.time()
     last_run_time = start_time
@@ -197,7 +197,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             if (time_since_launch > launch_granularity and up_workers < np.ceil(waiting*0.5/pipeline_width) and up_workers < max_cores):
                 cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
                 logger.info("launching {0} new tasks....".format(cores_to_launch))
-                failure_keys = ["{0}_failure_{1}".format(program.hash, i) for i in range(cores_to_launch)]
+                failure_keys = ["{0}_failure_{1}_{2}".format(program.hash, i, curr_time) for i in range(cores_to_launch)]
                 new_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
                 last_run_time = time.time()
                 # check if we OOM-erred
@@ -207,7 +207,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             if (time_since_launch > (0.75*timeout)):
                 cores_to_launch = max_cores
                 logger.info("launching {0} new tasks....".format(cores_to_launch))
-                failure_keys = ["{0}_failure_{1}".format(program.hash, i) for i in range(cores_to_launch)]
+                failure_keys = ["{0}_failure_{1}_{2}".format(program.hash, i, curr_time) for i in range(cores_to_launch)]
                 new_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
                 last_run_time = time.time()
                 # check if we OOM-erred
