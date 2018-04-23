@@ -1190,7 +1190,7 @@ def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
 
 
 
-def _trisolve(A, B, lower=False, reduce_width=20000, out_bucket=None):
+def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):
     if out_bucket is None:
         out_bucket = A.bucket
     out_key = generate_key_name_binop(A, B, "trisolve")
