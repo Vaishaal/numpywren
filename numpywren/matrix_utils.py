@@ -60,9 +60,11 @@ def chunk(l, n):
         yield l[i:i + n]
 
 def generate_key_name_binop(X, Y, op):
-    assert op == "gemm"
+    assert op == "gemm" or op == "trisolve"
     if (op == "gemm"):
         key = "gemm({0}, {1})".format(str(X), str(Y))
+    elif (op == "trisolve"):
+        key = "trisolve({0}, {1})".format(str(X), str(Y))
     return key
 
 def generate_key_name_uop(X, op):

@@ -110,7 +110,7 @@ def chol(pwex, X, out_bucket=None, tasks_per_job=1):
     futures = program.start()
     [f.result() for f in futures]
     program.wait()
-    if (program.program_status() != lp.EC.SUCCESS):
+    if (program.program_status() != lp.PS.SUCCESS):
         program.unwind()
         raise Exception("Lambdapack Exception : {0}".format(program.program_status()))
 
