@@ -37,8 +37,8 @@ try:
 except:
   DEFAULT_CONFIG = {}
 
-REDIS_IP = "127.0.0.1"
-REDIS_PASS = os.environ.get("REDIS_PASS", "")
+REDIS_IP = "54.187.11.222"
+REDIS_PASS = os.environ.get("REDIS_PASS", "aaf38919292279d6d10868b24b2fcad76395baaa1895e5743fb38644aafb43d3")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 REDIS_CLIENT = None
 
@@ -1190,7 +1190,7 @@ def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
 
 
 
-def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):
+def _trisolve(A, B, lower=False, reduce_width=20000, out_bucket=None):
     if out_bucket is None:
         out_bucket = A.bucket
     out_key = generate_key_name_binop(A, B, "trisolve")
@@ -1231,7 +1231,7 @@ def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):
                 all_instructions.append(instructions)
                 pc += count
 
-            if end - start >= 1:
+            if end - start > 1:
                 shard_sizes = scratch[i].submatrix(j, j).shape
                 row_len = end - start
                 reduce_blocks = BigMatrix(
