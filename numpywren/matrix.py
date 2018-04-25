@@ -291,7 +291,7 @@ class BigMatrix(object):
             print(key)
             raise Exception("Key does {0} not exist, and no parent function prescripted")
         elif (not exists and self.parent_fn != None):
-            X_block = self.parent_fn(self, *block_idx)
+            X_block = await self.parent_fn(self, loop, *block_idx)
         else:
             bio = await self.__s3_key_to_byte_io__(key, loop=loop)
             X_block = np.load(bio)

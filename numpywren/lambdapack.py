@@ -38,8 +38,8 @@ try:
 except:
   DEFAULT_CONFIG = {}
 
-REDIS_IP = os.environ.get("REDIS_IP", "127.0.0.1")
-REDIS_PASS = os.environ.get("REDIS_PASS", "")
+REDIS_IP = "54.187.11.222"
+REDIS_PASS = os.environ.get("REDIS_PASS", "aaf38919292279d6d10868b24b2fcad76395baaa1895e5743fb38644aafb43d3")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 REDIS_CLIENT = None
 
@@ -53,9 +53,10 @@ class RemoteInstructionOpCodes(Enum):
     SUB = 6 
     CHOL = 7 
     INVRS = 8 
-    RET = 9
-    BARRIER = 10
-    EXIT = 11
+    EXP = 9
+    RET = 10
+    BARRIER = 11
+    EXIT = 12
 
 
 class NodeStatus(Enum):
@@ -412,6 +413,59 @@ class RemoteSub(RemoteInstruction):
 
     def __str__(self):
         return "{0} = SUB {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
+
+
+class RemoteAdd(RemoteInstruction):
+    def __init__(self, i_id, argv_instr):
+        super().__init__(i_id)
+        self.i_code = OC.ADD
+        assert len(argv_instr) == 2 
+        self.argv = argv_instr
+        self.result = None
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
+        def compute():
+          self.start_time = time.time()
+          if self.result is None:
+              block_1 = self.argv[0].result
+              block_2 = self.argv[1].result
+              self.result = block_1 + block_2 
+              self.flops = block_1.shape[0]*block_1.shape[1]
+              self.ret_code = 0
+          self.end_time = time.time()
+          return self.result
+        return await loop.run_in_executor(self.executor, compute)
+
+    def __str__(self):
+        return "{0} = ADD {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
+
+
+class RemoteExp(RemoteInstruction):
+    def __init__(self, i_id, argv_instr):
+        super().__init__(i_id)
+        self.i_code = OC.EXP
+        assert len(argv_instr) == 1 
+        self.argv = argv_instr
+        self.result = None
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
+        def compute():
+          self.start_time = time.time()
+          if self.result is None:
+              block = self.argv[0].result
+              self.result = np.exp(block)
+              self.flops = block_1.shape[0]*block_1.shape[1]
+              self.ret_code = 0
+          self.end_time = time.time()
+          return self.result
+        return await loop.run_in_executor(self.executor, compute)
+
+    def __str__(self):
+        return "{0} = EXP {1}".format(self.id, self.argv[0].id)
 
 
 class RemoteGemm(RemoteInstruction):
@@ -1049,6 +1103,17 @@ def make_remote_trisolve(pc, X, A, B, lower=False, label=None):
     pc += 1
     return InstructionBlock([block_A, block_B, trsm, write_trisolve], label=label), 4 
 
+def make_remote_add(pc, out, in1, in2, label=None): 
+    block_A = RemoteLoad(pc, in1)
+    pc += 1
+    block_B = RemoteLoad(pc, in2)
+    pc += 1
+    add = RemoteAdd(pc, [block_A, block_B])
+    pc += 1
+    write_add = RemoteWrite(pc, out, add)
+    pc += 1
+    return InstructionBlock([block_A, block_B, add, write_add], label=label), pc 
+
 def make_remote_sub(pc, out, in1, in2, label=None): 
     block_A = RemoteLoad(pc, in1)
     pc += 1
@@ -1069,6 +1134,14 @@ def make_local_cholesky(pc, L_out, L_in, b0, label=None):
     pc += 1
     return InstructionBlock([block_load, cholesky, write_diag], label=label), 4
 
+def make_remote_exp(pc, res, X, label):
+    block_load = RemoteLoad(pc, X)
+    pc += 1
+    exp = RemoteExp(pc, [block_load])
+    pc += 1
+    write = RemoteWrite(pc, res, exp)
+    pc += 1
+    return InstructionBlock([block_load, exp, write], label=label), pc
 
 def make_remote_gemm(pc, XY, X, Y, label=None):
     # assert XY.shape[0] == X.shape[0] and XY.shape[1] == Y.shape[1]
@@ -1145,6 +1218,32 @@ def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
         all_futures.append((i,futures))
     return instruction_blocks
 
+def _add(X, Y, out_bucket=None):
+    if out_bucket is None:
+        out_bucket = X.bucket
+    out_key = generate_key_name_binop(X, Y, "add")
+    # generate output matrix
+    res = BigMatrix(out_key, shape=(X.shape[0], X.shape[1]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[1]], parent_fn=constant_zeros, write_header=True)
+    all_instructions = []
+    pc = 0
+    for idx in X.block_idxs:
+        instructions, pc = make_remote_add(pc, res.submatrix(*idx), X.submatrix(*idx),
+                                           Y.submatrix(*idx), label="exp_{0}".format(idx))
+        all_instructions.append(instructions)
+    return all_instructions, res 
+
+def _exp(X, out_bucket=None):
+    if out_bucket is None:
+        out_bucket = X.bucket
+    out_key = generate_key_name_uop(X, "exp")
+    # generate output matrix
+    res = BigMatrix(out_key, shape=(X.shape[0], X.shape[1]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[1]], parent_fn=constant_zeros, write_header=True)
+    all_instructions = []
+    pc = 0
+    for idx in X.block_idxs:
+        instructions, pc = make_remote_exp(pc, res.submatrix(*idx), X.submatrix(*idx), label="exp_{0}".format(idx))
+        all_instructions.append(instructions)
+    return all_instructions, res 
 
 
 def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):

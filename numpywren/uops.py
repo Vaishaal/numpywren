@@ -88,7 +88,21 @@ def tan(pwex, X, out_bucket=None, tasks_per_job=1):
     raise NotImplementedError
 
 def exp(pwex, X, out_bucket=None, tasks_per_job=1):
-    raise NotImplementedError
+    instructions, L_sharded = lp._exp(X)
+    config = pwex.config
+    if (isinstance(pwex.invoker, pywren.queues.SQSInvoker)):
+        executor = pywren.standalone_executor
+    else:
+        executor = pywren.lambda_executor
+    program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+    futures = program.start()
+    [f.result() for f in futures]
+    program.wait()
+    if (program.program_status() != lp.PS.SUCCESS):
+        program.unwind()
+        raise Exception("Lambdapack Exception : {0}".format(program.program_status()))
+
+    return L_sharded
 
 def sign(pwex, X, out_bucket=None, tasks_per_job=1):
     raise NotImplementedError

@@ -21,9 +21,8 @@ import tracemalloc
 import copy
 import random
 
-
-REDIS_IP = os.environ.get("REDIS_IP", "127.0.0.1")
-REDIS_PASS = os.environ.get("REDIS_PASS", "")
+REDIS_IP = "54.187.11.222"
+REDIS_PASS = os.environ.get("REDIS_PASS", "aaf38919292279d6d10868b24b2fcad76395baaa1895e5743fb38644aafb43d3")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 REDIS_CLIENT = None
 

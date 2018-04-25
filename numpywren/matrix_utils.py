@@ -60,18 +60,22 @@ def chunk(l, n):
         yield l[i:i + n]
 
 def generate_key_name_binop(X, Y, op):
-    assert op == "gemm" or op == "trisolve"
+    assert op == "gemm" or op == "trisolve" or op == "add"
     if (op == "gemm"):
         key = "gemm({0}, {1})".format(str(X), str(Y))
     elif (op == "trisolve"):
         key = "trisolve({0}, {1})".format(str(X), str(Y))
+    elif (op == "add"):
+        key = "add({0}, {1})".format(str(X), str(Y))
     return key
 
 def generate_key_name_uop(X, op):
-    assert op == "chol"
-    if (op == "chol"):
+    assert op == "chol" or op == "exp"
+    if op == "chol":
         key = "chol({0})".format(str(X))
-        return key
+    elif op == "exp":
+        key = "exp({0})".format(str(X))
+    return key
 
 def generate_key_name_local_matrix(X_local):
     return hash_array(X_local)
