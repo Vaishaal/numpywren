@@ -70,7 +70,10 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     X_sharded = BigMatrix("cholesky_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True)
     shard_matrix(X_sharded, X)
     print("Generating PSD matrix...")
+    t = time.time()
     XXT_sharded = binops.gemm(pwex, X_sharded, X_sharded.T, overwrite=False)
+    e = time.time()
+    print("GEMM took {0}".format(e - t))
     XXT_sharded.lambdav = problem_size*10
     instructions ,L_sharded,trailing= lp._chol(XXT_sharded)
     pipeline_width = args.pipeline
@@ -105,7 +108,8 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     flops = []
     reads = []
     writes = []
-
+    print("LRU", lru)
+    print("eager", eager)
     exp = {}
     exp["redis_done_counts"] = done_counts
     exp["redis_ready_counts"] = ready_counts
@@ -132,6 +136,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["launch_granularity"] = launch_granularity
     exp["log_granularity"] = log_granularity
     exp["autoscale_policy"] = autoscale_policy 
+    exp["standalone"] = standalone 
 
 
     logger.info("Longest Path: {0}".format(program.longest_path))
@@ -212,7 +217,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
                # [x.result() for x in all_futures]
                 all_futures.extend(new_futures)
         elif (autoscale_policy == "constant_timeout"):
-            if (time_since_launch > (0.75*timeout)):
+            if (time_since_launch > (0.99*timeout)):
                 cores_to_launch = max_cores
                 logger.info("launching {0} new tasks....".format(cores_to_launch))
                 new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
@@ -235,12 +240,12 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             run_count = int(run_count)
 
         if (run_count != 1):
-            logger.info("PC: {0}, Run Count: {1}".format(pc, run_count))
+            logger.warn("PC: {0}, Run Count: {1}".format(pc, run_count))
             doubles += 1
 
     print("Number of repeats: {0}".format(doubles))
-    time.sleep(30)
     e = time.time()
+    time.sleep(10)
     logger.info(program.program_status())
     logger.info("PROGRAM STATUS " + str(program.program_status()))
     logger.info("PROGRAM HASH " + str(program.hash))

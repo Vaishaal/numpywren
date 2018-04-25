@@ -286,7 +286,6 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     session = aiobotocore.get_session(loop=loop)
     # every pipelined worker gets its own copy of program so we don't step on eachothers toes!
     #snapshot_before = tracemalloc.take_snapshot()
-    program = copy.deepcopy(program)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
     #snapshot_after = tracemalloc.take_snapshot()
     #top_stats = snapshot_after.compare_to(snapshot_before, 'lineno')

@@ -348,6 +348,7 @@ class RemoteSYRK(RemoteInstruction):
           self.ret_code = 0
           self.end_time = time.time()
           return self.result
+
         return await loop.run_in_executor(self.executor, compute)
 
     def get_flops(self):
@@ -641,7 +642,7 @@ class LambdaPackProgram(object):
        Maintains global state information
     '''
 
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9, eager=False, num_program_shards=1000):
+    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9, eager=False, num_program_shards=5000):
         t = time.time()
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
@@ -727,8 +728,8 @@ class LambdaPackProgram(object):
     def _shard_program(self, num_cores=32):
         print("serializing program before sharding")
         t = time.time()
-        serializer = serialize.SerializeIndependent()
-        serialized_blocks, modules = serializer(self.inst_blocks)
+        executor = fs.ProcessPoolExecutor(num_cores)
+        serialized_blocks = [pickle.dumps(x) for x in self.inst_blocks]
         program_shard_dict = defaultdict(list)
         for i, serialized_block in enumerate(serialized_blocks):
           idx_in_shard = len(program_shard_dict[(i % self.num_program_shards)])
@@ -737,7 +738,6 @@ class LambdaPackProgram(object):
           program_shard_dict[shard_idx].append(serialized_block)
           self.program_shard_map[i] = (shard_idx, idx_in_shard)
         print("sharding program")
-        executor = fs.ProcessPoolExecutor(num_cores)
         futures = []
         for key,value in program_shard_dict.items():
           out_key = "{0}/{1}/{2}".format("lambdapack", self.hash, "program_shard_{0}".format(key))
@@ -1383,16 +1383,11 @@ def _chol(X, out_bucket=None):
 
 
 def perf_profile(blocks, num_bins=100):
-    print(blocks)
     READ_INSTRUCTIONS = [OC.S3_LOAD]
     WRITE_INSTRUCTIONS = [OC.S3_WRITE, OC.RET]
     COMPUTE_INSTRUCTIONS = [OC.SYRK, OC.TRSM, OC.INVRS, OC.CHOL]
     # first flatten into a single instruction list
     instructions_full = [inst for block in blocks for inst in block.instrs]
-    print("start")
-    print(instructions_full[0].start_time)
-    print("end")
-    print(instructions_full[0].end_time)
     instructions = [inst for block in blocks for inst in block.instrs if inst.end_time != None and inst.start_time != None]
     start_times = [inst.start_time for inst in instructions]
     end_times = [inst.end_time for inst in instructions]
