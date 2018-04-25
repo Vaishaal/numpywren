@@ -1064,11 +1064,10 @@ class LambdaPackProgram(object):
         current_node = longest_paths[current_node]
       return longest_path
 
-    '''
+    """
     def __str__(self):
       return "\n".join([str(i) + "\n" + str(x) + "children: \n" + str(self.children[i]) + "\n parents: \n" + str(self.parents[i]) for i,x in enumerate(self.inst_blocks)])
-
-    '''
+    """
 
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     L_load = RemoteLoad(pc, L_in, b0, b1)
@@ -1228,7 +1227,7 @@ def _add(X, Y, out_bucket=None):
     pc = 0
     for idx in X.block_idxs:
         instructions, pc = make_remote_add(pc, res.submatrix(*idx), X.submatrix(*idx),
-                                           Y.submatrix(*idx), label="exp_{0}".format(idx))
+                                           Y.submatrix(*idx), label="add_{0}".format(idx))
         all_instructions.append(instructions)
     return all_instructions, res 
 
