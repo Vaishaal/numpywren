@@ -40,7 +40,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     logger.setLevel(logging.DEBUG)
     arg_bytes = pickle.dumps((problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, failure_percentage, max_failure_events, failure_time))
     arg_hash = hashlib.md5(arg_bytes).hexdigest()
-    log_file = "optimization_experiments/{0}.log".format(arg_hash)
+    log_file = "failure_experiments/{0}.log".format(arg_hash)
     fh = logging.FileHandler(log_file)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     fh.setFormatter(formatter)
@@ -197,8 +197,8 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             if (time_since_launch > launch_granularity and up_workers < np.ceil(waiting*0.5/pipeline_width) and up_workers < max_cores):
                 cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
                 logger.info("launching {0} new tasks....".format(cores_to_launch))
-                failure_keys = ["{0}_failure_{1}_{2}".format(program.hash, i, curr_time) for i in range(cores_to_launch)]
-                new_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
+                _failure_keys = ["{0}_failure_{1}_{2}".format(program.hash, i, curr_time) for i in range(cores_to_launch)]
+                new_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(_failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
                 last_run_time = time.time()
                 # check if we OOM-erred
                # [x.result() for x in all_futures]
@@ -207,9 +207,10 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             if (time_since_launch > (0.75*timeout)):
                 cores_to_launch = max_cores
                 logger.info("launching {0} new tasks....".format(cores_to_launch))
-                failure_keys = ["{0}_failure_{1}_{2}".format(program.hash, i, curr_time) for i in range(cores_to_launch)]
-                new_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
+                _failure_keys = ["{0}_failure_{1}_{2}".format(program.hash, i, curr_time) for i in range(cores_to_launch)]
+                new_futures = pwex.map(lambda x: job_runner.lambdapack_run_with_failures(_failure_keys[x], program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=redis_env)
                 last_run_time = time.time()
+                failure_keys += _failure_keys
                 # check if we OOM-erred
                # [x.result() for x in all_futures]
                 all_futures.extend(new_futures)
@@ -232,7 +233,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
 
 
     exp["all_futures"] = all_futures
-    for pc, block in enumerate(program.inst_blocks):
+    for pc in range(program.num_inst_blocks):
         run_count = REDIS_CLIENT.get("{0}_{1}_start".format(program.hash, pc))
         if (run_count is None):
             run_count = 0
@@ -252,7 +253,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     # collect in
     executor = fs.ThreadPoolExecutor(72)
     futures = []
-    for i in range(0,len(program.inst_blocks),1):
+    for i in range(0,program.num_inst_blocks,1):
         futures.append(executor.submit(program.get_profiling_info, i))
     res = fs.wait(futures)
     profiled_blocks = [f.result() for f in futures]
@@ -266,11 +267,11 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     print("Average Flop rate of {0}".format(flop_rate))
     # save other stuff
     try:
-        os.mkdir("optimization_experiments/")
+        os.mkdir("failure_experiments/")
     except FileExistsError:
         pass
     exp_bytes = pickle.dumps(exp)
-    dump_path = "optimization_experiments/{0}.pickle".format(arg_hash)
+    dump_path = "failure_experiments/{0}.pickle".format(arg_hash)
     print("Dumping experiment pickle to {0}".format(dump_path))
     with open(dump_path, "wb+") as f:
         f.write(exp_bytes)
@@ -286,11 +287,11 @@ if __name__ == "__main__":
     parser.add_argument('--pipeline', type=int, default=1)
     parser.add_argument('--failure_percentage', type=float, default=0.25)
     parser.add_argument('--max_failure_events', type=float, default=1)
-    parser.add_argument('--failure_time', type=int, default=250)
+    parser.add_argument('--failure_time', type=int, default=60)
     parser.add_argument('--timeout', type=int, default=200)
-    parser.add_argument('--autoscale_policy', type=str, default="constant_timeout")
+    parser.add_argument('--autoscale_policy', type=str, default="dynamic")
     parser.add_argument('--log_granularity', type=int, default=1)
-    parser.add_argument('--launch_granularity', type=int, default=60)
+    parser.add_argument('--launch_granularity', type=int, default=10)
     parser.add_argument('--trial', type=int, default=0)
     parser.add_argument('--priority', action='store_true')
     parser.add_argument('--lru', action='store_true')
