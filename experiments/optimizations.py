@@ -26,7 +26,7 @@ import copy
 import pywren.wrenconfig as wc
 
 
-REDIS_IP = os.environ.get("REDIS_IP", "")
+REDIS_IP = os.environ.get("REDIS_IP", "127.0.0.1")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 INFO_FREQ = 5

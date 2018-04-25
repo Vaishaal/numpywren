@@ -12,6 +12,8 @@ import pywren
 from pywren.executor import Executor
 from scipy.linalg import cholesky, solve
 import time
+from . import lambdapack as lp
+from . import job_runner 
 
 
 def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
@@ -218,4 +220,30 @@ def xor(pwex, X, Y, out_bucket=None, tasks_per_job=1):
 
 def elemwise_binop_func(pwex, X, Y, f, out_bucket=None, tasks_per_job=1, local=False):
     raise NotImplementedError
+
+def trisolve(pwex, A, B, out_bucket=None, tasks_per_job=1, lower=False):
+    if (out_bucket == None):
+        out_bucket = A.bucket
+
+    root_key = generate_key_name_binop(A, B, "trisolve")
+    instructions, X, scratch = lp._trisolve(A, B, out_bucket=out_bucket, lower=lower)
+    config = pwex.config
+    # if (isinstance(pwex.invoker, pywren.queues.SQSInvoker)):
+    #     executor = pywren.standalone_executor
+    # else:
+    executor = pywren.lambda_executor
+    program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+    print(program)
+    #assert False
+    program.start()
+    job_runner.lambdapack_run(program)
+    program.wait()
+    if program.program_status() != lp.PS.SUCCESS:
+        program.unwind()
+        raise Exception("Lambdapack Exception : {0}".format(program.program_status()))
+    program.free()
+
+    # delete all intermediate information
+    [M.free() for M in scratch] 
+    return X 
 
