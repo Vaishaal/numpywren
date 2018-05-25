@@ -1,0 +1,14 @@
+s3:
+    bucket: BUCKET_NAME
+    prefix: DEFAULT_PREFIX
+    # by default objects will expire in 24hours
+    lifespan: 86400
+
+redis:
+    ec2_instance_type: m4.4xlarge
+    target_ami : ami-b04e92d0
+    max_idle_time: 60
+    idle_terminate_granularity: 3600
+
+
+
