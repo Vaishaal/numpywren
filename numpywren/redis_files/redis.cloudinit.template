@@ -7,25 +7,27 @@ packages:
   - emacs
   - gcc
   - g++
-  - git 
+  - git
   - htop
-  
+  - make
+
 runcmd:
   # first and always, cloudwatch agent
   - [ curl,  "https://s3.amazonaws.com/aws-cloudwatch/downloads/latest/awslogs-agent-setup.py", "-O"]
   - chmod +x ./awslogs-agent-setup.py
   - ./awslogs-agent-setup.py -n -r {aws_region} -c /etc/cloud-agent.conf
   - sudo /etc/init.d/ntpd restart
+  - sudo apt-get install make
   - pip install supervisor
   - wget http://download.redis.io/redis-stable.tar.gz
   - tar xvzf redis-stable.tar.gz
-  - make -C redis-stable
-  - [ sudo, -Hu, ec2-user, sh, -c, "ln -s redis-build/src/redis-server /usr/local/bin/"]
-  - [ sudo, -Hu, ec2-user, sh, -c, "ln -s redis-build/src/redis-cli /usr/local/bin/"]
-  - [ sudo, -Hu, ec2-user, sh, -c, "mkdir /etc/redis"]
-  - [ sudo, -Hu, ec2-user, sh, -c, "mkdir /var/redis"]
-  - [ sudo, -Hu, ec2-user, sh, -c, "update-rc.d redis_6379 defaults"]
-  - [ sudo, -Hu, ec2-user, sh, -c, "/etc/init.d/redis_6379 start"]
+  - make -j16 -C redis-stable
+  - sudo ln -s /redis-stable/src/redis-server /usr/local/bin/
+  - sudo ln -s /redis-stable/src/redis-cli /usr/local/bin/
+  - sudo mkdir /etc/redis
+  - sudo mkdir /var/redis
+  - sudo update-rc.d redis_init defaults
+  - sudo /etc/init.d/redis_init start
 
 
 write_files:
@@ -38,7 +40,7 @@ write_files:
 - encoding: b64
   content: {redis_init}
   path: "/etc/init.d/redis_init"
-  permissions: "0644"
+  permissions: "0744"
   owner: root:root
 
 - encoding: b64

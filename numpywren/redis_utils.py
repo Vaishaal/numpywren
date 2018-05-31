@@ -35,7 +35,6 @@ def create_security_group(name="numpywren.group"):
     return group['GroupId']
 
 
-
 def _create_instances(num_instances,
                       region,
                       spot_price,
@@ -162,13 +161,18 @@ def _create_instances(num_instances,
         raise Exception("Launch failure")
 
 
-def launch_and_provision_redis(port=6379, password="potato", spot_price=0.0):
+def launch_and_provision_redis():
     config = npw.config.default()
     pywren_config = wc.default()
     rc = config["redis"]
+    port = rc["port"]
+    spot_price = rc["spot_price"]
+    password = rc["password"]
+    ipn = config["iam"]["instance_profile_name"]
     ami = rc["target_ami"]
     instance_type = rc["ec2_instance_type"]
-    key_name = rc["ec2_ssh_key"]
+    # TODO fix
+    key_name = pywren_config["standalone"]["ec2_ssh_key"]
     aws_region = pywren_config['account']['aws_region']
     availability_zone = rc.get("availability_zone", None)
     redis_conf = open(sd("redis.conf")).read()
@@ -180,7 +184,9 @@ def launch_and_provision_redis(port=6379, password="potato", spot_price=0.0):
     redis_conf_b64 = b64s(redis_conf.format(port=port, password=password))
     redis_init_b64 = b64s(open(sd("redis_init_script")).read().format(port=port))
     user_data = user_data.format(redis_init=redis_init_b64, cloud_agent_conf=cloud_agent_conf_64, redis_conf=redis_conf_b64, aws_region=aws_region)
-    instance_profile_dict = None
+    iam = boto3.resource('iam')
+    instance_profile = iam.InstanceProfile(ipn)
+    instance_profile_dict = {'Name' : instance_profile.name}
     group_id = create_security_group()
     instances = _create_instances(1, aws_region, spot_price, ami=ami, instance_type=instance_type, block_device_mappings=None, security_group_ids=[group_id], ebs_optimized=True, availability_zone=None, instance_profile=instance_profile_dict, user_data=user_data, key_name=key_name)
     inst = instances[0]
@@ -196,6 +202,7 @@ def launch_and_provision_redis(port=6379, password="potato", spot_price=0.0):
             },
         ]
     )
+    return inst.public_ip_address
 
 
 

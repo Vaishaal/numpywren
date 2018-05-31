@@ -8,6 +8,18 @@ from pywren import wrenconfig
 import re
 import yaml
 import boto3
+import json
+import redis
+import time
+
+GIT_URL = "https://github.com/Vaishaal/numpywren"
+NUMPYWREN_SETUP =\
+'''
+Welcome to numpywren setup!
+numpywren is software that allows for seamless large scale linear algebra computation. Please note
+that numpywren is currently research grade software not intended for production use of any sort.
+Are you okay with this?
+'''
 
 
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -84,15 +96,39 @@ def check_valid_bucket_name(bucket_name):
 def cli(ctx, filename):
     ctx.obj = {'config_filename' : filename}
 
-@click.command()
-@click.pass_context
-def control_plane(ctx):
+@click.group()
+def control_plane():
     """
     control_plane subcommand
     """
+    pass
 
-    click.echo("control_plane")
-    redis_utils.launch_and_provision_redis()
+
+@click.command()
+def launch():
+    t = time.time()
+    click.echo("Launching instance...")
+    ip = redis_utils.launch_and_provision_redis()
+    click.echo("Waiting for redis")
+    config = npw.config.default()
+    rc = config["redis"]
+    password = rc["password"]
+    port= rc["port"]
+    redis_client = redis.StrictRedis(host=ip, port=port, password=password)
+    while (True):
+        try:
+            redis_client.ping()
+            break
+        except redis.exceptions.ConnectionError as e:
+            pass
+    e = time.time()
+    click.echo("redis launch took {0} seconds".format(e - t))
+
+
+
+
+
+control_plane.add_command(launch)
 
 @click.command()
 @click.pass_context
@@ -118,6 +154,39 @@ def test_pywren():
     fut = pwex.call_async(hello_world, None)
     res = fut.result()
 
+def create_role(config, role_name):
+    """
+    Creates the IAM profile used by numpywren.
+    """
+
+    iam = boto3.resource('iam')
+    iamclient = boto3.client('iam')
+    pywren_config = wrenconfig.default()
+    roles = [x for x in iamclient.list_roles()["Roles"] if x["RoleName"] == role_name]
+    if (len(roles) == 0):
+        json_policy= json.dumps(npw.config.basic_role)
+        iam.create_role(RoleName=role_name, AssumeRolePolicyDocument=json_policy)
+    AWS_ACCOUNT_ID = pywren_config['account']['aws_account_id']
+    AWS_REGION = pywren_config['account']['aws_region']
+    more_json_policy = json.dumps(npw.config.basic_permissions)
+    more_json_policy = more_json_policy.replace("AWS_ACCOUNT_ID", str(AWS_ACCOUNT_ID))
+    more_json_policy = more_json_policy.replace("AWS_REGION", AWS_REGION)
+
+    iam.RolePolicy(role_name, '{}-more-permissions'.format(role_name)).put(
+    PolicyDocument=more_json_policy)
+
+def create_instance_profile(config, instance_profile_name):
+    instance_profile_name = config['iam']['instance_profile_name']
+    role_name = config['iam']['role_name']
+    iamclient = boto3.client('iam')
+    profiles = [x for x in iamclient.list_instance_profiles()['InstanceProfiles'] if x['InstanceProfileName'] == instance_profile_name]
+    if (len(profiles) == 0):
+        iam = boto3.resource('iam')
+        iam.create_instance_profile(InstanceProfileName=instance_profile_name)
+        instance_profile = iam.InstanceProfile(instance_profile_name)
+        instance_profile.add_role(RoleName=role_name)
+
+
 @click.command()
 @click.pass_context
 def interactive_setup(ctx):
@@ -138,8 +207,9 @@ def interactive_setup(ctx):
         """
         return "{}{}".format(key, suffix)
 
-
-    click.echo("This is the numpywren interactive setup script")
+    ok = click.confirm(NUMPYWREN_SETUP, default=True)
+    if (not ok):
+        return
     click.echo("Testing pywren is correctly installed...")
     try:
         test_pywren()
@@ -152,8 +222,9 @@ def interactive_setup(ctx):
     # if config file exists, ask before overwriting
     config_filename = click_validate_prompt(
         "Location for config file: ",
-        default=npw.config.get_default_home_filename(),
-        validate_func=check_overwrite_function)
+        default=npw.config.get_default_home_filename())
+
+    overwrite = check_overwrite_function(config_filename)
     config_filename = os.path.expanduser(config_filename)
 
     s3_bucket = click_validate_prompt(
@@ -170,10 +241,15 @@ def interactive_setup(ctx):
     prefix = click_validate_prompt(
         "numpywren s3 prefix: ",
         default=npw.config.AWS_S3_PREFIX_DEFAULT)
+    if (overwrite):
+        default_yaml = yaml.safe_load(open(os.path.join(SOURCE_DIR, "../default_config.yaml")))
+    else:
+        default_yaml = yaml.safe_load(open(config_filename))
 
-    default_yaml = yaml.safe_load(open(os.path.join(SOURCE_DIR, "../default_config.yaml")))
     default_yaml["s3"]["bucket"] = s3_bucket
     default_yaml["s3"]["prefix"] = prefix
+    default_yaml["iam"]["role_name"] = npw.config.AWS_ROLE_DEFAULT
+    default_yaml["iam"]["instance_profile_name"] = npw.config.AWS_INSTANCE_PROFILE_DEFAULT
     config_advanced = click.confirm(
         "Would you like to configure advanced numpywren properties?", default=False)
     if (config_advanced):
@@ -184,7 +260,13 @@ def interactive_setup(ctx):
         runtime_key = click_validate_prompt("What is the runtime key in above bucket", default=default_yaml["runtime"]["s3_key"])
         default_yaml["runtime"]["bucket"] = runtime_bucket
         default_yaml["runtime"]["s3_key"] = runtime_key
+        role_name = click_validate_prompt("What would you like to name the numpywren iam role which will allow numpywren executors to access your AWS resources", default=default_yaml["iam"]["role_name"])
+        default_yaml["iam"]["role_name"] = role_name
+        instance_profile_name= click_validate_prompt("What would you like to name the numpywren iam instance profile which will allow numpywren executors to access your AWS resources", default=default_yaml["iam"]["instance_profile_name"])
+        default_yaml["iam"]["instance_profile_name"] = instance_profile_name
 
+    create_role(default_yaml, role_name)
+    create_instance_profile(default_yaml, instance_profile_name)
     lifespan = default_yaml["s3"]["lifespan"]
     s3Client = boto3.client('s3')
     s3Client.put_bucket_lifecycle_configuration(
@@ -200,51 +282,6 @@ def interactive_setup(ctx):
         })
     open(config_filename, "w+").write(yaml.dump(default_yaml, default_flow_style=False))
 
-def create_config(bucket_name, bucket_prefix):
-    """
-    Create a config file initialized with the defaults, and
-    put it in your ~/.numpywren_config
-
-    """
-    filename = ctx.obj['config_filename']
-    # copy default config file
-
-    # FIXME check if it exists
-    default_yaml = open(os.path.join(SOURCE_DIR, "../default_config.yaml")).read()
-
-    client = boto3.client("sts")
-    account_id = client.get_caller_identity()["Account"]
-
-    # perform substitutions -- get your AWS account ID and auto-populate
-
-    default_yaml = default_yaml.replace('AWS_ACCOUNT_ID', account_id)
-    default_yaml = default_yaml.replace('AWS_REGION', aws_region)
-    default_yaml = default_yaml.replace('pywren_exec_role', lambda_role)
-    default_yaml = default_yaml.replace('pywren1', function_name)
-    default_yaml = default_yaml.replace('BUCKET_NAME', bucket_name)
-    default_yaml = default_yaml.replace('pywren.jobs', bucket_prefix)
-    default_yaml = default_yaml.replace('pywren-queue', sqs_queue)
-    default_yaml = default_yaml.replace('pywren-standalone', standalone_name)
-    if pythonver not in pywren.wrenconfig.default_runtime:
-        print('No matching runtime package for python version ', pythonver)
-        print('Python 2.7 runtime will be used for remote.')
-        pythonver = '2.7'
-
-    runtime_bucket = 'pywren-public-{}'.format(aws_region)
-    default_yaml = default_yaml.replace("RUNTIME_BUCKET",
-                                        runtime_bucket)
-    k = pywren.wrenconfig.default_runtime[pythonver]
-
-    default_yaml = default_yaml.replace("RUNTIME_KEY", k)
-
-    # print out message about the stuff you need to do
-    if os.path.exists(filename) and not force:
-        raise ValueError("{} already exists; not overwriting (did you need --force?)".format(
-            filename))
-
-    open(filename, 'w').write(default_yaml)
-    click.echo("new default file created in {}".format(filename))
-    click.echo("lambda role is {}".format(lambda_role))
 
 
 
