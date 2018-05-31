@@ -80,8 +80,6 @@ class LambdaPackExecutor(object):
             print("STARTING INSTRUCTION ", pc)
             t = time.time()
             node_status = self.program.get_node_status(pc)
-            #print(node_status)
-            self.program.set_max_pc(pc)
             inst_block = self.program.inst_blocks(pc)
             inst_block.start_time = time.time()
             instrs = inst_block.instrs
@@ -371,20 +369,4 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
         traceback.print_exc()
         raise
     return
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

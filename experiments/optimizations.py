@@ -150,7 +150,6 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
 
     while(program.program_status() == lp.PS.RUNNING):
         curr_time = int(time.time() - start_time)
-        max_pc = program.get_max_pc()
         times.append(int(time.time()))
         time.sleep(log_granularity)
         waiting = 0
@@ -179,7 +178,6 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         logger.debug("Waiting: {0}, Currently Processing: {1}".format(waiting, running))
         logger.debug("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
         if ((curr_time % INFO_FREQ) == 0):
-            logger.info("Max PC is {0}".format(max_pc))
             logger.info("Waiting: {0}, Currently Processing: {1}".format(waiting, running))
             logger.info("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
 

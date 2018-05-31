@@ -77,8 +77,6 @@ time.sleep(10)
 last_run = time.time()
 start_time = time.time()
 while(program.program_status() == lp.PS.RUNNING):
-    max_pc = program.get_max_pc()
-    print("Max PC is {0}".format(max_pc))
     time.sleep(5)
     waiting = 0
     running = 0

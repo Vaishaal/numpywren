@@ -66,7 +66,8 @@ class FailureTests(unittest.TestCase):
                 running += int(attrs["ApproximateNumberOfMessagesNotVisible"])
             print("SQS QUEUE STATUS Waiting {0}, Running {1}".format(waiting, running))
             for i in range(repeats):
-                max_pc = program.get_max_pc()
+                # TODO: get the actual max pc here.
+                max_pc = 64
                 print("Max PC is {0}".format(max_pc))
                 if (max_pc == 0): continue
                 pc = int(np.random.choice(max_pc, 1)[0])

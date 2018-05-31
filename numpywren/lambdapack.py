@@ -30,7 +30,9 @@ import asyncio
 import redis
 import os
 import gc
+import program_state
 from multiprocessing import Process
+import runtime_state
 #from memory_profiler import profile
 
 try:
@@ -38,10 +40,6 @@ try:
 except:
   DEFAULT_CONFIG = {}
 
-REDIS_IP = os.environ.get("REDIS_IP", "127.0.0.1")
-REDIS_PASS = os.environ.get("REDIS_PASS", "")
-REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
-REDIS_CLIENT = None
 
 class RemoteInstructionOpCodes(Enum):
     S3_LOAD = 0
@@ -57,135 +55,10 @@ class RemoteInstructionOpCodes(Enum):
     BARRIER = 10
     EXIT = 11
 
-
-class NodeStatus(Enum):
-    NOT_READY = 0
-    READY = 1
-    RUNNING = 2
-    POST_OP = 3
-    FINISHED = 4
-
-class EdgeStatus(Enum):
-    NOT_READY = 0
-    READY = 1
-
-class ProgramStatus(Enum):
-    SUCCESS = 0
-    RUNNING = 1
-    EXCEPTION = 2
-    NOT_STARTED = 3
-
-def put(key, value, ip=REDIS_IP, passw=REDIS_PASS , s3=False, s3_bucket=""):
-    global REDIS_CLIENT
-    #TODO: fall back to S3 here
-    #redis_client = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
-    if (REDIS_CLIENT == None):
-      REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
-    redis_client = REDIS_CLIENT
-    redis_client.set(key, value)
-    return value
-    if (s3):
-      # flush write to S3
-      raise Exception("Not Implemented")
-
-
-def upload(key, bucket, data):
-    client = boto3.client('s3')
-    #print("key", key)
-    #print("bucket", bucket)
-    client.put_object(Bucket=bucket, Key=key, Body=data)
-
-def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
-    global REDIS_CLIENT
-    #TODO: fall back to S3 here
-    if (s3):
-      # read from S3
-      raise Exception("Not Implemented")
-    else:
-      if (REDIS_CLIENT == None):
-        REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
-        #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-      redis_client = REDIS_CLIENT
-      return redis_client.get(key)
-
-def incr(key, amount, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
-    global REDIS_CLIENT
-    #TODO: fall back to S3 here
-    if (s3):
-      # read from S3
-      raise Exception("Not Implemented")
-    else:
-      if (REDIS_CLIENT == None):
-        REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
-        #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-      redis_client = REDIS_CLIENT
-      return redis_client.incr(key, amount=amount)
-
-def decr(key, amount, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
-    global REDIS_CLIENT
-    #TODO: fall back to S3 here
-    if (s3):
-      # read from S3
-      raise Exception("Not Implemented")
-    else:
-      if (REDIS_CLIENT == None):
-        REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
-        #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-      redis_client = REDIS_CLIENT
-      return redis_client.decr(key, amount=amount)
-
-
-
 OC = RemoteInstructionOpCodes
-
-def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP):
-  ''' Crucial atomic operation needed to insure DAG correctness
-      @param key_to_incr - increment this key
-      @param condition_key - only do so if this value is 1
-      @param ip - ip of redis server
-      @param value - the value to bind key_to_set to
-    '''
-  global REDIS_CLIENT
-  res = 0
-
-  if (REDIS_CLIENT == None):
-    REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-  r = REDIS_CLIENT
-  with r.pipeline() as pipe:
-    while True:
-      try:
-        pipe.watch(condition_key)
-        pipe.watch(key_to_incr)
-        current_value = pipe.get(key_to_incr)
-        if (current_value is None):
-          current_value = 0
-        current_value = int(current_value)
-        condition_val = pipe.get(condition_key)
-        if (condition_val is None):
-          condition_val = 0
-        condition_val = int(condition_val)
-        res = current_value
-        #print("CONDITION KEY IS ", condition_key)
-        #print("Condition val is ", condition_val)
-        if (condition_val == 0):
-          #print("doing transaction")
-          pipe.multi()
-          pipe.incr(key_to_incr)
-          pipe.set(condition_key, 1)
-          t_results = pipe.execute()
-          res = int(t_results[0])
-          assert(t_results[1])
-        break
-      except redis.WatchError as e:
-        continue
-  return res
-
-
-OC = RemoteInstructionOpCodes
-NS = NodeStatus
-ES = EdgeStatus
-PS = ProgramStatus
-
+NS = runtime_state.NodeStatus
+ES = runtime_state.EdgeStatus
+PS = runtime_state.ProgramStatus
 
 
 class RemoteInstruction(object):
@@ -206,6 +79,7 @@ class RemoteInstruction(object):
 
     def clear(self):
         self.result = None
+
 
 class Barrier(RemoteInstruction):
   def __init__(self, i_id):
@@ -535,7 +409,6 @@ class RemoteReturn(RemoteInstruction):
       loop = asyncio.get_event_loop()
       self.start_time = time.time()
       if (self.result == None):
-        put(self.return_loc, PS.SUCCESS.value)
         self.size = sys.getsizeof(PS.SUCCESS.value)
       self.end_time = time.time()
       return self.result
@@ -588,7 +461,10 @@ class LambdaPackProgram(object):
        Maintains global state information
     '''
 
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9, eager=False, num_program_shards=5000):
+    def __init__(self, inst_blocks, executor=pywren.default_executor,
+                 pywren_config=DEFAULT_CONFIG, num_priorities=2, io_rate=3e7,
+                 flop_rate=20e9, eager=False, num_program_shards=5000):
+        self.state = runtime_state.RuntimeState() 
         t = time.time()
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
@@ -607,7 +483,6 @@ class LambdaPackProgram(object):
         hashed.update(str(time.time()).encode())
         self.hash = hashed.hexdigest()
         self.up = 'up' + self.hash
-        self.set_up(0)
         client = boto3.client('sqs', region_name='us-west-2')
         self.queue_urls = []
         for i in range(num_priorities):
@@ -651,7 +526,7 @@ class LambdaPackProgram(object):
         self.priorities = [0 for _ in range(len(self.inst_blocks))]
         self._recursive_priority_donate(self.longest_path, self.max_priority)
         self.num_program_shards = num_program_shards
-        put(self.hash, PS.NOT_STARTED.value, ip=self.redis_ip)
+        self.state.set_program_status(PS.NOT_STARTED)
         self._shard_program()
         self.num_inst_blocks = len(self.inst_blocks)
         del self.inst_blocks
@@ -668,8 +543,6 @@ class LambdaPackProgram(object):
         e = time.time()
         #print("block fetch took {0} seconds".format(e - t))
         return res
-
-
 
     def _shard_program(self, num_cores=32):
         print("serializing program before sharding")
@@ -695,64 +568,6 @@ class LambdaPackProgram(object):
         print("Sharding program took {0} seconds".format(e - t))
         return 0
 
-
-
-
-
-
-
-
-
-
-
-    def _node_key(self, i):
-      return "{0}_{1}".format(self.hash, i)
-
-    def _node_edge_sum_key(self, i):
-      return "{0}_{1}_edgesum".format(self.hash, i)
-
-    def _edge_key(self, i, j):
-      return "{0}_{1}_{2}".format(self.hash, i, j)
-
-    def get_node_status(self, i):
-      s = get(self._node_key(i), ip=self.redis_ip)
-      if (s == None):
-        s = 0
-      return NS(int(s))
-
-    def get_edge_status(self, i, j):
-      s = get(self._edge_key(i,j), ip=self.redis_ip)
-      if (s == None):
-        s = 0
-      return ES(int(s))
-
-    def set_node_status(self, i, status):
-      put(self._node_key(i), status.value, ip=self.redis_ip)
-      return status
-
-    def set_edge_status(self, i, j, status):
-      put(self._edge_key(i,j), status.value, ip=self.redis_ip)
-      return status
-
-    def set_max_pc(self, pc):
-      # unreliable DO NOT RELY ON THIS THIS JUST FOR DEBUGGING
-      max_pc = get(self.hash + "_max", ip=self.redis_ip)
-      if (max_pc == None):
-        max_pc = 0
-      max_pc = int(max_pc)
-      if (pc > max_pc):
-        max_pc = put(self.hash + "_max", pc, ip=self.redis_ip)
-
-      return max_pc
-
-    def get_max_pc(self):
-      # unreliable DO NOT RELY ON THIS THIS JUST FOR DEBUGGING
-      max_pc = get(self.hash + "_max", ip=self.redis_ip)
-      if (max_pc == None):
-        max_pc = 0
-      return int(max_pc)
-
-    #@profile
     def post_op(self, i, ret_code, inst_block, tb=None):
         # need clean post op logic to handle
         # replays
@@ -764,43 +579,33 @@ class LambdaPackProgram(object):
         global REDIS_CLIENT
         try:
           post_op_start = time.time()
-          #print("Post OP STARTED: {0}".format(i))
-          node_status = self.get_node_status(i)
+          node_status = self.state.get_node_status(i)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
           if (node_status == NS.FINISHED):
             return
-          self.set_node_status(i, NS.POST_OP)
+          self.state.set_node_status(i, NS.POST_OP)
           if (ret_code == PS.EXCEPTION and tb != None):
-            #print("EXCEPTION ")
-            #print(inst_block)
             self.handle_exception(" EXCEPTION", tb=tb, block=i)
           children = self.children[i]
           parents = self.parents[i]
           ready_children = []
           for child in children:
-            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), "STILL IN POST OP")
             t = time.time()
             my_child_edge = self._edge_key(i,child)
             child_edge_sum_key = self._node_edge_sum_key(child)
-            #print("CHILD EDGE SUM KEY ", child_edge_sum_key)
-            #self.set_edge_status(i, child, ES.READY)
             # redis transaction should be atomic
             tp = fs.ThreadPoolExecutor(1)
-            val_future = tp.submit(conditional_increment, child_edge_sum_key, my_child_edge, ip=self.redis_ip)
+            val_future = tp.submit(self.state.set_edge_done, i, child)
             #val_future = tp.submit(atomic_sum, parent_keys, ip=self.redis_ip)
             done, not_done = fs.wait([val_future], timeout=60)
             if len(done) == 0:
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
-            #print("parent_sum is ", val)
-            #print("expected is ", len(self.parents[child]))
-            #print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
-            if (val == len(self.parents[child]) and self.get_node_status(child) != NS.FINISHED):
-              self.set_node_status(child, NS.READY)
+            if (val == len(self.parents[child]) and self.state.get_node_status(child) != NS.FINISHED):
+              self.state.set_node_status(child, NS.READY)
               ready_children.append(child)
             e = time.time()
-            #print("redis dep check time", e - t)
 
           # clear result() blocks
           if (self.eager == True and len(ready_children) >=  1):
@@ -820,43 +625,32 @@ class LambdaPackProgram(object):
 
           client = boto3.client('sqs', region_name='us-west-2')
           # this should NEVER happen...
-          assert (i in ready_children) == False
+          assert not (i in ready_children)
           for child in ready_children:
-            #print("Adding {0} to sqs queue".format(child))
             resp = client.send_message(QueueUrl=self.queue_urls[self.priorities[child]], MessageBody=str(child))
             if (REDIS_CLIENT == None):
               REDIS_CLIENT = redis.StrictRedis(ip=REDIS_IP, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
-              #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), str(resp))
 
           profile_start = time.time()
           inst_block.end_time = time.time()
           inst_block.clear()
           self.set_profiling_info(i, inst_block)
           profile_end = time.time()
-          #print("Profile started: {0}".format(i))
           profile_time = profile_end - profile_start
-          #print("Profile finished: {0} took {1}".format(i, profile_time))
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
-          #print("Post finished : {0}, took {1}".format(i, post_op_time))
           return next_pc
         except Exception as e:
-            #print("POST OP EXCEPTION ", e)
-            #print(self.inst_blocks[i])
-            # clear all intermediate state
             tb = traceback.format_exc()
             traceback.print_exc()
             raise
 
-
     def start(self):
-        put(self.hash, PS.RUNNING.value, ip=self.redis_ip)
+        self.state.set_program_status(PS.RUNNING)
         self.set_max_pc(0)
         sqs = boto3.resource('sqs')
         for starter in self.starters:
-          #print("Enqueuing ", starter)
-          self.set_node_status(starter, NS.READY)
+          self.state.set_node_status(starter, NS.READY)
           priority = self.priorities[starter]
           queue = sqs.Queue(self.queue_urls[priority])
           queue.send_message(MessageBody=str(starter))
@@ -865,58 +659,40 @@ class LambdaPackProgram(object):
     def handle_exception(self, error, tb, block):
         client = boto3.client('s3')
         client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTION.{0}".format(block), Bucket=self.bucket, Body=tb + str(error))
-        e = PS.EXCEPTION.value
-        put(self.hash, e, ip=self.redis_ip)
+        self.state.set_program_status(ps.EXCEPTION)
 
     def program_status(self):
-      status = get(self.hash, ip=self.redis_ip)
-      return PS(int(status))
+        return self.state.get_program_status()
 
     def incr_up(self, amount):
-      incr(self.up, amount, ip=self.redis_ip)
-
-    def incr_flops(self, amount):
-      if (amount > 0):
-        incr("{0}_flops".format(self.hash), amount, ip=self.redis_ip)
-
-    def incr_read(self, amount):
-      if (amount > 0):
-        incr("{0}_read".format(self.hash), amount, ip=self.redis_ip)
-
-    def incr_write(self, amount):
-      if (amount > 0):
-        incr("{0}_write".format(self.hash), amount, ip=self.redis_ip)
-
-    def decr_flops(self, amount):
-      if (amount > 0):
-        decr("{0}_flops".format(self.hash), amount, ip=self.redis_ip)
-
-    def decr_read(self, amount):
-      if (amount > 0):
-        decr("{0}_read".format(self.hash), amount, ip=self.redis_ip)
-
-    def decr_write(self, amount):
-      if (amount > 0):
-        decr("{0}_write".format(self.hash), amount, ip=self.redis_ip)
+        self.state.incr(self.up, amount)
 
     def decr_up(self, amount):
-      decr(self.up, amount, ip=self.redis_ip)
+        self.state.decr(self.up, amount)
 
     def get_up(self):
-      return get(self.up, ip=self.redis_ip)
+        return self.state.get_count(self.up)
+
+    def incr_flops(self, amount):
+        if amount > 0:
+            self.state.incr("{0}_flops".format(self.hash), amount)
 
     def get_flops(self):
-      return get("{0}_flops".format(self.hash), ip=self.redis_ip)
+        return self.state.get_count("{0}_flops".format(self.hash))
+
+    def incr_read(self, amount):
+        if amount > 0:
+            self.state.incr("{0}_read".format(self.hash), amount)
 
     def get_read(self):
-      return get("{0}_read".format(self.hash), ip=self.redis_ip)
+        return self.state.get_count("{0}_read".format(self.hash))
+
+    def incr_write(self, amount):
+        if amount > 0:
+            self.state.incr("{0}_write".format(self.hash), amount)
 
     def get_write(self):
-      return get("{0}_write".format(self.hash), ip=self.redis_ip)
-
-
-    def set_up(self, value):
-      put(self.up, value, ip=self.redis_ip)
+        return self.state.get_count("{0}_write".format(self.hash))
 
     def wait(self, sleep_time=1):
         status = self.program_status()
@@ -940,17 +716,13 @@ class LambdaPackProgram(object):
         except:
           print("key {0}/{1} not found in bucket {2}".format(self.hash, pc, self.bucket))
 
-
-
     def set_profiling_info(self, pc, inst_block):
         serializer = serialize.SerializeIndependent()
         byte_string = serializer([inst_block])[0][0]
         client = boto3.client('s3', region_name='us-west-2')
         client.put_object(Bucket=self.bucket, Key="{0}/{1}/{2}".format("lambdapack", self.hash, pc), Body=byte_string)
 
-
     def _io_dependency_analyze(self, instruction_blocks, barrier_look_ahead=2):
-        #print("Starting IO dependency")
         parents = defaultdict(set)
         children = defaultdict(set)
         read_edges = defaultdict(set)
@@ -974,8 +746,6 @@ class LambdaPackProgram(object):
 
         return children, parents
 
-
-
     def _recursive_priority_donate(self, nodes, priority):
       if (priority == 0):
         return
@@ -983,8 +753,6 @@ class LambdaPackProgram(object):
          self.inst_blocks[node].priority = max(min(priority, self.max_priority), self.inst_blocks[node].priority)
          self.priorities[node] = self.inst_blocks[node].priority
          self._recursive_priority_donate(self.parents[node], priority - 1)
-
-
 
     def _find_critical_path(self):
       ''' Find the longest path in dag '''
@@ -1016,6 +784,7 @@ class LambdaPackProgram(object):
 
     '''
 
+
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     L_load = RemoteLoad(pc, L_in, b0, b1)
     pc += 1
@@ -1025,6 +794,7 @@ def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     pc += 1
     write = RemoteWrite(pc, L_out, trsm, b0, b1)
     return InstructionBlock([L_load, L_bb_load, trsm, write], label=label), 4
+
 
 def make_low_rank_update(pc, L_out, L_prev, L_final,  b0, b1, b2, label=None):
     old_block_load = RemoteLoad(pc, L_prev, b1, b2)
@@ -1038,6 +808,7 @@ def make_low_rank_update(pc, L_out, L_prev, L_final,  b0, b1, b2, label=None):
     write = RemoteWrite(pc, L_out, syrk, b1, b2)
     return InstructionBlock([old_block_load, block_1_load, block_2_load, syrk, write], label=label), 5
 
+
 def make_remote_trisolve(pc, X, A, B, lower=False, label=None): 
     block_A = RemoteLoad(pc, A)
     pc += 1
@@ -1049,6 +820,7 @@ def make_remote_trisolve(pc, X, A, B, lower=False, label=None):
     pc += 1
     return InstructionBlock([block_A, block_B, trsm, write_trisolve], label=label), 4 
 
+
 def make_remote_sub(pc, out, in1, in2, label=None): 
     block_A = RemoteLoad(pc, in1)
     pc += 1
@@ -1059,6 +831,7 @@ def make_remote_sub(pc, out, in1, in2, label=None):
     write_sub = RemoteWrite(pc, out, sub)
     pc += 1
     return InstructionBlock([block_A, block_B, sub, write_sub], label=label), pc 
+
 
 def make_local_cholesky(pc, L_out, L_in, b0, label=None):
     block_load = RemoteLoad(pc, L_in, b0, b0)
@@ -1119,6 +892,7 @@ def make_remote_reduce(pc, op, out_block, in_blocks, reduce_blocks, reduce_width
     instruction_blocks.append(InstructionBlock(block_loads + block_ops + [block_write], label=label))
     return instruction_blocks, pc
 
+
 def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
     reduce_idxs = Y._block_idxs(axis=1)
     if (out_bucket == None):
@@ -1144,7 +918,6 @@ def _gemm(X, Y,out_bucket=None, tasks_per_job=1):
         #print("Pwex Map Time {0}".format(e - s))
         all_futures.append((i,futures))
     return instruction_blocks
-
 
 
 def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):
@@ -1342,15 +1115,10 @@ def perf_profile(blocks, num_bins=100):
       optimes[inst.i_code] += t
       IO_INSTRUCTIONS = [OC.S3_LOAD, OC.S3_WRITE, OC.RET]
       if (inst.i_code not in IO_INSTRUCTIONS):
-        ##print(inst.i_code)
-        ##print(IO_INSTRUCTIONS)
         flops = inst.flops/1e9
       else:
         flops = None
-      ##print("{0}  {1}  {2} {3} gigaflops".format(str(inst), inst.start_time - offset, inst.end_time - offset,  inst.end_time - inst.start_time, flops))
     for k in optimes.keys():
       print("{0}: {1}s".format(k, optimes[k]/opcounts[k]))
     return read_bytes_per_sec, write_bytes_per_sec, total_flops_per_sec, bins , instructions, runtimes
-
-
 
