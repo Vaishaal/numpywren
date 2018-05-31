@@ -1,8 +1,13 @@
 s3:
     bucket: BUCKET_NAME
     prefix: DEFAULT_PREFIX
-    # by default objects will expire in 24hours
-    lifespan: 86400
+    # how many days do you want object to stay alive
+    lifespan: 1
+
+runtime:
+    bucket: numpywrenpublic
+    s3_key: pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz
+
 
 redis:
     ec2_instance_type: m4.4xlarge

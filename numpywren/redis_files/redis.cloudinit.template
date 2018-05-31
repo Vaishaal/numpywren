@@ -1,0 +1,49 @@
+#cloud-config
+#repo_update: true
+#repo_upgrade: all
+    
+packages:
+  - tmux
+  - emacs
+  - gcc
+  - g++
+  - git 
+  - htop
+  
+runcmd:
+  # first and always, cloudwatch agent
+  - [ curl,  "https://s3.amazonaws.com/aws-cloudwatch/downloads/latest/awslogs-agent-setup.py", "-O"]
+  - chmod +x ./awslogs-agent-setup.py
+  - ./awslogs-agent-setup.py -n -r {aws_region} -c /etc/cloud-agent.conf
+  - sudo /etc/init.d/ntpd restart
+  - pip install supervisor
+  - wget http://download.redis.io/redis-stable.tar.gz
+  - tar xvzf redis-stable.tar.gz
+  - make -C redis-stable
+  - [ sudo, -Hu, ec2-user, sh, -c, "ln -s redis-build/src/redis-server /usr/local/bin/"]
+  - [ sudo, -Hu, ec2-user, sh, -c, "ln -s redis-build/src/redis-cli /usr/local/bin/"]
+  - [ sudo, -Hu, ec2-user, sh, -c, "mkdir /etc/redis"]
+  - [ sudo, -Hu, ec2-user, sh, -c, "mkdir /var/redis"]
+  - [ sudo, -Hu, ec2-user, sh, -c, "update-rc.d redis_6379 defaults"]
+  - [ sudo, -Hu, ec2-user, sh, -c, "/etc/init.d/redis_6379 start"]
+
+
+write_files:
+- encoding: b64
+  content: {redis_conf}
+  path: "/etc/redis.conf"
+  permissions: "0644"
+  owner: root:root
+
+- encoding: b64
+  content: {redis_init}
+  path: "/etc/init.d/redis_init"
+  permissions: "0644"
+  owner: root:root
+
+- encoding: b64
+  content: {cloud_agent_conf}
+  path: "/etc/cloud-agent.conf"
+  permissions: "0644"
+  owner: root:root
+

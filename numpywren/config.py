@@ -9,6 +9,11 @@ AWS_LAMBDA_FUNCTION_NAME_DEFAULT = 'numpywren_1'
 AWS_SQS_QUEUE_DEFAULT = 'numpywren-jobs-1'
 
 
+def load(config_filename):
+    import yaml
+    res = yaml.safe_load(open(config_filename, 'r'))
+    return res
+
 def get_default_config_filename():
     """
     First checks .numpywren_config

@@ -1,4 +1,5 @@
 import numpywren as npw
+from numpywren import redis_utils
 import argparse
 import os
 import click
@@ -18,6 +19,15 @@ def check_overwrite_function(filename):
     if os.path.exists(filename):
         return click.confirm("{} already exists, would you like to overwrite?".format(filename))
     return True
+
+
+def check_valid_lifespan(lifespan):
+    try:
+        int(lifespan)
+        return True
+    except ValueError:
+        return False
+
 
 def click_validate_prompt(message, default, validate_func=lambda x: True,
                           fail_msg="", max_attempts=5):
@@ -80,7 +90,9 @@ def control_plane(ctx):
     """
     control_plane subcommand
     """
+
     click.echo("control_plane")
+    redis_utils.launch_and_provision_redis()
 
 @click.command()
 @click.pass_context
@@ -160,11 +172,33 @@ def interactive_setup(ctx):
         default=npw.config.AWS_S3_PREFIX_DEFAULT)
 
     default_yaml = yaml.safe_load(open(os.path.join(SOURCE_DIR, "../default_config.yaml")))
-    print(default_yaml)
     default_yaml["s3"]["bucket"] = s3_bucket
     default_yaml["s3"]["prefix"] = prefix
-    open(config_filename, "w+").write(yaml.dump(default_yaml, default_flow_style=False))
+    config_advanced = click.confirm(
+        "Would you like to configure advanced numpywren properties?", default=False)
+    if (config_advanced):
+        lifespan = int(click_validate_prompt("How many days would you like numpywren to temporarily store data on S3 (default is 1 day, which translates to roughly $0.72 per TB)", default=default_yaml["s3"]["lifespan"], validate_func=check_valid_lifespan))
+        default_yaml["s3"]["lifespan"] = lifespan
 
+        runtime_bucket = click_validate_prompt("Which bucket would you like pywren to load the python runtime from", default=default_yaml["runtime"]["bucket"], validate_func=check_valid_bucket_name)
+        runtime_key = click_validate_prompt("What is the runtime key in above bucket", default=default_yaml["runtime"]["s3_key"])
+        default_yaml["runtime"]["bucket"] = runtime_bucket
+        default_yaml["runtime"]["s3_key"] = runtime_key
+
+    lifespan = default_yaml["s3"]["lifespan"]
+    s3Client = boto3.client('s3')
+    s3Client.put_bucket_lifecycle_configuration(
+        Bucket=s3_bucket,
+        LifecycleConfiguration={
+            'Rules': [
+                {
+                    'Status': 'Enabled',
+                    'Expiration':{'Days': lifespan},
+                    'Filter': { 'Prefix': prefix }
+                },
+            ]
+        })
+    open(config_filename, "w+").write(yaml.dump(default_yaml, default_flow_style=False))
 
 def create_config(bucket_name, bucket_prefix):
     """
