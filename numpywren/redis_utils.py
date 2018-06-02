@@ -6,6 +6,7 @@ import os
 import base64
 import boto3
 import time
+from numpywren.matrix_utils import key_exists, list_all_keys
 
 
 def sd(filename):
@@ -33,6 +34,10 @@ def create_security_group(name="numpywren.group"):
     else:
         group = groups[0]
     return group['GroupId']
+
+
+
+
 
 
 def _create_instances(num_instances,
@@ -161,10 +166,11 @@ def _create_instances(num_instances,
         raise Exception("Launch failure")
 
 
-def launch_and_provision_redis():
-    config = npw.config.default()
+def launch_and_provision_redis(config=None):
+    if (config == None):
+        config = npw.config.default()
     pywren_config = wc.default()
-    rc = config["redis"]
+    rc = config["control_plane"]
     port = rc["port"]
     spot_price = rc["spot_price"]
     password = rc["password"]
@@ -202,7 +208,86 @@ def launch_and_provision_redis():
             },
         ]
     )
-    return inst.public_ip_address
+    host = inst.public_ip_address
+    set_control_plane(host, config)
+    return host
+
+
+def touch_control_plane(control_plane_id, config=None):
+    # TODO use copy command?
+
+    client = boto3.client('s3')
+    client = boto3.client('s3')
+    if (config = None):
+        config = npw.config.default()
+    rc = config["control_plane"]
+    key = rc["control_plane_prefix"].strip("/") + "/" + control_plane_id
+    if (not key_exists):
+        raise exceptions.ControlPlaneException("control plane id not found")
+
+    host = client.get_object(Key=key, Bucket=config["s3"]["bucket"])["Body"].read()
+    client.put_object(Key=key, Bucket=config["s3"]["bucket"], Body=host)
+
+
+
+
+
+def set_control_plane(host, config=None):
+    if (config = None):
+        config = npw.config.default()
+    client = boto3.client('s3')
+    rc = config["control_plane"]
+    # TODO vaishaal
+    # we can think of more elaborate key but this should do
+    key = rc["control_plane_prefix"].strip("/") + "/" + host
+    client.put_object(Key=key, Bucket=config["s3"]["bucket"], Body=host)
+
+
+def get_control_plane_id(config=None):
+    ''' If there are multiple active control planes
+        connect return first one, if there are none
+        return None'''
+    if (config = None):
+        config = npw.config.default()
+    rc = config["control_plane"]
+    prefix = rc["control_plane_prefix"].strip("/") + "/"
+    keys = list_all_keys(prefix=prefix)
+    if (len(keys) == 0):
+        return None
+    else:
+        return keys[0]
+
+
+def control_plane(control_plane_id, config=None):
+    cpid = control_plane_id
+    client = boto3.client('s3')
+    if (config = None):
+        config = npw.config.default()
+
+    rc = config["control_plane"]
+    key = rc["control_plane_prefix"].strip("/") + "/" + control_plane_id
+    if (not key_exists):
+        raise exceptions.ControlPlaneException("control plane id not found")
+
+    host = client.get_object(Key=key, Bucket=config["s3"]["bucket"])["Body"].read()
+    return SerializableControlPlane(host, rc["port"], rc["password"])
+
+
+
+# tiny hack to serialize redis
+class SerializableControlPlane(object):
+    def __init__(self, host, port, password, socket_timeout=5, db=0):
+        self.host = host
+        self.port = port
+        self.password = password
+        self.db = 0
+        self.socket_timeout = 5
+
+    @property
+    def client(self):
+        return redis.StrictRedis(ip=self.host, port=self.port, password=self.password, socket_timeout=self.socket_timeout, db=self.db)
+
+
 
 
 

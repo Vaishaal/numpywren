@@ -11,7 +11,7 @@ runtime:
     bucket: numpywrenpublic
     s3_key: pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz
 
-redis:
+control_plane:
     ec2_instance_type: m4.4xlarge
     target_ami : ami-db710fa3
     password: potato
@@ -19,6 +19,7 @@ redis:
     port: 6379
     max_idle_time: 300
     idle_terminate_granularity: 1200
+    control_plane_prefix: numpywren.control
 
 
 
