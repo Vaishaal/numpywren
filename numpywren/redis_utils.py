@@ -7,6 +7,7 @@ import base64
 import boto3
 import time
 from numpywren.matrix_utils import key_exists, list_all_keys
+import json
 
 
 def sd(filename):
@@ -209,8 +210,14 @@ def launch_and_provision_redis(config=None):
         ]
     )
     host = inst.public_ip_address
-    set_control_plane(host, config)
-    return host
+    info = {
+    'id': inst.id,
+    'type': inst.instance_type,
+    'private_ip': inst.private_ip_address,
+    'public_ip': inst.public_ip_address,
+    }
+    set_control_plane(info, config)
+    return info
 
 
 def touch_control_plane(control_plane_id, config=None):
@@ -218,36 +225,37 @@ def touch_control_plane(control_plane_id, config=None):
 
     client = boto3.client('s3')
     client = boto3.client('s3')
-    if (config = None):
+    if (config == None):
         config = npw.config.default()
     rc = config["control_plane"]
     key = rc["control_plane_prefix"].strip("/") + "/" + control_plane_id
     if (not key_exists):
         raise exceptions.ControlPlaneException("control plane id not found")
 
-    host = client.get_object(Key=key, Bucket=config["s3"]["bucket"])["Body"].read()
-    client.put_object(Key=key, Bucket=config["s3"]["bucket"], Body=host)
+    info = client.get_object(Key=key, Bucket=config["s3"]["bucket"])["Body"].read()
+    client.put_object(Key=key, Bucket=config["s3"]["bucket"], Body=info)
 
 
 
 
 
-def set_control_plane(host, config=None):
-    if (config = None):
+def set_control_plane(info, config=None):
+    if (config == None):
         config = npw.config.default()
     client = boto3.client('s3')
     rc = config["control_plane"]
+    host = info["public_ip"]
     # TODO vaishaal
     # we can think of more elaborate key but this should do
     key = rc["control_plane_prefix"].strip("/") + "/" + host
-    client.put_object(Key=key, Bucket=config["s3"]["bucket"], Body=host)
+    client.put_object(Key=key, Bucket=config["s3"]["bucket"], Body=json.dumps(info))
 
 
 def get_control_plane_id(config=None):
     ''' If there are multiple active control planes
         connect return first one, if there are none
         return None'''
-    if (config = None):
+    if (config == None):
         config = npw.config.default()
     rc = config["control_plane"]
     prefix = rc["control_plane_prefix"].strip("/") + "/"
@@ -258,10 +266,10 @@ def get_control_plane_id(config=None):
         return keys[0]
 
 
-def control_plane(control_plane_id, config=None):
+def get_control_plane(control_plane_id, config=None):
     cpid = control_plane_id
     client = boto3.client('s3')
-    if (config = None):
+    if (config == None):
         config = npw.config.default()
 
     rc = config["control_plane"]

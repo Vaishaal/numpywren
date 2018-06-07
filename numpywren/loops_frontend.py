@@ -1,6 +1,7 @@
 import ast
 import inspect
 import astor
+import sympy
 
 ########
 ## IR ##
@@ -173,6 +174,11 @@ def cholesky(O,n):
     for j in range(i,n):
         for k in range(j,n):
             O[i+1,j,k] = syrk(O[i,j,k], O[i,i,j], O[i,i,k])
+
+
+def convert_subscript_idxs_to_matrix(subscript_idxs, values):
+
+def loop_solve(subscript_idxs, values):
 
 
 

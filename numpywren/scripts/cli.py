@@ -11,6 +11,8 @@ import boto3
 import json
 import redis
 import time
+from numpywren.matrix_utils import key_exists, list_all_keys
+import pandas as pd
 
 GIT_URL = "https://github.com/Vaishaal/numpywren"
 NUMPYWREN_SETUP =\
@@ -108,10 +110,11 @@ def control_plane():
 def launch():
     t = time.time()
     click.echo("Launching instance...")
-    ip = redis_utils.launch_and_provision_redis()
+    info = redis_utils.launch_and_provision_redis()
+    ip = info["public_ip"]
     click.echo("Waiting for redis")
     config = npw.config.default()
-    rc = config["redis"]
+    rc = config["control_plane"]
     password = rc["password"]
     port= rc["port"]
     redis_client = redis.StrictRedis(host=ip, port=port, password=password)
@@ -123,12 +126,84 @@ def launch():
             pass
     e = time.time()
     click.echo("redis launch took {0} seconds".format(e - t))
+    redis_utils.set_control_plane(info, config=config)
+
+@click.command()
+def list():
+    config = npw.config.default()
+    client = boto3.client('s3')
+    rc = config["control_plane"]
+    prefix = rc["control_plane_prefix"].strip("/")
+    bucket = config["s3"]["bucket"]
+    keys = list_all_keys(prefix=prefix, bucket=bucket)
+    dicts = []
+    for i,key in enumerate(keys):
+        dicts.append(json.loads(client.get_object(Key=key, Bucket=config["s3"]["bucket"])["Body"].read()))
+    if (len(dicts) > 0):
+        # maybe custom pretty printing here, but pandas does a god enough job
+        click.echo(pd.DataFrame(dicts))
+    else:
+        click.echo("No control planes found")
+
+
+
+@click.command()
+@click.argument('idx', default=0)
+def terminate(idx):
+    config = npw.config.default()
+    client = boto3.client('s3')
+    rc = config["control_plane"]
+    prefix = rc["control_plane_prefix"].strip("/")
+    bucket = config["s3"]["bucket"]
+    keys = list_all_keys(prefix=prefix, bucket=bucket)
+    if (idx >= len(keys)):
+        click.echo("idx must be less that number of total control planes")
+        return
+    key = keys[idx]
+    info = json.loads(client.get_object(Key=key, Bucket=config["s3"]["bucket"])["Body"].read())
+    instance_id = info['id']
+    ec2_client = boto3.client('ec2')
+    click.echo("terminating control plane {0}".format(idx))
+    resp = ec2_client.terminate_instances(InstanceIds=[instance_id])
+    client.delete_object(Key=key, Bucket=bucket)
+
+
+
+@click.command()
+@click.argument('idx', default=0)
+def ping(idx):
+    config = npw.config.default()
+    client = boto3.client('s3')
+    rc = config["control_plane"]
+    password = rc["password"]
+    port= rc["port"]
+    prefix = rc["control_plane_prefix"].strip("/")
+    bucket = config["s3"]["bucket"]
+    keys= list_all_keys(prefix=prefix, bucket=bucket)
+    if (idx >= len(keys)):
+        click.echo("idx must be less that number of total control planes")
+        return
+    key = keys[idx]
+    info = json.loads(client.get_object(Key=key, Bucket=config["s3"]["bucket"])["Body"].read())
+    host = info["public_ip"]
+    redis_client = redis.StrictRedis(host=host, port=port, password=password)
+    while (True):
+        try:
+            redis_client.ping()
+            click.echo("successful ping!")
+            break
+        except redis.exceptions.ConnectionError as e:
+            click.echo("ping failed.")
+            pass
 
 
 
 
 
 control_plane.add_command(launch)
+control_plane.add_command(list)
+control_plane.add_command(ping)
+control_plane.add_command(terminate)
 
 @click.command()
 @click.pass_context
@@ -264,6 +339,9 @@ def interactive_setup(ctx):
         default_yaml["iam"]["role_name"] = role_name
         instance_profile_name= click_validate_prompt("What would you like to name the numpywren iam instance profile which will allow numpywren executors to access your AWS resources", default=default_yaml["iam"]["instance_profile_name"])
         default_yaml["iam"]["instance_profile_name"] = instance_profile_name
+    else:
+        role_name = default_yaml["iam"]["role_name"]
+        instance_profile_name = default_yaml["iam"]["instance_profile_name"]
 
     create_role(default_yaml, role_name)
     create_instance_profile(default_yaml, instance_profile_name)
