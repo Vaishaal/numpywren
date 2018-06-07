@@ -1,44 +1,40 @@
-import math
-import numpywren.matrix
-from .matrix import BigMatrix, BigSymmetricMatrix, Scalar
-from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
-import numpy as np
-import pywren
-from pywren.serialize import serialize
-from numpywren import matrix_utils, uops
-import pytest
-import numpy as np
-import pywren
-import pywren.wrenconfig as wc
-import unittest
-import time
-import time
-from enum import Enum
-import boto3
-import hashlib
-import copy
-import concurrent.futures as fs
-import sys
-import botocore
-import scipy.linalg
-import traceback
-import pickle
 from collections import defaultdict
+import concurrent.futures as fs
+import copy
+from enum import Enum
+import gc
+import hashlib
+import math
+from multiprocessing import Process
+import os
+import pickle
+import time
+import traceback
+import sys
+
 import aiobotocore
 import aiohttp
 import asyncio
+import boto3
+import botocore
+import numpy as np
+import pywren
+from pywren.serialize import serialize
+import pywren.wrenconfig as wc
 import redis
-import os
-import gc
-from multiprocessing import Process
-#from memory_profiler import profile
+import scipy.linalg
+
+from .matrix import BigMatrix, BigSymmetricMatrix, Scalar
+from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
+from . import utils
+
 
 try:
   DEFAULT_CONFIG = wc.default()
 except:
   DEFAULT_CONFIG = {}
 
-REDIS_IP = os.environ.get("REDIS_IP", "127.0.0.1")
+REDIS_ADDR = os.environ.get("REDIS_ADDR", "127.0.0.1")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 REDIS_CLIENT = None
@@ -75,7 +71,7 @@ class ProgramStatus(Enum):
     EXCEPTION = 2
     NOT_STARTED = 3
 
-def put(key, value, ip=REDIS_IP, passw=REDIS_PASS , s3=False, s3_bucket=""):
+def put(key, value, ip=REDIS_ADDR, passw=REDIS_PASS , s3=False, s3_bucket=""):
     global REDIS_CLIENT
     #TODO: fall back to S3 here
     #redis_client = redis.StrictRedis(ip, port=REDIS_PORT, db=0, password=passw, socket_timeout=5)
@@ -95,7 +91,7 @@ def upload(key, bucket, data):
     #print("bucket", bucket)
     client.put_object(Bucket=bucket, Key=key, Body=data)
 
-def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
+def get(key, ip=REDIS_ADDR, passw=REDIS_PASS, s3=False, s3_bucket=""):
     global REDIS_CLIENT
     #TODO: fall back to S3 here
     if (s3):
@@ -108,7 +104,7 @@ def get(key, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
       redis_client = REDIS_CLIENT
       return redis_client.get(key)
 
-def incr(key, amount, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
+def incr(key, amount, ip=REDIS_ADDR, passw=REDIS_PASS, s3=False, s3_bucket=""):
     global REDIS_CLIENT
     #TODO: fall back to S3 here
     if (s3):
@@ -121,7 +117,7 @@ def incr(key, amount, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
       redis_client = REDIS_CLIENT
       return redis_client.incr(key, amount=amount)
 
-def decr(key, amount, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
+def decr(key, amount, ip=REDIS_ADDR, passw=REDIS_PASS, s3=False, s3_bucket=""):
     global REDIS_CLIENT
     #TODO: fall back to S3 here
     if (s3):
@@ -136,9 +132,7 @@ def decr(key, amount, ip=REDIS_IP, passw=REDIS_PASS, s3=False, s3_bucket=""):
 
 
 
-OC = RemoteInstructionOpCodes
-
-def conditional_increment(key_to_incr, condition_key, ip=REDIS_IP):
+def conditional_increment(key_to_incr, condition_key, ip=REDIS_ADDR):
   ''' Crucial atomic operation needed to insure DAG correctness
       @param key_to_incr - increment this key
       @param condition_key - only do so if this value is 1
@@ -217,7 +211,7 @@ class Barrier(RemoteInstruction):
         return 0
 
 
-class RemoteLoad(RemoteInstruction):
+class RemoteWrite(RemoteInstruction):
     def __init__(self, i_id, matrix, *bidxs):
         super().__init__(i_id)
         self.i_code = OC.S3_LOAD
@@ -581,14 +575,16 @@ class InstructionBlock(object):
     def __copy__(self):
         return InstructionBlock(self.instrs.copy(), self.label)
 
+class LoopBlock(object):
+    def __init__(self, read_func, write_func, label=None, priority=0):
+        
 
 class LambdaPackProgram(object):
     '''Sequence of instruction blocks that get executed
        on stateless computing substrates
        Maintains global state information
     '''
-
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_IP, io_rate=3e7, flop_rate=20e9, eager=False, num_program_shards=5000):
+    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_ADDR, io_rate=3e7, flop_rate=20e9, eager=False, num_program_shards=5000):
         t = time.time()
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
@@ -825,7 +821,7 @@ class LambdaPackProgram(object):
             #print("Adding {0} to sqs queue".format(child))
             resp = client.send_message(QueueUrl=self.queue_urls[self.priorities[child]], MessageBody=str(child))
             if (REDIS_CLIENT == None):
-              REDIS_CLIENT = redis.StrictRedis(ip=REDIS_IP, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
+              REDIS_CLIENT = redis.StrictRedis(ip=REDIS_ADDR, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
               #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
             REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), str(resp))
 
@@ -930,7 +926,7 @@ class LambdaPackProgram(object):
           client.delete_queue(QueueUrl=queue_url)
 
     def get_all_profiling_info(self):
-        return [self.get_profiling_info(i) for i in range(self.num_inst_blocks)]
+        return [self.get_profiling_info(i) for i in range(self.num_inst_blocks) if i is not None]
 
     def get_profiling_info(self, pc):
         try:
@@ -1017,9 +1013,9 @@ class LambdaPackProgram(object):
     '''
 
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):
-    L_load = RemoteLoad(pc, L_in, b0, b1)
+    L_load = RemoteWrite(pc, L_in, b0, b1)
     pc += 1
-    L_bb_load = RemoteLoad(pc, L_out.T, b1, b1)
+    L_bb_load = RemoteWrite(pc, L_out.T, b1, b1)
     pc += 1
     trsm = RemoteTRSM(pc, [L_bb_load, L_load], lower=False, right=True)
     pc += 1
@@ -1027,11 +1023,11 @@ def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     return InstructionBlock([L_load, L_bb_load, trsm, write], label=label), 4
 
 def make_low_rank_update(pc, L_out, L_prev, L_final,  b0, b1, b2, label=None):
-    old_block_load = RemoteLoad(pc, L_prev, b1, b2)
+    old_block_load = RemoteWrite(pc, L_prev, b1, b2)
     pc += 1
-    block_1_load = RemoteLoad(pc, L_final, b1, b0)
+    block_1_load = RemoteWrite(pc, L_final, b1, b0)
     pc += 1
-    block_2_load = RemoteLoad(pc, L_final, b2, b0)
+    block_2_load = RemoteWrite(pc, L_final, b2, b0)
     pc += 1
     syrk = RemoteSYRK(pc, [old_block_load, block_1_load, block_2_load])
     pc += 1
@@ -1039,9 +1035,9 @@ def make_low_rank_update(pc, L_out, L_prev, L_final,  b0, b1, b2, label=None):
     return InstructionBlock([old_block_load, block_1_load, block_2_load, syrk, write], label=label), 5
 
 def make_remote_trisolve(pc, X, A, B, lower=False, label=None): 
-    block_A = RemoteLoad(pc, A)
+    block_A = RemoteWrite(pc, A)
     pc += 1
-    block_B = RemoteLoad(pc, B)
+    block_B = RemoteWrite(pc, B)
     pc += 1
     trsm = RemoteTRSM(pc, [block_A, block_B], lower=lower, right=False)
     pc += 1
@@ -1050,9 +1046,9 @@ def make_remote_trisolve(pc, X, A, B, lower=False, label=None):
     return InstructionBlock([block_A, block_B, trsm, write_trisolve], label=label), 4 
 
 def make_remote_sub(pc, out, in1, in2, label=None): 
-    block_A = RemoteLoad(pc, in1)
+    block_A = RemoteWrite(pc, in1)
     pc += 1
-    block_B = RemoteLoad(pc, in2)
+    block_B = RemoteWrite(pc, in2)
     pc += 1
     sub = RemoteSub(pc, [block_A, block_B])
     pc += 1
@@ -1061,7 +1057,7 @@ def make_remote_sub(pc, out, in1, in2, label=None):
     return InstructionBlock([block_A, block_B, sub, write_sub], label=label), pc 
 
 def make_local_cholesky(pc, L_out, L_in, b0, label=None):
-    block_load = RemoteLoad(pc, L_in, b0, b0)
+    block_load = RemoteWrite(pc, L_in, b0, b0)
     pc += 1
     cholesky = RemoteCholesky(pc, [block_load])
     pc += 1
@@ -1072,9 +1068,9 @@ def make_local_cholesky(pc, L_out, L_in, b0, label=None):
 
 def make_remote_gemm(pc, XY, X, Y, label=None):
     # assert XY.shape[0] == X.shape[0] and XY.shape[1] == Y.shape[1]
-    block_0_load = RemoteLoad(pc, X)
+    block_0_load = RemoteWrite(pc, X)
     pc += 1
-    block_1_load = RemoteLoad(pc, Y)
+    block_1_load = RemoteWrite(pc, Y)
     pc += 1
     matmul = RemoteGemm(pc, [block_0_load, block_1_load])
     pc += 1
@@ -1090,7 +1086,7 @@ def make_remote_reduce(pc, op, out_block, in_blocks, reduce_blocks, reduce_width
     assert in_block_width >= 1
     if in_block_width <= reduce_width:
         for i in in_blocks._block_idxs(1):
-            block_loads.append(RemoteLoad(pc, in_blocks.submatrix(0, i)))
+            block_loads.append(RemoteWrite(pc, in_blocks.submatrix(0, i)))
             pc += 1
     else:
         for i in range(reduce_width):
@@ -1106,7 +1102,7 @@ def make_remote_reduce(pc, op, out_block, in_blocks, reduce_blocks, reduce_width
                                            label=label)
             instruction_blocks += instr
         for i in range(reduce_width):
-            block_loads.append(RemoteLoad(pc, reduce_blocks.submatrix(0, i)))
+            block_loads.append(RemoteWrite(pc, reduce_blocks.submatrix(0, i)))
             pc += 1   
     acc = block_loads[0]
     block_ops = []
@@ -1230,6 +1226,136 @@ def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):
             all_instructions.append(instructions)
             pc += count
     return all_instructions, X, scratch 
+
+class Statement(object):
+
+class StatementBlock(Statement):
+
+class OperatorExpr(abc.ABC):
+    def eval_operator(self, priority, var_values):
+        read_instrs = self.eval_read_instrs(var_values)
+        compute_instr = self._eval_compute_istr(read_instrs, var_values) 
+        write_instr = self.eval_write_instr(var_values)
+        return InstructionBlock(read_instrs + [compute_instr, write_instr], priority=priority)
+
+    def eval_read_instrs(self, var_values):
+        read_refs = self.eval_read_refs(var_values)
+        return [RemoteRead(0, ref[0], *ref[1]) for ref in read_refs]
+
+    def eval_write_instr(self, data_instr var_values):
+        write_ref = self.eval_write_ref(var_values)
+        return RemoteWrite(0, write_ref[0], data_instr, *write_ref[1])
+
+    def eval_read_refs(self, var_values):
+        return [self._eval_block(block_expr, var_values) for block_expr in self.read_exprs]
+
+    def eval_write_ref(self, var_values):
+        return self._eval_block(self.write_expr, var_values)
+
+    def _eval_block(self, block_expr, var_values):
+        return (block_expr[0], [idx.eval(var_values) for idx in block_expr[1]])
+
+
+class CholeskyExpr(OperatorExpr):
+    def __init__(self, read_expr, write_expr)
+        self.read_exprs = [read_expr]
+        self.write_expr = write_expr
+
+    def _eval_compute_instr(self, read_instrs, var_values):
+        return RemoteCholesky(0, read_instrs)
+
+
+class SyrkExpr(OperatorExpr):
+    def __init__(self, read_expr1, read_expr2, read_expr3, write_expr):
+        self.read_exprs = [read_expr1, read_expr2, read_expr3]
+        self.write_expr = write_expr
+
+    def _eval_compute_instr(self, read_instrs, var_values):
+        return RemoteSYRK(0, read_instrs)
+
+
+class TrsmExpr(OperatorExpr):
+    def __init__(self, read_expr1, read_expr2, write_expr, lower=False, right=False):
+        self.read_exprs = [read_expr1, read_expr2]
+        self.write_expr = write_expr
+        self.lower = lower
+        self.right = right
+
+    def _eval_compute_instr(self, read_instrs, var_values):
+        return RemoteTRSM(0, read_instrs, lower=self.lower, right=self.right) 
+
+ 
+class Program():
+    def __init__(body):
+
+
+class For():
+    def __init__(var, limits, body):
+        self.var = var
+        self.limits = utils.convert_to_slice(limits)
+        self.body = body
+
+
+class AddExpr():
+    def __init__(expr1, expr2):
+        self.expr1 = expr1
+        self.expr2 = expr2 
+
+    def eval(var_values):
+        return self.expr1.eval(var_values) + self.expr2.eval(var_values)
+
+
+class Var():
+    def __init__(self, name):
+        self.name = name
+
+    def eval(self, var_values):
+        return var_values[self.name]
+
+
+class Const():
+    def __init__(self, val):
+        self.val = val
+
+    def eval(self, var_values):
+        return self.val
+
+
+def _chol(X, out_bucket=None):
+    if out_bucket is None:
+        out_bucket = X.bucket
+    out_key = generate_key_name_uop(X, "chol")
+
+    block_len = len(X._block_idxs(0))
+    L = BigMatrix(out_key,
+                  shape=[X.shape[0], X.shape[0]],
+                  bucket=out_bucket,
+                  shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]],
+                  parent_fn=constant_zeros,
+                  write_header=True)
+    trailing = BigMatrix(out_key + "_trailing",
+                         shape=[block_len - 1, X.shape[0], X.shape[0]],
+                         bucket=out_bucket,
+                         shard_sizes=[1, X.shard_sizes[0], X.shard_sizes[0]])
+
+    ForBlock(var="i", limits=[Const(0), Const(block_len)], body=[
+        Cholesky((trailing, [Var("i"), Var("i"), Var("i")]),
+                 (trailing, [Const(-1), Var("i"), Var("i")])),
+        ForBlock(var="j", limits=[AddExpr(Var("i"), 1), Const(block_len)], body=[
+            TrsmExpr((trailing, [Const(-1), Var("i"), Var("i")]),
+                     (trailing, [Var("i"), Var("j"), Var("i")]),
+                     (trailing, [Const(-1), Var("j"), Var("i")]),
+                     lower=False, right=True)
+        ]),
+        ForBlock(var="j", limits=[AddExpr(Var("i"), Const(1)), Const(block_len)], body=[
+            ForBlock(var="k", limits=["j", block_len], body=[
+                Syrk((trailing, [Var("i"), Var("j"), Var("k")]),
+                     (trailing, [Var("i"), Var("j"), Var("i")]),
+                     (trailing, [Var("i"), Var("k"), Var("i")]),
+                     (trailing, [AddExpr(Var("i"), Const(1)), Var("j"), Var("k")]))
+            ]),
+        ]),
+    ])
 
 
 def _chol(X, out_bucket=None):

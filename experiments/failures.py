@@ -25,7 +25,7 @@ import logging
 import copy
 
 
-REDIS_IP = os.environ.get("REDIS_IP", "")
+REDIS_ADDR = os.environ.get("REDIS_ADDR", "")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 INFO_FREQ = 5
@@ -70,14 +70,14 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     else:
         cache_size = 0
 
-    REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
+    REDIS_CLIENT = redis.StrictRedis(REDIS_ADDR, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
 
     if (truncate is not None):
         instructions = instructions[:truncate]
     config = pwex.config
 
     program = lp.LambdaPackProgram(instructions, executor=pywren.lambda_executor, pywren_config=config, num_priorities=num_priorities, eager=eager)
-    redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
+    redis_env ={"REDIS_ADDR": os.environ.get("REDIS_ADDR", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
 
 
     done_counts = []

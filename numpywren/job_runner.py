@@ -22,7 +22,7 @@ import copy
 import random
 
 
-REDIS_IP = os.environ.get("REDIS_IP", "127.0.0.1")
+REDIS_ADDR = os.environ.get("REDIS_ADDR", "127.0.0.1")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 REDIS_CLIENT = None
@@ -168,7 +168,7 @@ def calculate_busy_time(rtimes):
 async def check_failure(loop, failure_key):
     global REDIS_CLIENT
     if (REDIS_CLIENT == None):
-      REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
+      REDIS_CLIENT = redis.StrictRedis(REDIS_ADDR, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
     while (True):
       f_key = REDIS_CLIENT.get(failure_key)
       if (f_key is not None):
@@ -297,7 +297,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     running_times = shared_state['running_times']
     #last_message_time = time.time()
     if (REDIS_CLIENT == None):
-      REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
+      REDIS_CLIENT = redis.StrictRedis(REDIS_ADDR, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
     redis_client = REDIS_CLIENT
     try:
         while(True):

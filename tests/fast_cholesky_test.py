@@ -14,14 +14,13 @@ from importlib import reload
 from numpywren import lambdapack as lp
 from numpywren import binops 
 from collections import defaultdict
-import seaborn as sns
 import boto3
 import numpywren
 import numpywren.wait
 from numpywren import job_runner
 import sys
 
-redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
+redis_env ={"REDIS_ADDR": os.environ.get("REDIS_ADDR", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
 def program_state_inspect(program):
     executor = fs.ThreadPoolExecutor(64)
     futures = []

@@ -9,6 +9,8 @@ import os
 import pickle
 import time
 
+import aiobotocore
+import asyncio
 import boto3
 import botocore
 import cloudpickle
@@ -17,8 +19,7 @@ import pywren.wrenconfig as wc
 
 from . import matrix_utils
 from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists_async
-import asyncio
-import aiobotocore
+from . import utils
 
 cpu_count = multiprocessing.cpu_count()
 logger = logging.getLogger(__name__)
@@ -128,26 +129,7 @@ class BigMatrix(object):
         """
         updated_block_slices = []
         for i, block_slice in enumerate(block_slices):
-            if block_slice is None:
-                updated_block_slices.append(slice(None, None, None))
-            elif isinstance(block_slice, int):
-                updated_block_slices.append(slice(block_slice, block_slice + 1, 1))
-            elif not isinstance(block_slice, slice):
-                start = None
-                stop = None
-                step = None
-                if len(block_slice) == 1:
-                    stop = block_slice[0]
-                elif len(block_slice) == 2:
-                    start = block_slice[0]
-                    stop = block_slice[1]
-                elif len(block_slice) == 3:
-                    start = block_slice[0]
-                    stop = block_slice[1]
-                    step = block_slice[2]
-                else:
-                    raise ValueError("Expected slices of length 1 to 3.")
-                updated_block_slices.append(slice(start, stop, step))
+            updated_block_slices.append(utils.convert_to_slice(block_slice))
 
         return BigMatrixView(self, updated_block_slices)
 

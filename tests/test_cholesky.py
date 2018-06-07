@@ -14,7 +14,7 @@ import time
 import os
 import boto3
 
-redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
+redis_env ={"REDIS_ADDR": os.environ.get("REDIS_ADDR", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
 
 class CholeskyTest(unittest.TestCase):
     def test_cholesky_single(self):
@@ -35,6 +35,11 @@ class CholeskyTest(unittest.TestCase):
         program.free()
         print("Program status")
         print(program.program_status())
+        L_npw = L_sharded.numpy()
+        L = np.linalg.cholesky(A)
+        print(L_npw)
+        print(L)
+        assert(np.allclose(L_npw, L))
 
 
     def test_cholesky_multi(self):
@@ -58,19 +63,11 @@ class CholeskyTest(unittest.TestCase):
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
         program.start()
         #job_runner.main(program, program.queue_url)
-        job_runner.lambdapack_run(program, pipeline_width=1)
+        job_runner.lambdapack_run(program)
         program.wait()
         print("Program status")
         print(program.program_status())
         program.free()
-        profiled_blocks = program.get_all_profiling_info()
-        print(lp.perf_profile(profiled_blocks))
-        for pc,profiled_block in enumerate(profiled_blocks):
-            total_time = 0
-            actual_time = profiled_block.end_time - profiled_block.start_time
-            for instr in profiled_block.instrs:
-                total_time += instr.end_time - instr.start_time
-            print("Block {0} total_time {1} pipelined time {2}".format(pc, total_time, actual_time))
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
         print(L_npw)
@@ -176,19 +173,6 @@ class CholeskyTest(unittest.TestCase):
         print(L_npw)
         print(L)
         assert(np.allclose(L_npw, L))
-        for pc in range(len(program.inst_blocks)):
-            edge_sum = lp.get(program._node_edge_sum_key(pc))
-            if (edge_sum == None):
-                edge_sum = 0
-            edge_sum = int(edge_sum)
-            indegree = len(program.parents[pc])
-            node_status =  program.get_node_status(pc)
-            redis_str = "PC: {0}, Edge Sum: {1}, Indegree: {2}, Node Status {3}".format(pc, edge_sum, indegree, node_status)
-            if (edge_sum != indegree):
-                print(redis_str)
-            assert(edge_sum == indegree)
-
-
 
     def test_cholesky_multi_lambda(self):
         print("RUNNING many lambda")

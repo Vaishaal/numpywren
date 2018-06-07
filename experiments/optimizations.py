@@ -26,7 +26,7 @@ import copy
 import pywren.wrenconfig as wc
 
 
-REDIS_IP = os.environ.get("REDIS_IP", "127.0.0.1")
+REDIS_ADDR = os.environ.get("REDIS_ADDR", "127.0.0.1")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
 REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
 INFO_FREQ = 5
@@ -54,13 +54,13 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
 
     X = np.random.randn(problem_size, 1)
     if standalone:
-        redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", ""), "AWS_ACCESS_KEY_ID" : "AKIAIV3ENRQOI3FET2YA", "AWS_SECRET_ACCESS_KEY": "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", "OMP_NUM_THREADS":"1"}
+        redis_env ={"REDIS_ADDR": os.environ.get("REDIS_ADDR", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", ""), "AWS_ACCESS_KEY_ID" : "AKIAIV3ENRQOI3FET2YA", "AWS_SECRET_ACCESS_KEY": "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", "OMP_NUM_THREADS":"1"}
         config = wc.default()
         config['runtime']['s3_bucket'] = 'pictureweb'
         config['runtime']['s3_key'] = 'pywren.runtime/pywren_runtime-3.6-numpywren_avx512.tar.gz'
         pwex = pywren.standalone_executor(config=config)
     else:
-        redis_env ={"REDIS_IP": os.environ.get("REDIS_IP", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
+        redis_env ={"REDIS_ADDR": os.environ.get("REDIS_ADDR", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
         config = wc.default()
         config['runtime']['s3_bucket'] = 'pictureweb'
         config['runtime']['s3_key'] = 'pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz'
@@ -86,7 +86,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     else:
         cache_size = 0
 
-    REDIS_CLIENT = redis.StrictRedis(REDIS_IP, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
+    REDIS_CLIENT = redis.StrictRedis(REDIS_ADDR, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
 
     if (truncate is not None):
         instructions = instructions[:truncate]
