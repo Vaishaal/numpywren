@@ -29,6 +29,7 @@ def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
             else:
                 XY_block += block1.dot(block2)
         XY.put_block(XY_block, bidx_0, bidx_1)
+        return XY_block
 
 def _gemm_remote_1(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
     os.system("sudo mount -o remount,size=50g /dev/shm")
@@ -102,7 +103,7 @@ def gemm_with_prefetch(X, Y, bidx0, bidx1, block_chunk_size=16):
     return result
 
 
-def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.float64, overwrite=True, gemm_impl=0, gemm_chunk_size=16):
+def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.float64, overwrite=True, gemm_impl=0, gemm_chunk_size=16, straggler_thresh=1.0):
 
     '''
         Compute XY return
@@ -120,7 +121,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     if (out_bucket == None):
         out_bucket = X.bucket
 
-    root_key = generate_key_name_binop(X, Y, "gemm")
+    root_key = matrix_utils.hash_string(generate_key_name_binop(X, Y, "gemm"))
     if (Y.shard_sizes[0] !=  X.shard_sizes[1]):
         raise Exception("X dim 1 shard size must match Y dim 0 shard size")
     if (X.key == Y.key and (X.transposed ^ Y.transposed)):
@@ -145,7 +146,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         block_idxs_to_map = list(set(XY.block_idxs_not_exist))
 
     print("Number of output blocks to generate ", len(block_idxs_to_map))
-    chunked_blocks = list(chunk(list(chunk(block_idxs_to_map, tasks_per_job)), num_jobs))
+    chunked_blocks = chunk(block_idxs_to_map, tasks_per_job)
     if (not isinstance(pwex.invoker, pywren.queues.SQSInvoker) and gemm_impl > 0):
             raise Exception("GEMM IMPL > 0 only supported for standalone mode pywren")
 
@@ -153,27 +154,24 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     def pywren_run(x):
         return _gemms[gemm_impl](x, XY, X, Y, reduce_idxs=reduce_idxs, dtype=dtype, block_chunk_size=gemm_chunk_size)
 
-    all_futures = []
-    for i, c in enumerate(chunked_blocks):
-        print("Submitting job for chunk {0} in axis 0".format(i))
-        if (local):
-            list(map(pywren_run, c))
-        else:
-            s = time.time()
-            futures = pwex.map(pywren_run, c)
-            e = time.time()
-            print("Pwex Map Time {0}".format(e - s))
-            all_futures.append((i,futures))
-
+    if (local):
+        list(map(pywren_run, chunked_blocks))
+    else:
+        s = time.time()
+        futures = pwex.map(pywren_run, chunked_blocks)
+        e = time.time()
+        print("Pwex Map Time {0}".format(e - s))
     if (local):
         return XY
-
-    for i, futures, in all_futures:
-        print("waiting")
-        pywren.wait(futures)
-        [f.result() for f in futures]
-
-    return XY
+    print("waiting")
+    while (True):
+        fs_dones, fs_notdones = pywren.wait(futures, 3)
+        result_count = len(fs_dones)
+        print(result_count)
+        if (result_count >= straggler_thresh*len(futures)):
+            [f.result() for f in fs_dones]
+            return XY
+        time.sleep(1)
 
 # matrix vector multiply
 # hard
