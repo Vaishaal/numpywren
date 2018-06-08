@@ -21,6 +21,7 @@ import numpy as np
 import pywren
 from pywren.serialize import serialize
 import pywren.wrenconfig as wc
+import sympy
 import redis
 import scipy.linalg
 
@@ -1227,14 +1228,31 @@ def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):
             pc += count
     return all_instructions, X, scratch 
 
-class Statement(object):
 
-class StatementBlock(Statement):
+class Statement(abc.ABC):
+    @abc.abstractmethod
+    def get_expr(index):
+        pass
 
-class OperatorExpr(abc.ABC):
+    @property
+    @abc.abstractmethod
+    def _num_exprs(self):
+        pass
+
+
+class OperatorExpr(Statement, abc.ABC):
+    def __init__(self, read_exprs, write_expr):
+        self._read_exprs = read_exprs
+        self._write_expr = write_expr
+        self._num_exprs = 1
+
+    def get_expr(index):
+        assert index == 0
+        return self
+
     def eval_operator(self, priority, var_values):
         read_instrs = self.eval_read_instrs(var_values)
-        compute_instr = self._eval_compute_istr(read_instrs, var_values) 
+        compute_instr = self._eval_compute_instr(read_instrs) 
         write_instr = self.eval_write_instr(var_values)
         return InstructionBlock(read_instrs + [compute_instr, write_instr], priority=priority)
 
@@ -1247,78 +1265,70 @@ class OperatorExpr(abc.ABC):
         return RemoteWrite(0, write_ref[0], data_instr, *write_ref[1])
 
     def eval_read_refs(self, var_values):
-        return [self._eval_block(block_expr, var_values) for block_expr in self.read_exprs]
+        return [self._eval_block_ref(block_expr, var_values) for block_expr in self._read_exprs]
 
     def eval_write_ref(self, var_values):
-        return self._eval_block(self.write_expr, var_values)
+        return self._eval_block(self._write_expr, var_values)
 
-    def _eval_block(self, block_expr, var_values):
-        return (block_expr[0], [idx.eval(var_values) for idx in block_expr[1]])
+    def _eval_block_ref(self, block_expr, var_values):
+        return (block_expr[0], [idx.subs(var_values) for idx in block_expr[1]])
+
+    @abc.abstractmethod
+    def _eval_compute_instr(self, read_instrs):
+        pass
 
 
 class CholeskyExpr(OperatorExpr):
     def __init__(self, read_expr, write_expr)
-        self.read_exprs = [read_expr]
-        self.write_expr = write_expr
+        super().__init__([read_expr], write_expr)
 
-    def _eval_compute_instr(self, read_instrs, var_values):
+    def _eval_compute_instr(self, read_instrs):
         return RemoteCholesky(0, read_instrs)
 
 
 class SyrkExpr(OperatorExpr):
     def __init__(self, read_expr1, read_expr2, read_expr3, write_expr):
-        self.read_exprs = [read_expr1, read_expr2, read_expr3]
-        self.write_expr = write_expr
+        super().__init__([read_expr1, read_expr2, read_expr3], write_expr)
 
-    def _eval_compute_instr(self, read_instrs, var_values):
+    def _eval_compute_instr(self, read_instrs):
         return RemoteSYRK(0, read_instrs)
 
 
 class TrsmExpr(OperatorExpr):
     def __init__(self, read_expr1, read_expr2, write_expr, lower=False, right=False):
-        self.read_exprs = [read_expr1, read_expr2]
-        self.write_expr = write_expr
-        self.lower = lower
-        self.right = right
+        super().__init__([read_expr1, read_expr2], write_expr)
+        self._lower = lower
+        self._right = right
 
-    def _eval_compute_instr(self, read_instrs, var_values):
-        return RemoteTRSM(0, read_instrs, lower=self.lower, right=self.right) 
+    def _eval_compute_instr(self, read_instrs):
+        return RemoteTRSM(0, read_instrs, lower=self._lower, right=self._right) 
 
  
-class Program():
+class BlockStatement(Statement, abc.ABC):
+    def __init__(self, body, var):
+        self._body = body
+        self._num_exprs = 0
+        for statement in self._body:
+            num_exprs += statement._num_exprs
+
+    def get_expr(index):
+        assert index < self._num_exprs
+        for statement in self.body:
+            if index < statement._num_exprs:
+                return statement.get_expr(index)
+            index -= statement._num_exprs
+
+
+class Program(BlockStatement):
     def __init__(body):
+        super().__init__(body)
 
 
-class For():
+class For(BlockStatement):
     def __init__(var, limits, body):
-        self.var = var
-        self.limits = utils.convert_to_slice(limits)
-        self.body = body
-
-
-class AddExpr():
-    def __init__(expr1, expr2):
-        self.expr1 = expr1
-        self.expr2 = expr2 
-
-    def eval(var_values):
-        return self.expr1.eval(var_values) + self.expr2.eval(var_values)
-
-
-class Var():
-    def __init__(self, name):
-        self.name = name
-
-    def eval(self, var_values):
-        return var_values[self.name]
-
-
-class Const():
-    def __init__(self, val):
-        self.val = val
-
-    def eval(self, var_values):
-        return self.val
+        self._var = var
+        self._limits = limits
+        super().__init__(body)
 
 
 def _chol(X, out_bucket=None):
@@ -1338,21 +1348,21 @@ def _chol(X, out_bucket=None):
                          bucket=out_bucket,
                          shard_sizes=[1, X.shard_sizes[0], X.shard_sizes[0]])
 
-    ForBlock(var="i", limits=[Const(0), Const(block_len)], body=[
-        Cholesky((trailing, [Var("i"), Var("i"), Var("i")]),
-                 (trailing, [Const(-1), Var("i"), Var("i")])),
-        ForBlock(var="j", limits=[AddExpr(Var("i"), 1), Const(block_len)], body=[
-            TrsmExpr((trailing, [Const(-1), Var("i"), Var("i")]),
-                     (trailing, [Var("i"), Var("j"), Var("i")]),
-                     (trailing, [Const(-1), Var("j"), Var("i")]),
+    ForBlock(var="i", limits=[sympy.sympify(0), sympy.sympify(block_len)], body=[
+        Cholesky((trailing, [sympy.sympify("i"), sympy.sympify("i"), sympy.sympify("i")]),
+                 (trailing, [sympy.sympify(-1), sympy.sympify("i"), sympy.sympify("i")])),
+        ForBlock(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
+            TrsmExpr((trailing, [sympy.sympify(-1), sympy.sympify("i"), sympy.sympify("i")]),
+                     (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
+                     (trailing, [sympy.sympify(-1), sympy.sympify("j"), sympy.sympify("i")]),
                      lower=False, right=True)
         ]),
-        ForBlock(var="j", limits=[AddExpr(Var("i"), Const(1)), Const(block_len)], body=[
-            ForBlock(var="k", limits=["j", block_len], body=[
-                Syrk((trailing, [Var("i"), Var("j"), Var("k")]),
-                     (trailing, [Var("i"), Var("j"), Var("i")]),
-                     (trailing, [Var("i"), Var("k"), Var("i")]),
-                     (trailing, [AddExpr(Var("i"), Const(1)), Var("j"), Var("k")]))
+        ForBlock(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
+            ForBlock(var="k", limits=[sympy.sympify("j"), sympy.sympify(block_len)], body=[
+                Syrk((trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("k")]),
+                     (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
+                     (trailing, [sympy.sympify("i"), sympy.sympify("k"), sympy.sympify("i")]),
+                     (trailing, [sympy.sympify("i + 1"), sympy.sympify("j"), sympy.sympify("k")]))
             ]),
         ]),
     ])
