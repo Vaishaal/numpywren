@@ -1,3 +1,4 @@
+import abc
 from collections import defaultdict
 import concurrent.futures as fs
 import copy
@@ -652,7 +653,7 @@ class LambdaPackProgram(object):
         try:
           expr = self.program.get_expr(expr_idx)
           write_ref = expr.eval_write_ref(var_values)
-          for i in range(self.program.num_exprs):
+          # for i in range(self.program.num_exprs):
               
           post_op_start = time.time()
           node_status = self.get_node_status(i)
@@ -663,7 +664,7 @@ class LambdaPackProgram(object):
           self.set_node_status(i, NS.POST_OP)
           if (ret_code == PS.EXCEPTION and tb != None):
             self.handle_exception(" EXCEPTION", tb=tb, block=i)
-          children = expr.eval_children(
+          # children = expr.eval_children(
           parents = self.parents[i]
           ready_children = []
           for child in children:
@@ -1053,11 +1054,6 @@ class Statement(abc.ABC):
     def get_expr(self, index):
         pass
 
-    @property
-    @abc.abstractmethod
-    def num_exprs(self):
-        pass
-
 
 class OperatorExpr(Statement, abc.ABC):
     def __init__(self, read_exprs, write_expr):
@@ -1075,12 +1071,13 @@ class OperatorExpr(Statement, abc.ABC):
         write_instr = self.eval_write_instr(var_values)
         return InstructionBlock(read_instrs + [compute_instr, write_instr], priority=0)
 
-    def find_valid_refs(self, write_ref, var_names, var_limits):
+    def find_valid_var_values(self, write_ref, var_names, var_limits):
         def enumerate_possiblities(idx, var_limits, parametric_eqns):
-            curr_eqn = parametric_eqns.get(var_names[idx])
             if not parametric_eqns:
                 return []
-            elif len(parametric_eqns) == len(var_names):
+
+            curr_eqn = parametric_eqns.get(var_names[idx])
+            if len(parametric_eqns) == len(var_names):
                 var_values = {}
                 value = []
                 for var, limit in zip(var_names, var_limits):
@@ -1090,33 +1087,38 @@ class OperatorExpr(Statement, abc.ABC):
                     if parametric_eqns[var] < limit[0] or parametric_eqns[var] >= limit[1]:
                         return []
                     var_values[var] = int(value)
-                return [self.eval_read_refs(ref)]
+                return [var_values]
             elif curr_eqn is None:
                 refs = []
                 for i in range(curr_limit[0], curr_limit[1]):
                     new_eqns = {name: eqn.subs({var_names[idx]: i})
                                 for name, eqn in parametric_eqns.items()}
+                    new_eqns[var_names[idx]] = curr_eqn
                     new_limits = [(lim[0].subs(new_eqns), lim[1].subs(new_eqns))
                                   for lim in var_limits]
                     refs += enumerate_possibilities(idx + 1, new_limits, new_eqns) 
                 return refs
-            elif not curr_eqn.is_integer:
-                return []
-            else:
+            elif curr_eqn.is_integer:
                 new_eqns = {name: eqn.subs({var_names[idx]: curr_eqn})
                             for name, eqn in parametric_eqns.items()}
                 new_limits = [(lim[0].subs(new_eqns), lim[1].subs(new_eqns))
                               for lim in var_limits]
                 return enumerate_possibilities(idx + 1, new_eqns)
+            else:
+                return []
 
         refs = []
         for read_expr in self._read_exprs:
             if write_ref[0] != read_expr[0]:
                 continue
+            if not var_names:
+                if write_ref[1] == read_expr[1]:
+                    refs.append({})
+                continue
             assert len(write_ref[1]) == len(read_expr[1])
             linear_eqns = [read_idx_expr - write_idx for write_idx, read_idx_expr in
                            zip(write_ref[1], read_expr[1])]
-            parametric_eqns = sympy.solvers.solve(linear_eqns, reversed(var_names)) 
+            parametric_eqns = sympy.solve(linear_eqns, list(reversed(var_names))) 
             refs += enumerate_possiblities(0, var_limits, parametric_eqns)
         return refs
 
@@ -1124,7 +1126,7 @@ class OperatorExpr(Statement, abc.ABC):
         read_refs = self.eval_read_refs(var_values)
         return [RemoteRead(0, ref[0], *ref[1]) for ref in read_refs]
 
-    def eval_write_instr(self, data_instr var_values):
+    def eval_write_instr(self, data_instr, var_values):
         write_ref = self.eval_write_ref(var_values)
         return RemoteWrite(0, write_ref[0], data_instr, *write_ref[1])
 
@@ -1132,10 +1134,10 @@ class OperatorExpr(Statement, abc.ABC):
         return [self._eval_block_ref(block_expr, var_values) for block_expr in self._read_exprs]
 
     def eval_write_ref(self, var_values):
-        return self._eval_block(self._write_expr, var_values)
+        return self._eval_block_ref(self._write_expr, var_values)
 
     def _eval_block_ref(self, block_expr, var_values):
-        return (block_expr[0], [idx.subs(var_values) for idx in block_expr[1]])
+        return (block_expr[0], tuple([idx.subs(var_values) for idx in block_expr[1]]))
 
     @abc.abstractmethod
     def _eval_compute_instr(self, read_instrs):
@@ -1143,7 +1145,7 @@ class OperatorExpr(Statement, abc.ABC):
 
 
 class CholeskyExpr(OperatorExpr):
-    def __init__(self, read_expr, write_expr)
+    def __init__(self, read_expr, write_expr):
         super().__init__([read_expr], write_expr)
 
     def _eval_compute_instr(self, read_instrs):
@@ -1169,18 +1171,18 @@ class TrsmExpr(OperatorExpr):
 
  
 class BlockStatement(Statement, abc.ABC):
-    def __init__(self, body, var):
+    def __init__(self, body):
         self._body = body
         self.num_exprs = 0
         for statement in self._body:
-            self.num_exprs += statement._num_exprs
+            self.num_exprs += statement.num_exprs
 
-    def get_expr(index):
-        assert index < self._num_exprs
-        for statement in self.body:
-            if index < statement._num_exprs:
+    def get_expr(self, index):
+        assert index < self.num_exprs
+        for statement in self._body:
+            if index < statement.num_exprs:
                 return statement.get_expr(index)
-            index -= statement._num_exprs
+            index -= statement.num_exprs
 
 
 class Program(BlockStatement):
@@ -1192,8 +1194,9 @@ class Program(BlockStatement):
             read_ops = []
             for statement in body:
                 if isinstance(statement, OperatorExpr):
-                    valid_refs = statement.find_valid_refs(write_ref, var_names, var_limits)
-                    read_ops += [(expr_counter, ref) for ref in valid_refs]
+                    valid_var_values = statement.find_valid_var_values(
+                        write_ref, var_names, var_limits)
+                    read_ops += [(expr_counter, vals) for vals in valid_var_values]
                 elif isinstance(statement, For):
                     read_ops += recurse_eval_read_ops(statement._body,
                                                       expr_counter,
@@ -1201,12 +1204,12 @@ class Program(BlockStatement):
                                                       var_limits + [statement._limits])
                 else:
                     raise NotImplementedError
-                expr_counter += statement._num_exprs
+                expr_counter += statement.num_exprs
             return read_ops
-        return recurse_eval_reader_operators(self._body, 0, [], [])
+        return recurse_eval_read_ops(self._body, 0, [], [])
 
 class For(BlockStatement):
-    def __init__(var, limits, body):
+    def __init__(self, var, limits, body):
         self._var = var
         self._limits = limits
         super().__init__(body)
