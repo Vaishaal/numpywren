@@ -576,29 +576,27 @@ class InstructionBlock(object):
     def __copy__(self):
         return InstructionBlock(self.instrs.copy(), self.label)
 
-class LoopBlock(object):
-    def __init__(self, read_func, write_func, label=None, priority=0):
-        
 
 class LambdaPackProgram(object):
     '''Sequence of instruction blocks that get executed
        on stateless computing substrates
        Maintains global state information
     '''
-    def __init__(self, inst_blocks, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG, num_priorities=2, redis_ip=REDIS_ADDR, io_rate=3e7, flop_rate=20e9, eager=False, num_program_shards=5000):
-        t = time.time()
+    def __init__(self, program, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG,
+                 num_priorities=1, redis_ip=REDIS_ADDR, io_rate=3e7, flop_rate=20e9, eager=False,
+                 num_program_shards=5000):
         pwex = executor(config=pywren_config)
         self.pywren_config = pywren_config
         self.executor = executor
         self.bucket = pywren_config['s3']['bucket']
         self.redis_ip = redis_ip
-        self.inst_blocks = [copy.copy(x) for x in inst_blocks]
+        self.program = program.copy()
         self.max_priority = num_priorities - 1
         self.io_rate = io_rate
         self.flop_rate = flop_rate
         self.eager = eager
         hashed = hashlib.sha1()
-        program_string = "\n".join([str(x) for x in self.inst_blocks])
+        program_string = self.program.__str__() 
         hashed.update(program_string.encode())
         # this is temporary hack?
         hashed.update(str(time.time()).encode())
@@ -611,96 +609,7 @@ class LambdaPackProgram(object):
           queue_url = client.create_queue(QueueName=self.hash + str(i))["QueueUrl"]
           self.queue_urls.append(queue_url)
           client.purge_queue(QueueUrl=queue_url)
-        e = time.time()
-        #print("Pre depedency analyze {0}".format(e - t))
-        t = time.time()
-        self.children, self.parents = self._io_dependency_analyze(self.inst_blocks)
-        e = time.time()
-        #print("Dependency analyze ", e - t)
-        t = time.time()
-        self.starters = []
-        self.terminators = []
-        max_i_id = max([inst.id for inst_block in self.inst_blocks for inst in inst_block.instrs])
-        self.pc = max_i_id + 1
-        for i in range(len(self.inst_blocks)):
-            children = self.children[i]
-            parents = self.parents[i]
-            if len(children) == 0:
-                self.terminators.append(i)
-            if len(parents) == 0:
-                self.starters.append(i)
-            block_hash = hashlib.sha1((self.hash + str(i)).encode()).hexdigest()
-            block_return = RemoteReturn(self.pc + 1, block_hash)
-            self.inst_blocks[i].instrs.append(block_return)
-
-        self.remote_return = RemoteReturn(max_i_id + 1, self.hash)
-        self.return_block = InstructionBlock([self.remote_return], label="EXIT")
-        self.inst_blocks.append(self.return_block)
-        self.program_shard_map = {}
-
-        for i in self.terminators:
-          self.children[i].add(len(self.inst_blocks) - 1)
-
-        self.children[len(self.inst_blocks) - 1] = set()
-        self.parents[len(self.inst_blocks) - 1] = self.terminators
-        longest_path = self._find_critical_path()
-        self.longest_path = longest_path
-        self.priorities = [0 for _ in range(len(self.inst_blocks))]
-        self._recursive_priority_donate(self.longest_path, self.max_priority)
-        self.num_program_shards = num_program_shards
         put(self.hash, PS.NOT_STARTED.value, ip=self.redis_ip)
-        self._shard_program()
-        self.num_inst_blocks = len(self.inst_blocks)
-        del self.inst_blocks
-
-    def inst_blocks(self, i):
-        t = time.time()
-        client = boto3.client('s3')
-        (shard_idx, idx_in_shard) = self.program_shard_map[i]
-        out_key = "{0}/{1}/{2}".format("lambdapack", self.hash, "program_shard_{0}".format(shard_idx))
-        #print("READING", out_key)
-        #TODO we can cache these
-        serialized_blocks = pickle.loads(client.get_object(Bucket=self.bucket, Key=out_key)["Body"].read())
-        res = pickle.loads(serialized_blocks[idx_in_shard])
-        e = time.time()
-        #print("block fetch took {0} seconds".format(e - t))
-        return res
-
-
-
-    def _shard_program(self, num_cores=32):
-        print("serializing program before sharding")
-        t = time.time()
-        executor = fs.ProcessPoolExecutor(num_cores)
-        serialized_blocks = [pickle.dumps(x) for x in self.inst_blocks]
-        program_shard_dict = defaultdict(list)
-        for i, serialized_block in enumerate(serialized_blocks):
-          idx_in_shard = len(program_shard_dict[(i % self.num_program_shards)])
-          shard_idx = (i % self.num_program_shards)
-          #print(shard_idx)
-          program_shard_dict[shard_idx].append(serialized_block)
-          self.program_shard_map[i] = (shard_idx, idx_in_shard)
-        print("sharding program")
-        futures = []
-        for key,value in program_shard_dict.items():
-          out_key = "{0}/{1}/{2}".format("lambdapack", self.hash, "program_shard_{0}".format(key))
-          data = pickle.dumps(value)
-          bucket = self.bucket
-          futures.append(executor.submit(upload, out_key, bucket, data))
-        [f.result() for f in futures]
-        e = time.time()
-        print("Sharding program took {0} seconds".format(e - t))
-        return 0
-
-
-
-
-
-
-
-
-
-
 
     def _node_key(self, i):
       return "{0}_{1}".format(self.hash, i)
@@ -731,26 +640,7 @@ class LambdaPackProgram(object):
       put(self._edge_key(i,j), status.value, ip=self.redis_ip)
       return status
 
-    def set_max_pc(self, pc):
-      # unreliable DO NOT RELY ON THIS THIS JUST FOR DEBUGGING
-      max_pc = get(self.hash + "_max", ip=self.redis_ip)
-      if (max_pc == None):
-        max_pc = 0
-      max_pc = int(max_pc)
-      if (pc > max_pc):
-        max_pc = put(self.hash + "_max", pc, ip=self.redis_ip)
-
-      return max_pc
-
-    def get_max_pc(self):
-      # unreliable DO NOT RELY ON THIS THIS JUST FOR DEBUGGING
-      max_pc = get(self.hash + "_max", ip=self.redis_ip)
-      if (max_pc == None):
-        max_pc = 0
-      return int(max_pc)
-
-    #@profile
-    def post_op(self, i, ret_code, inst_block, tb=None):
+    def post_op(self, expr_idx, var_values, ret_code, inst_block, tb=None):
         # need clean post op logic to handle
         # replays
         # avoid double increments
@@ -760,8 +650,11 @@ class LambdaPackProgram(object):
         # post op needs to ATOMICALLY check dependencies
         global REDIS_CLIENT
         try:
+          expr = self.program.get_expr(expr_idx)
+          write_ref = expr.eval_write_ref(var_values)
+          for i in range(self.program.num_exprs):
+              
           post_op_start = time.time()
-          #print("Post OP STARTED: {0}".format(i))
           node_status = self.get_node_status(i)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
@@ -769,10 +662,8 @@ class LambdaPackProgram(object):
             return
           self.set_node_status(i, NS.POST_OP)
           if (ret_code == PS.EXCEPTION and tb != None):
-            #print("EXCEPTION ")
-            #print(inst_block)
             self.handle_exception(" EXCEPTION", tb=tb, block=i)
-          children = self.children[i]
+          children = expr.eval_children(
           parents = self.parents[i]
           ready_children = []
           for child in children:
@@ -817,7 +708,7 @@ class LambdaPackProgram(object):
 
           client = boto3.client('sqs', region_name='us-west-2')
           # this should NEVER happen...
-          assert (i in ready_children) == False
+          assert not i in ready_children
           for child in ready_children:
             #print("Adding {0} to sqs queue".format(child))
             resp = client.send_message(QueueUrl=self.queue_urls[self.priorities[child]], MessageBody=str(child))
@@ -846,12 +737,10 @@ class LambdaPackProgram(object):
             traceback.print_exc()
             raise
 
-
     def start(self):
         put(self.hash, PS.RUNNING.value, ip=self.redis_ip)
-        self.set_max_pc(0)
         sqs = boto3.resource('sqs')
-        for starter in self.starters:
+        for starter in self.program.starters:
           #print("Enqueuing ", starter)
           self.set_node_status(starter, NS.READY)
           priority = self.priorities[starter]
@@ -911,7 +800,6 @@ class LambdaPackProgram(object):
     def get_write(self):
       return get("{0}_write".format(self.hash), ip=self.redis_ip)
 
-
     def set_up(self, value):
       put(self.up, value, ip=self.redis_ip)
 
@@ -937,81 +825,12 @@ class LambdaPackProgram(object):
         except:
           print("key {0}/{1} not found in bucket {2}".format(self.hash, pc, self.bucket))
 
-
-
     def set_profiling_info(self, pc, inst_block):
         serializer = serialize.SerializeIndependent()
         byte_string = serializer([inst_block])[0][0]
         client = boto3.client('s3', region_name='us-west-2')
         client.put_object(Bucket=self.bucket, Key="{0}/{1}/{2}".format("lambdapack", self.hash, pc), Body=byte_string)
 
-
-    def _io_dependency_analyze(self, instruction_blocks, barrier_look_ahead=2):
-        #print("Starting IO dependency")
-        parents = defaultdict(set)
-        children = defaultdict(set)
-        read_edges = defaultdict(set)
-        write_edges = defaultdict(set)
-        for i, inst_0 in enumerate(instruction_blocks):
-            # find all places inst_0 reads
-            for inst in inst_0.instrs:
-              if inst.i_code == OC.S3_LOAD:
-                read_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))].add(i)
-              if inst.i_code == OC.S3_WRITE:
-                write_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))].add(i)
-                assert len(write_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))]) == 1
-
-        for i, inst_0 in enumerate(instruction_blocks):
-            # find all places inst_0 reads
-            for inst in inst_0.instrs:
-              if inst.i_code == OC.S3_LOAD:
-                parents[i].update(write_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))])
-              if inst.i_code == OC.S3_WRITE:
-                children[i].update(read_edges[(inst.matrix.key,inst.matrix.true_block_idx(*inst.bidxs))])
-
-        return children, parents
-
-
-
-    def _recursive_priority_donate(self, nodes, priority):
-      if (priority == 0):
-        return
-      for node in nodes:
-         self.inst_blocks[node].priority = max(min(priority, self.max_priority), self.inst_blocks[node].priority)
-         self.priorities[node] = self.inst_blocks[node].priority
-         self._recursive_priority_donate(self.parents[node], priority - 1)
-
-
-
-    def _find_critical_path(self):
-      ''' Find the longest path in dag '''
-      longest_paths = {i:-1 for i in range(len(self.inst_blocks))}
-      distances = {}
-      # assume dag is topologically sorted
-      for s in self.starters:
-        distances[s] = 0
-
-      for i,inst_block in enumerate(self.inst_blocks):
-        parents = list(self.parents[i])
-        parent_distances = [distances[p] for p in parents]
-        if (len(parents) == 0): continue
-        furthest_parent = parents[max(range(len(parents)), key=lambda x: parent_distances[x])]
-        distances[i] = max(parent_distances) + 1
-        longest_paths[i] = furthest_parent
-
-      furthest_node = max(distances.items(), key=lambda x: x[1])[0]
-      longest_path = [furthest_node]
-      current_node = longest_paths[furthest_node]
-      while(current_node != -1):
-        longest_path.insert(0, current_node)
-        current_node = longest_paths[current_node]
-      return longest_path
-
-    '''
-    def __str__(self):
-      return "\n".join([str(i) + "\n" + str(x) + "children: \n" + str(self.children[i]) + "\n parents: \n" + str(self.parents[i]) for i,x in enumerate(self.inst_blocks)])
-
-    '''
 
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     L_load = RemoteWrite(pc, L_in, b0, b1)
@@ -1231,12 +1050,12 @@ def _trisolve(A, B, lower=False, reduce_width=2, out_bucket=None):
 
 class Statement(abc.ABC):
     @abc.abstractmethod
-    def get_expr(index):
+    def get_expr(self, index):
         pass
 
     @property
     @abc.abstractmethod
-    def _num_exprs(self):
+    def num_exprs(self):
         pass
 
 
@@ -1244,17 +1063,62 @@ class OperatorExpr(Statement, abc.ABC):
     def __init__(self, read_exprs, write_expr):
         self._read_exprs = read_exprs
         self._write_expr = write_expr
-        self._num_exprs = 1
+        self.num_exprs = 1
 
-    def get_expr(index):
+    def get_expr(self, index):
         assert index == 0
         return self
 
-    def eval_operator(self, priority, var_values):
+    def eval_operator(self, var_values):
         read_instrs = self.eval_read_instrs(var_values)
         compute_instr = self._eval_compute_instr(read_instrs) 
         write_instr = self.eval_write_instr(var_values)
-        return InstructionBlock(read_instrs + [compute_instr, write_instr], priority=priority)
+        return InstructionBlock(read_instrs + [compute_instr, write_instr], priority=0)
+
+    def find_valid_refs(self, write_ref, var_names, var_limits):
+        def enumerate_possiblities(idx, var_limits, parametric_eqns):
+            curr_eqn = parametric_eqns.get(var_names[idx])
+            if not parametric_eqns:
+                return []
+            elif len(parametric_eqns) == len(var_names):
+                var_values = {}
+                value = []
+                for var, limit in zip(var_names, var_limits):
+                    value = parametric_eqns[var]
+                    if not value.is_integer: 
+                        return []
+                    if parametric_eqns[var] < limit[0] or parametric_eqns[var] >= limit[1]:
+                        return []
+                    var_values[var] = int(value)
+                return [self.eval_read_refs(ref)]
+            elif curr_eqn is None:
+                refs = []
+                for i in range(curr_limit[0], curr_limit[1]):
+                    new_eqns = {name: eqn.subs({var_names[idx]: i})
+                                for name, eqn in parametric_eqns.items()}
+                    new_limits = [(lim[0].subs(new_eqns), lim[1].subs(new_eqns))
+                                  for lim in var_limits]
+                    refs += enumerate_possibilities(idx + 1, new_limits, new_eqns) 
+                return refs
+            elif not curr_eqn.is_integer:
+                return []
+            else:
+                new_eqns = {name: eqn.subs({var_names[idx]: curr_eqn})
+                            for name, eqn in parametric_eqns.items()}
+                new_limits = [(lim[0].subs(new_eqns), lim[1].subs(new_eqns))
+                              for lim in var_limits]
+                return enumerate_possibilities(idx + 1, new_eqns)
+
+        refs = []
+        for read_expr in self._read_exprs:
+            if write_ref[0] != read_expr[0]:
+                continue
+            assert len(write_ref[1]) == len(read_expr[1])
+            linear_eqns = [read_idx_expr - write_idx for write_idx, read_idx_expr in
+                           zip(write_ref[1], read_expr[1])]
+            parametric_eqns = sympy.solvers.solve(linear_eqns, reversed(var_names)) 
+            refs += enumerate_possiblities(0, var_limits, parametric_eqns)
+        return refs
 
     def eval_read_instrs(self, var_values):
         read_refs = self.eval_read_refs(var_values)
@@ -1307,9 +1171,9 @@ class TrsmExpr(OperatorExpr):
 class BlockStatement(Statement, abc.ABC):
     def __init__(self, body, var):
         self._body = body
-        self._num_exprs = 0
+        self.num_exprs = 0
         for statement in self._body:
-            num_exprs += statement._num_exprs
+            self.num_exprs += statement._num_exprs
 
     def get_expr(index):
         assert index < self._num_exprs
@@ -1320,9 +1184,26 @@ class BlockStatement(Statement, abc.ABC):
 
 
 class Program(BlockStatement):
-    def __init__(body):
+    def __init__(self, body):
         super().__init__(body)
 
+    def eval_read_operators(self, write_ref):
+        def recurse_eval_read_ops(body, expr_counter, var_names, var_limits):
+            read_ops = []
+            for statement in body:
+                if isinstance(statement, OperatorExpr):
+                    valid_refs = statement.find_valid_refs(write_ref, var_names, var_limits)
+                    read_ops += [(expr_counter, ref) for ref in valid_refs]
+                elif isinstance(statement, For):
+                    read_ops += recurse_eval_read_ops(statement._body,
+                                                      expr_counter,
+                                                      var_names + [statement._var],
+                                                      var_limits + [statement._limits])
+                else:
+                    raise NotImplementedError
+                expr_counter += statement._num_exprs
+            return read_ops
+        return recurse_eval_reader_operators(self._body, 0, [], [])
 
 class For(BlockStatement):
     def __init__(var, limits, body):
@@ -1348,6 +1229,7 @@ def _chol(X, out_bucket=None):
                          bucket=out_bucket,
                          shard_sizes=[1, X.shard_sizes[0], X.shard_sizes[0]])
 
+    program = Program([
     ForBlock(var="i", limits=[sympy.sympify(0), sympy.sympify(block_len)], body=[
         Cholesky((trailing, [sympy.sympify("i"), sympy.sympify("i"), sympy.sympify("i")]),
                  (trailing, [sympy.sympify(-1), sympy.sympify("i"), sympy.sympify("i")])),
@@ -1365,7 +1247,9 @@ def _chol(X, out_bucket=None):
                      (trailing, [sympy.sympify("i + 1"), sympy.sympify("j"), sympy.sympify("k")]))
             ]),
         ]),
-    ])
+    ])])
+
+    return program, trailing
 
 
 def _chol(X, out_bucket=None):
