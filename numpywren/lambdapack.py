@@ -213,7 +213,7 @@ class Barrier(RemoteInstruction):
         return 0
 
 
-class RemoteWrite(RemoteInstruction):
+class RemoteRead(RemoteInstruction):
     def __init__(self, i_id, matrix, *bidxs):
         super().__init__(i_id)
         self.i_code = OC.S3_LOAD
@@ -834,9 +834,9 @@ class LambdaPackProgram(object):
 
 
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):
-    L_load = RemoteWrite(pc, L_in, b0, b1)
+    L_load = RemoteRead(pc, L_in, b0, b1)
     pc += 1
-    L_bb_load = RemoteWrite(pc, L_out.T, b1, b1)
+    L_bb_load = RemoteRead(pc, L_out.T, b1, b1)
     pc += 1
     trsm = RemoteTRSM(pc, [L_bb_load, L_load], lower=False, right=True)
     pc += 1
@@ -844,11 +844,11 @@ def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     return InstructionBlock([L_load, L_bb_load, trsm, write], label=label), 4
 
 def make_low_rank_update(pc, L_out, L_prev, L_final,  b0, b1, b2, label=None):
-    old_block_load = RemoteWrite(pc, L_prev, b1, b2)
+    old_block_load = RemoteRead(pc, L_prev, b1, b2)
     pc += 1
-    block_1_load = RemoteWrite(pc, L_final, b1, b0)
+    block_1_load = RemoteRead(pc, L_final, b1, b0)
     pc += 1
-    block_2_load = RemoteWrite(pc, L_final, b2, b0)
+    block_2_load = RemoteRead(pc, L_final, b2, b0)
     pc += 1
     syrk = RemoteSYRK(pc, [old_block_load, block_1_load, block_2_load])
     pc += 1
@@ -856,9 +856,9 @@ def make_low_rank_update(pc, L_out, L_prev, L_final,  b0, b1, b2, label=None):
     return InstructionBlock([old_block_load, block_1_load, block_2_load, syrk, write], label=label), 5
 
 def make_remote_trisolve(pc, X, A, B, lower=False, label=None): 
-    block_A = RemoteWrite(pc, A)
+    block_A = RemoteRead(pc, A)
     pc += 1
-    block_B = RemoteWrite(pc, B)
+    block_B = RemoteRead(pc, B)
     pc += 1
     trsm = RemoteTRSM(pc, [block_A, block_B], lower=lower, right=False)
     pc += 1
@@ -867,9 +867,9 @@ def make_remote_trisolve(pc, X, A, B, lower=False, label=None):
     return InstructionBlock([block_A, block_B, trsm, write_trisolve], label=label), 4 
 
 def make_remote_sub(pc, out, in1, in2, label=None): 
-    block_A = RemoteWrite(pc, in1)
+    block_A = RemoteRead(pc, in1)
     pc += 1
-    block_B = RemoteWrite(pc, in2)
+    block_B = RemoteRead(pc, in2)
     pc += 1
     sub = RemoteSub(pc, [block_A, block_B])
     pc += 1
@@ -878,7 +878,7 @@ def make_remote_sub(pc, out, in1, in2, label=None):
     return InstructionBlock([block_A, block_B, sub, write_sub], label=label), pc 
 
 def make_local_cholesky(pc, L_out, L_in, b0, label=None):
-    block_load = RemoteWrite(pc, L_in, b0, b0)
+    block_load = RemoteRead(pc, L_in, b0, b0)
     pc += 1
     cholesky = RemoteCholesky(pc, [block_load])
     pc += 1
@@ -889,9 +889,9 @@ def make_local_cholesky(pc, L_out, L_in, b0, label=None):
 
 def make_remote_gemm(pc, XY, X, Y, label=None):
     # assert XY.shape[0] == X.shape[0] and XY.shape[1] == Y.shape[1]
-    block_0_load = RemoteWrite(pc, X)
+    block_0_load = RemoteRead(pc, X)
     pc += 1
-    block_1_load = RemoteWrite(pc, Y)
+    block_1_load = RemoteRead(pc, Y)
     pc += 1
     matmul = RemoteGemm(pc, [block_0_load, block_1_load])
     pc += 1
@@ -907,7 +907,7 @@ def make_remote_reduce(pc, op, out_block, in_blocks, reduce_blocks, reduce_width
     assert in_block_width >= 1
     if in_block_width <= reduce_width:
         for i in in_blocks._block_idxs(1):
-            block_loads.append(RemoteWrite(pc, in_blocks.submatrix(0, i)))
+            block_loads.append(RemoteRead(pc, in_blocks.submatrix(0, i)))
             pc += 1
     else:
         for i in range(reduce_width):
@@ -923,7 +923,7 @@ def make_remote_reduce(pc, op, out_block, in_blocks, reduce_blocks, reduce_width
                                            label=label)
             instruction_blocks += instr
         for i in range(reduce_width):
-            block_loads.append(RemoteWrite(pc, reduce_blocks.submatrix(0, i)))
+            block_loads.append(RemoteRead(pc, reduce_blocks.submatrix(0, i)))
             pc += 1   
     acc = block_loads[0]
     block_ops = []
@@ -1068,32 +1068,38 @@ class OperatorExpr(Statement, abc.ABC):
     def eval_operator(self, var_values):
         read_instrs = self.eval_read_instrs(var_values)
         compute_instr = self._eval_compute_instr(read_instrs) 
-        write_instr = self.eval_write_instr(var_values)
+        write_instr = self.eval_write_instr(compute_instr, var_values)
         return InstructionBlock(read_instrs + [compute_instr, write_instr], priority=0)
 
     def find_valid_var_values(self, write_ref, var_names, var_limits):
-        def enumerate_possiblities(idx, var_limits, parametric_eqns):
+        def enumerate_possibilities(idx, var_limits, parametric_eqns):
             if not parametric_eqns:
                 return []
-
-            curr_eqn = parametric_eqns.get(var_names[idx])
             if len(parametric_eqns) == len(var_names):
                 var_values = {}
                 value = []
-                for var, limit in zip(var_names, var_limits):
+                new_limits = [(lim[0].subs(parametric_eqns), lim[1].subs(parametric_eqns))
+                               for lim in var_limits]
+                for var, limit in zip(var_names, new_limits):
                     value = parametric_eqns[var]
                     if not value.is_integer: 
                         return []
+                    assert parametric_eqns[var].is_integer
+                    assert limit[0].is_integer
+                    assert limit[1].is_integer
                     if parametric_eqns[var] < limit[0] or parametric_eqns[var] >= limit[1]:
                         return []
                     var_values[var] = int(value)
                 return [var_values]
-            elif curr_eqn is None:
+
+            curr_eqn = parametric_eqns.get(var_names[idx])
+            curr_limit = var_limits[idx]
+            if curr_eqn is None:
                 refs = []
                 for i in range(curr_limit[0], curr_limit[1]):
                     new_eqns = {name: eqn.subs({var_names[idx]: i})
                                 for name, eqn in parametric_eqns.items()}
-                    new_eqns[var_names[idx]] = curr_eqn
+                    new_eqns[var_names[idx]] = sympy.Integer(i)
                     new_limits = [(lim[0].subs(new_eqns), lim[1].subs(new_eqns))
                                   for lim in var_limits]
                     refs += enumerate_possibilities(idx + 1, new_limits, new_eqns) 
@@ -1103,7 +1109,7 @@ class OperatorExpr(Statement, abc.ABC):
                             for name, eqn in parametric_eqns.items()}
                 new_limits = [(lim[0].subs(new_eqns), lim[1].subs(new_eqns))
                               for lim in var_limits]
-                return enumerate_possibilities(idx + 1, new_eqns)
+                return enumerate_possibilities(idx + 1, new_limits, new_eqns)
             else:
                 return []
 
@@ -1119,7 +1125,7 @@ class OperatorExpr(Statement, abc.ABC):
             linear_eqns = [read_idx_expr - write_idx for write_idx, read_idx_expr in
                            zip(write_ref[1], read_expr[1])]
             parametric_eqns = sympy.solve(linear_eqns, list(reversed(var_names))) 
-            refs += enumerate_possiblities(0, var_limits, parametric_eqns)
+            refs += enumerate_possibilities(0, var_limits, parametric_eqns)
         return refs
 
     def eval_read_instrs(self, var_values):
