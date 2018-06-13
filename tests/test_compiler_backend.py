@@ -77,9 +77,14 @@ class CompilerBackendTestClass(unittest.TestCase):
                 self.sort_eval([(1, {i: 0, j: 0}), (1, {i: 0, j: 0}), (1, {i: 0, j: 1})]))
         assert (self.sort_eval(program.eval_read_operators((Y_sharded, (1, 0)))) ==
                 self.sort_eval([(1, {i: 0, j: 1})]))
+        assert (self.sort_eval(program.eval_read_operators((Y_sharded, (1, 1)))) ==
+                self.sort_eval([(1, {i: 1, j: 1}), (1, {i: 0, j: 1}), (1, {i: 1, j: 1})]))
+        assert (self.sort_eval(program.eval_read_operators((X_sharded, (1, 1)))) ==
+                self.sort_eval([(0, {i: 1})]))
+        X_sharded.free()
+        Y_sharded.free()
 
     def sort_eval(self, l):
         key = lambda item: (item[0], sorted([(key.name, value) for key, value in item[1].items()]))
         return sorted(l, key=key)
 
-    # def test_complex_loop(self): 
