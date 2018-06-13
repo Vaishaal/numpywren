@@ -21,8 +21,10 @@ class CompilerBackendTestClass(unittest.TestCase):
         assert chol.num_exprs == 1
         assert chol.eval_read_refs({}) == [(X_sharded, (1, 0))]
         assert chol.eval_write_ref({}) == (X_sharded, (1, 0))
-        assert program.eval_read_operators((X_sharded, (sympify(0), sympify(0)))) == []
-        assert program.eval_read_operators((X_sharded, (sympify(1), sympify(0)))) == [(0, {})]
+        assert program.eval_read_operators((X_sharded, (0, 0))) == []
+        assert program.eval_read_operators((X_sharded, (1, 0))) == [(0, {})]
+        assert program.eval_write_operators((X_sharded, (1, 0))) == [(0, {})]
+        assert program.eval_write_operators((X_sharded, (1, 1))) == []
         X_sharded.free()
 
     def test_single_for_loop(self):
@@ -45,6 +47,8 @@ class CompilerBackendTestClass(unittest.TestCase):
         assert program.eval_read_operators((X_sharded, (sympify(2), sympify(1)))) == []
         assert (self.sort_eval(program.eval_read_operators((X_sharded, (sympify(0), sympify(1))))) ==
                 self.sort_eval([(0, {i: 1}), (1, {i: 0})]))
+        assert (self.sort_eval(program.eval_write_operators((X_sharded, (sympify(1), sympify(1))))) ==
+                self.sort_eval([(1, {i: 1})]))
         X_sharded.free()
 
     def test_nested_for_loop(self):
@@ -81,6 +85,8 @@ class CompilerBackendTestClass(unittest.TestCase):
                 self.sort_eval([(1, {i: 1, j: 1}), (1, {i: 0, j: 1}), (1, {i: 1, j: 1})]))
         assert (self.sort_eval(program.eval_read_operators((X_sharded, (1, 1)))) ==
                 self.sort_eval([(0, {i: 1})]))
+        assert (self.sort_eval(program.eval_write_operators((X_sharded, (1, 0)))) ==
+                self.sort_eval([(0, {i: 0}), (1, {i: 1, j: 1})]))
         X_sharded.free()
         Y_sharded.free()
 

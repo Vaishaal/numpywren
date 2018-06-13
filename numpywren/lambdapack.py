@@ -612,33 +612,28 @@ class LambdaPackProgram(object):
           client.purge_queue(QueueUrl=queue_url)
         put(self.hash, PS.NOT_STARTED.value, ip=self.redis_ip)
 
-    def _node_key(self, i):
-      return "{0}_{1}".format(self.hash, i)
+    def _node_key(self, expr_idx, var_values):
+      return "{0}_{1}".format(self.hash, self._node_str(expr_idx, var_values))
 
-    def _node_edge_sum_key(self, i):
-      return "{0}_{1}_edgesum".format(self.hash, i)
+    def _node_edge_sum_key(self, expr_idx, var_values):
+      return "{0}_{1}_edgesum".format(self.hash, self._node_str(expr_idx, var_values))
 
-    def _edge_key(self, i, j):
-      return "{0}_{1}_{2}".format(self.hash, i, j)
+    def _edge_key(self, expr_idx1, var_values1, expr_idx2, var_values2):
+      return "{0}_{1}_{2}".format(self.hash, self._node_str(expr_idx1, var_values1),
+                                  self._node_str(expr_idx2, var_values2))
 
-    def get_node_status(self, i):
-      s = get(self._node_key(i), ip=self.redis_ip)
+    def _node_str(expr_idx, var_values):
+        var_strs = sorted(["{0}:{1}".format(key.name, value) for key, value in var_values.items()])
+        return "{0}_({1})".format(expr_idx, "-".join(var_strs))
+
+    def get_node_status(self, expr_idx, var_values):
+      s = get(self._node_key(expr_idx, var_values), ip=self.redis_ip)
       if (s == None):
         s = 0
       return NS(int(s))
 
-    def get_edge_status(self, i, j):
-      s = get(self._edge_key(i,j), ip=self.redis_ip)
-      if (s == None):
-        s = 0
-      return ES(int(s))
-
-    def set_node_status(self, i, status):
+    def set_node_status(self, expr_id, var_values, status):
       put(self._node_key(i), status.value, ip=self.redis_ip)
-      return status
-
-    def set_edge_status(self, i, j, status):
-      put(self._edge_key(i,j), status.value, ip=self.redis_ip)
       return status
 
     def post_op(self, expr_idx, var_values, ret_code, inst_block, tb=None):
@@ -656,40 +651,30 @@ class LambdaPackProgram(object):
           # for i in range(self.program.num_exprs):
               
           post_op_start = time.time()
-          node_status = self.get_node_status(i)
+          node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
           if (node_status == NS.FINISHED):
             return
-          self.set_node_status(i, NS.POST_OP)
+          self.set_node_status(expr_idx, var_values, NS.POST_OP)
           if (ret_code == PS.EXCEPTION and tb != None):
             self.handle_exception(" EXCEPTION", tb=tb, block=i)
           # children = expr.eval_children(
-          parents = self.parents[i]
           ready_children = []
           for child in children:
             REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), "STILL IN POST OP")
-            t = time.time()
-            my_child_edge = self._edge_key(i,child)
-            child_edge_sum_key = self._node_edge_sum_key(child)
-            #print("CHILD EDGE SUM KEY ", child_edge_sum_key)
-            #self.set_edge_status(i, child, ES.READY)
+            my_child_edge = self._edge_key(expr_idx, var_values, child_expr_idx, child_var_values)
+            child_edge_sum_key = self._node_edge_sum_key(child_expr_idx, child_var_values)
             # redis transaction should be atomic
             tp = fs.ThreadPoolExecutor(1)
             val_future = tp.submit(conditional_increment, child_edge_sum_key, my_child_edge, ip=self.redis_ip)
-            #val_future = tp.submit(atomic_sum, parent_keys, ip=self.redis_ip)
             done, not_done = fs.wait([val_future], timeout=60)
             if len(done) == 0:
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
-            #print("parent_sum is ", val)
-            #print("expected is ", len(self.parents[child]))
-            #print("op {0} Child {1}, parents {2} ready_val {3}".format(i, child, self.parents[child], val))
             if (val == len(self.parents[child]) and self.get_node_status(child) != NS.FINISHED):
               self.set_node_status(child, NS.READY)
               ready_children.append(child)
-            e = time.time()
-            #print("redis dep check time", e - t)
 
           # clear result() blocks
           if (self.eager == True and len(ready_children) >=  1):
@@ -1071,8 +1056,49 @@ class OperatorExpr(Statement, abc.ABC):
         write_instr = self.eval_write_instr(compute_instr, var_values)
         return InstructionBlock(read_instrs + [compute_instr, write_instr], priority=0)
 
-    def find_valid_var_values(self, write_ref, var_names, var_limits):
-        def enumerate_possibilities(idx, var_limits, parametric_eqns):
+    def find_reader_var_values(self, write_ref, var_names, var_limits):
+        refs = []
+        for read_expr in self._read_exprs:
+            if write_ref[0] != read_expr[0]:
+                continue
+            if not var_names:
+                if write_ref[1] == read_expr[1]:
+                    refs.append({})
+                continue
+            assert len(write_ref[1]) == len(read_expr[1])
+            refs += self._enumerate_possibilities(write_ref[1], read_expr[1],
+                                                  var_names, var_limits)
+        return refs
+
+    def find_writer_var_values(self, read_ref, var_names, var_limits):
+        if read_ref[0] != self._write_expr[0]:
+            return []
+        if not var_names:
+            if read_ref[1] == self._write_expr[1]:
+                return [{}]
+        assert len(read_ref[1]) == len(self._write_expr[1])
+        return self._enumerate_possibilities(read_ref[1], self._write_expr[1],
+                                             var_names, var_limits)
+
+    def eval_read_instrs(self, var_values):
+        read_refs = self.eval_read_refs(var_values)
+        return [RemoteRead(0, ref[0], *ref[1]) for ref in read_refs]
+
+    def eval_write_instr(self, data_instr, var_values):
+        write_ref = self.eval_write_ref(var_values)
+        return RemoteWrite(0, write_ref[0], data_instr, *write_ref[1])
+
+    def eval_read_refs(self, var_values):
+        return [self._eval_block_ref(block_expr, var_values) for block_expr in self._read_exprs]
+
+    def eval_write_ref(self, var_values):
+        return self._eval_block_ref(self._write_expr, var_values)
+
+    def _eval_block_ref(self, block_expr, var_values):
+        return (block_expr[0], tuple([idx.subs(var_values) for idx in block_expr[1]]))
+
+    def _enumerate_possibilities(self, in_ref, out_expr, var_names, var_limits):
+        def recurse_enum_pos(idx, var_limits, parametric_eqns):
             if not parametric_eqns:
                 return []
             if len(parametric_eqns) == len(var_names):
@@ -1102,48 +1128,20 @@ class OperatorExpr(Statement, abc.ABC):
                     new_eqns[var_names[idx]] = sympy.Integer(i)
                     new_limits = [(lim[0].subs(new_eqns), lim[1].subs(new_eqns))
                                   for lim in var_limits]
-                    refs += enumerate_possibilities(idx + 1, new_limits, new_eqns) 
+                    refs += recurse_enum_pos(idx + 1, new_limits, new_eqns) 
                 return refs
             elif curr_eqn.is_integer:
                 new_eqns = {name: eqn.subs({var_names[idx]: curr_eqn})
                             for name, eqn in parametric_eqns.items()}
                 new_limits = [(lim[0].subs(new_eqns), lim[1].subs(new_eqns))
                               for lim in var_limits]
-                return enumerate_possibilities(idx + 1, new_limits, new_eqns)
+                return recurse_enum_pos(idx + 1, new_limits, new_eqns)
             else:
                 return []
-
-        refs = []
-        for read_expr in self._read_exprs:
-            if write_ref[0] != read_expr[0]:
-                continue
-            if not var_names:
-                if write_ref[1] == read_expr[1]:
-                    refs.append({})
-                continue
-            assert len(write_ref[1]) == len(read_expr[1])
-            linear_eqns = [read_idx_expr - write_idx for write_idx, read_idx_expr in
-                           zip(write_ref[1], read_expr[1])]
-            parametric_eqns = sympy.solve(linear_eqns, list(reversed(var_names))) 
-            refs += enumerate_possibilities(0, var_limits, parametric_eqns)
-        return refs
-
-    def eval_read_instrs(self, var_values):
-        read_refs = self.eval_read_refs(var_values)
-        return [RemoteRead(0, ref[0], *ref[1]) for ref in read_refs]
-
-    def eval_write_instr(self, data_instr, var_values):
-        write_ref = self.eval_write_ref(var_values)
-        return RemoteWrite(0, write_ref[0], data_instr, *write_ref[1])
-
-    def eval_read_refs(self, var_values):
-        return [self._eval_block_ref(block_expr, var_values) for block_expr in self._read_exprs]
-
-    def eval_write_ref(self, var_values):
-        return self._eval_block_ref(self._write_expr, var_values)
-
-    def _eval_block_ref(self, block_expr, var_values):
-        return (block_expr[0], tuple([idx.subs(var_values) for idx in block_expr[1]]))
+        linear_eqns = [out_idx_expr - in_idx_ref for in_idx_ref, out_idx_expr in
+                       zip(in_ref, out_expr)]
+        parametric_eqns = sympy.solve(linear_eqns, list(reversed(var_names)))
+        return recurse_enum_pos(0, var_limits, parametric_eqns)
 
     @abc.abstractmethod
     def _eval_compute_instr(self, read_instrs):
@@ -1200,7 +1198,7 @@ class Program(BlockStatement):
             read_ops = []
             for statement in body:
                 if isinstance(statement, OperatorExpr):
-                    valid_var_values = statement.find_valid_var_values(
+                    valid_var_values = statement.find_reader_var_values(
                         write_ref, var_names, var_limits)
                     read_ops += [(expr_counter, vals) for vals in valid_var_values]
                 elif isinstance(statement, For):
@@ -1213,6 +1211,25 @@ class Program(BlockStatement):
                 expr_counter += statement.num_exprs
             return read_ops
         return recurse_eval_read_ops(self._body, 0, [], [])
+
+    def eval_write_operators(self, read_ref):
+        def recurse_eval_write_ops(body, expr_counter, var_names, var_limits):
+            write_ops = []
+            for statement in body:
+                if isinstance(statement, OperatorExpr):
+                    valid_var_values = statement.find_writer_var_values(
+                        read_ref, var_names, var_limits)
+                    write_ops += [(expr_counter, vals) for vals in valid_var_values]
+                elif isinstance(statement, For):
+                    write_ops += recurse_eval_write_ops(statement._body,
+                                                        expr_counter,
+                                                        var_names + [statement._var],
+                                                        var_limits + [statement._limits])
+                else:
+                    raise NotImplementedError
+                expr_counter += statement.num_exprs
+            return write_ops
+        return recurse_eval_write_ops(self._body, 0, [], [])
 
 class For(BlockStatement):
     def __init__(self, var, limits, body):
