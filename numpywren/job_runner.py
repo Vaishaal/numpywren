@@ -1,25 +1,24 @@
-
 import asyncio
-import aiobotocore
-import io
-import numpy as np
-import boto3
 import concurrent.futures as fs
-import time
-import pywren
-from numpywren import lambdapack as lp
-import traceback
-from multiprocessing.dummy import Pool as ThreadPool
-import logging
-from pywren.serialize import serialize
-import pickle
-import gc
-import os
-import sys
-import redis
-import tracemalloc
 import copy
+import gc
+import logging
+from multiprocessing.dummy import Pool as ThreadPool
+import os
+import pickle
 import random
+import sys
+import time
+import traceback
+import tracemalloc
+
+import aiobotocore
+import boto3
+import numpy as np
+from numpywren import lambdapack as lp
+import pywren
+from pywren.serialize import serialize
+import redis
 
 
 REDIS_ADDR = os.environ.get("REDIS_ADDR", "127.0.0.1")
@@ -74,29 +73,30 @@ class LambdaPackExecutor(object):
         self.block_ends= set()
 
     #@profile
-    async def run(self, pc, computer=None, profile=True):
-        pcs = [pc]
-        for pc in pcs:
-            print("STARTING INSTRUCTION ", pc)
+    async def run(self, expr_idx, var_values, computer=None, profile=True):
+        operator_refs = [(expr_idx, var_values)]
+        for expr_idx, var_values in operator_refs:
+            print("STARTING INSTRUCTION ", expr_idx, var_values)
             t = time.time()
-            node_status = self.program.get_node_status(pc)
+            node_status = self.program.get_node_status(expr_idx, var_values)
             #print(node_status)
-            self.program.set_max_pc(pc)
-            inst_block = self.program.inst_blocks(pc)
+            operator_expr = self.program.program.get_expr(expr_idx)
+            inst_block = operator_expr.eval_operator(var_values)
             inst_block.start_time = time.time()
             instrs = inst_block.instrs
-            next_pc = None
+            next_operator = None
             if (len(instrs) != len(set(instrs))):
                 raise Exception("Duplicate instruction in instruction stream")
             try:
                 if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
-                    self.program.set_node_status(pc, lp.NS.RUNNING)
+                    self.program.set_node_status(expr_idx, var_values, lp.NS.RUNNING)
                     for instr in instrs:
                         instr.executor = computer
                         instr.cache = self.cache
                         #print("START: {0},  PC: {1}, time: {2}, pid: {3}".format(instr, pc, time.time(), os.getpid()))
                         if (instr.run):
-                            e_str = "EXCEPTION: Same machine replay instruction: " + str(instr) + " PC: {0}, time: {1}, pid: {2}".format(pc, time.time(), os.getpid())
+                            e_str = ("EXCEPTION: Same machine replay instruction: " + str(instr) +
+                                     " REF: {0}, time: {1}, pid: {2}".format((expr_idx, var_values), time.time(), os.getpid()))
                             raise Exception(e_str)
                         instr.start_time = time.time()
                         res = await instr()
@@ -117,10 +117,10 @@ class LambdaPackExecutor(object):
                         instr.run = False
                         instr.result = None
 
-                    next_pc = self.program.post_op(pc, lp.PS.SUCCESS, inst_block)
+                    next_operator = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                 elif (node_status == lp.NS.POST_OP):
                     #print("Re-running POST OP")
-                    next_pc = self.program.post_op(pc, lp.PS.SUCCESS, inst_block)
+                    next_operator = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                 elif (node_status == lp.NS.NOT_READY):
                     raise
                     #print("THIS SHOULD NEVER HAPPEN OTHER THAN DURING TEST")
@@ -130,8 +130,8 @@ class LambdaPackExecutor(object):
                     continue
                 else:
                     raise Exception("Unknown status: {0}".format(node_status))
-                if (next_pc != None):
-                    pcs.append(next_pc)
+                if next_instr is not None:
+                    operator_refs.append(next_operator)
             except fs._base.TimeoutError as e:
                 self.program.decr_up(1)
                 raise
@@ -145,10 +145,10 @@ class LambdaPackExecutor(object):
                 self.program.decr_up(1)
                 traceback.print_exc()
                 tb = traceback.format_exc()
-                self.program.post_op(pc, lp.PS.EXCEPTION, inst_block, tb=tb)
+                self.program.post_op(expr_idx, var_values, lp.PS.EXCEPTION, inst_block, tb=tb)
                 raise
         e = time.time()
-        return pcs
+        return operator_refs
 
 def calculate_busy_time(rtimes):
     #pairs = [[(item[0], 1), (item[1], -1)] for sublist in rtimes for item in sublist]

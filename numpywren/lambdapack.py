@@ -678,10 +678,10 @@ class LambdaPackProgram(object):
               ready_children.append(child)
 
           if self.eager and ready_children:
-              next_instr = ready_children[-1]
+              next_operator = ready_children[-1]
               del ready_children[-1]
           else:
-              next_instr = None
+              next_operator = None
 
           # move the highest priority job thats ready onto the local task queue
           # this is JRK's idea of dynamic node fusion or eager scheduling
@@ -708,7 +708,7 @@ class LambdaPackProgram(object):
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
           #print("Post finished : {0}, took {1}".format(i, post_op_time))
-          return next_instr
+          return next_operator
         except Exception as e:
             #print("POST OP EXCEPTION ", e)
             #print(self.inst_blocks[i])
