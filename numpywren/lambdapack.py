@@ -592,7 +592,7 @@ class LambdaPackProgram(object):
         self.executor = executor
         self.bucket = pywren_config['s3']['bucket']
         self.redis_ip = redis_ip
-        self.program = program.copy()
+        self.program = program
         self.max_priority = num_priorities - 1
         self.io_rate = io_rate
         self.flop_rate = flop_rate
@@ -623,7 +623,7 @@ class LambdaPackProgram(object):
       return "{0}_{1}_{2}".format(self.hash, self._node_str(expr_idx1, var_values1),
                                   self._node_str(expr_idx2, var_values2))
 
-    def _node_str(expr_idx, var_values):
+    def _node_str(self, expr_idx, var_values):
         var_strs = sorted(["{0}:{1}".format(key.name, value) for key, value in var_values.items()])
         return "{0}_({1})".format(expr_idx, "-".join(var_strs))
 
@@ -634,7 +634,7 @@ class LambdaPackProgram(object):
       return NS(int(s))
 
     def set_node_status(self, expr_id, var_values, status):
-      put(self._node_key(i), status.value, ip=self.redis_ip)
+      put(self._node_key(expr_id, var_values), status.value, ip=self.redis_ip)
       return status
 
     def post_op(self, expr_idx, var_values, ret_code, inst_block, tb=None):
@@ -647,7 +647,8 @@ class LambdaPackProgram(object):
         # post op needs to ATOMICALLY check dependencies
         global REDIS_CLIENT
         try:
-          write_ref = expr.eval_write_ref(var_values)
+          operator_expr = self.program.get_expr(expr_idx)
+          write_ref = operator_expr.eval_write_ref(var_values)
           children = self.program.eval_read_operators(write_ref)
           child_parents = []
           for _, read_ref in children:
@@ -695,7 +696,7 @@ class LambdaPackProgram(object):
           assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
             # TODO: Re-add priorities here
-            resp = client.send_message(QueueUrl=self.queue_urls[0, MessageBody=json.dumps([child[0], {key.name, val for key, val in child[1].items()}]))
+            resp = client.send_message(QueueUrl=self.queue_urls[0], MessageBody=json.dumps([child[0], {key.name: val for key, val in child[1].items()}]))
             if REDIS_CLIENT is None:
               REDIS_CLIENT = redis.StrictRedis(ip=REDIS_ADDR, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
             REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), str(resp))
@@ -725,10 +726,10 @@ class LambdaPackProgram(object):
         sqs = boto3.resource('sqs')
         for starter in self.program.starters:
           #print("Enqueuing ", starter)
-          self.set_node_status(starter, NS.READY)
-          priority = self.priorities[starter]
-          queue = sqs.Queue(self.queue_urls[priority])
-          queue.send_message(MessageBody=str(starter))
+          self.set_node_status(*starter, NS.READY)
+          # TODO readd priorities here
+          queue = sqs.Queue(self.queue_urls[0])
+          queue.send_message(MessageBody=json.dumps([starter[0], {key.name: val for key, val in starter[1].items()}]))
         return 0
 
     def handle_exception(self, error, tb, block):
@@ -1187,7 +1188,8 @@ class BlockStatement(Statement, abc.ABC):
 
 
 class Program(BlockStatement):
-    def __init__(self, body):
+    def __init__(self, body, starters=None):
+        self.starters = starters
         super().__init__(body)
 
     def eval_read_operators(self, write_ref):
@@ -1241,34 +1243,31 @@ def _chol(X, out_bucket=None):
     out_key = generate_key_name_uop(X, "chol")
 
     block_len = len(X._block_idxs(0))
-    def parent_fn(bigm, *block_idx):
-        if block_idx[0] == block_len - 1:
-            return X.get_block(block_idx[1], block_idx[2])[np.newaxis, :, :]
-        else:
-            return constant_zeros(bigm, *block_idx)
     trailing = BigMatrix(out_key + "_trailing",
                          shape=[block_len, X.shape[0], X.shape[0]],
                          bucket=out_bucket,
                          shard_sizes=[1, X.shard_sizes[0], X.shard_sizes[0]],
-                         parent_fn=parent_fn,
+                         parent_fn=constant_zeros,
                          write_header=True)
+    for idx in X.block_idxs:
+        trailing.put_block(X.get_block(*idx)[np.newaxis, :, :], 0, *idx)
 
-    program = Program([
-    ForBlock(var="i", limits=[sympy.sympify(0), sympy.sympify(block_len)], body=[
-        Cholesky((trailing, [sympy.sympify("i"), sympy.sympify("i"), sympy.sympify("i")]),
+    program = Program(starters=[(0, {sympy.Symbol("i"): 0})], body=[
+    For(var="i", limits=[sympy.sympify(0), sympy.sympify(block_len)], body=[
+        CholeskyExpr((trailing, [sympy.sympify("i"), sympy.sympify("i"), sympy.sympify("i")]),
                  (trailing, [sympy.sympify(block_len - 1), sympy.sympify("i"), sympy.sympify("i")])),
-        ForBlock(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
+        For(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
             TrsmExpr((trailing, [sympy.sympify(block_len - 1), sympy.sympify("i"), sympy.sympify("i")]),
                      (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
                      (trailing, [sympy.sympify(block_len - 1), sympy.sympify("j"), sympy.sympify("i")]),
                      lower=False, right=True)
         ]),
-        ForBlock(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
-            ForBlock(var="k", limits=[sympy.sympify("j"), sympy.sympify(block_len)], body=[
-                Syrk((trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("k")]),
-                     (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
-                     (trailing, [sympy.sympify("i"), sympy.sympify("k"), sympy.sympify("i")]),
-                     (trailing, [sympy.sympify("i + 1"), sympy.sympify("j"), sympy.sympify("k")]))
+        For(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
+            For(var="k", limits=[sympy.sympify("j"), sympy.sympify(block_len)], body=[
+                SyrkExpr((trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("k")]),
+                         (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
+                         (trailing, [sympy.sympify("i"), sympy.sympify("k"), sympy.sympify("i")]),
+                         (trailing, [sympy.sympify("i + 1"), sympy.sympify("j"), sympy.sympify("k")]))
             ]),
         ]),
     ])])
