@@ -18,6 +18,7 @@ import aiohttp
 import asyncio
 import boto3
 import botocore
+import json
 import numpy as np
 import pywren
 from pywren.serialize import serialize
@@ -144,7 +145,7 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_ADDR):
   global REDIS_CLIENT
   res = 0
 
-  if (REDIS_CLIENT == None):
+  if REDIS_CLIENT is None:
     REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
   r = REDIS_CLIENT
   with r.pipeline() as pipe:
@@ -678,6 +679,7 @@ class LambdaPackProgram(object):
               ready_children.append(child)
 
           if self.eager and ready_children:
+              # TODO: Re-add priorities here
               next_operator = ready_children[-1]
               del ready_children[-1]
           else:
@@ -692,7 +694,8 @@ class LambdaPackProgram(object):
           client = boto3.client('sqs', region_name='us-west-2')
           assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
-            resp = client.send_message(QueueUrl=self.queue_urls[self.priorities[child]], MessageBody=str(child))
+            # TODO: Re-add priorities here
+            resp = client.send_message(QueueUrl=self.queue_urls[0, MessageBody=json.dumps([child[0], {key.name, val for key, val in child[1].items()}]))
             if REDIS_CLIENT is None:
               REDIS_CLIENT = redis.StrictRedis(ip=REDIS_ADDR, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
             REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), str(resp))

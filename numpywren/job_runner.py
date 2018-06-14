@@ -14,11 +14,13 @@ import tracemalloc
 
 import aiobotocore
 import boto3
+import json
 import numpy as np
 from numpywren import lambdapack as lp
 import pywren
 from pywren.serialize import serialize
 import redis
+import sympy
 
 
 REDIS_ADDR = os.environ.get("REDIS_ADDR", "127.0.0.1")
@@ -119,14 +121,11 @@ class LambdaPackExecutor(object):
 
                     next_operator = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                 elif (node_status == lp.NS.POST_OP):
-                    #print("Re-running POST OP")
                     next_operator = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                 elif (node_status == lp.NS.NOT_READY):
                     raise
-                    #print("THIS SHOULD NEVER HAPPEN OTHER THAN DURING TEST")
                     continue
                 elif (node_status == lp.NS.FINISHED):
-                    #print("HAHAH CAN'T TRICK ME... I'm just going to rage quit")
                     continue
                 else:
                     raise Exception("Unknown status: {0}".format(node_status))
@@ -150,6 +149,7 @@ class LambdaPackExecutor(object):
         e = time.time()
         return operator_refs
 
+
 def calculate_busy_time(rtimes):
     #pairs = [[(item[0], 1), (item[1], -1)] for sublist in rtimes for item in sublist]
     pairs = [[(item[0], 1), (item[1], -1)] for item in rtimes]
@@ -165,6 +165,7 @@ def calculate_busy_time(rtimes):
         running += event[1]
     return wtimes
 
+
 async def check_failure(loop, failure_key):
     global REDIS_CLIENT
     if (REDIS_CLIENT == None):
@@ -174,8 +175,6 @@ async def check_failure(loop, failure_key):
       if (f_key is not None):
          loop.stop()
       await asyncio.sleep(5)
-
-
 
 
 def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
@@ -250,15 +249,15 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lo
     while(lock[0] == 1):
         try:
             receipt_handle = msg["ReceiptHandle"]
-            pc = int(msg["Body"])
+            operator_ref = tuple(json.loads(msg["Body"]))
             sqs_client = boto3.client('sqs')
             res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             await asyncio.sleep(45)
         except Exception as e:
-            print("PC: {0} Exception in reset msg vis ".format(pc) + str(e))
+            print("PC: {0} Exception in reset msg vis ".format(operator_ref) + str(e))
             await asyncio.sleep(10)
-    pc = int(msg["Body"])
-    print("Exiting msg visibility for {0}".format(pc))
+    operator_ref = tuple(json.loads(msg["Body"]))
+    print("Exiting msg visibility for {0}".format(operator_ref))
     return 0
 
 async def check_program_state(program, loop, shared_state, timeout, idle_timeout):
@@ -330,25 +329,18 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             receipt_handle = msg["ReceiptHandle"]
             # if we don't finish in 75s count as a failure
             #res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            pc = int(msg["Body"])
+            operator_ref = json.loads(msg["Body"])
+            operator_ref = (operator_ref[0], {sympy.Symbol(key), val for key, val in operator_ref[1].items()})
             redis_client.set(msg["MessageId"], str(time.time()))
             #print("creating lock")
             lock = [1]
             coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, msg_vis_timeout_jitter, lock)
             loop.create_task(coro)
-            redis_client.incr("{0}_{1}_start".format(program.hash, pc))
-            #snapshot_before = tracemalloc.take_snapshot()
-            pcs = await lmpk_executor.run(pc, computer=computer)
-            #snapshot_after = tracemalloc.take_snapshot()
-            #top_stats = snapshot_after.compare_to(snapshot_before, 'lineno')
-            #print("[ Top 100 differences for PC:{0} ]".format(pc))
-            #for stat in top_stats[:10]:
-            #   print(stat)
+            operator_refs = await lmpk_executor.run(*operator_ref, computer=computer)
 
-            for pc in pcs:
-                program.set_node_status(pc, lp.NS.FINISHED)
+            for operator_ref in operator_refs:
+                program.set_node_status(*operator_ref, lp.NS.FINISHED)
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
-                #print("Job done...Deleting message for {0}".format(pcs[0]))
                 lock[0] = 0
                 await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             '''
@@ -363,9 +355,6 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             current_time = time.time()
             if (current_time - start_time > timeout):
                 return
-            #    print("Hit timeout...returning now")
-            #    shared_state["done_workers"] += 1
-            #    return running_times
     except Exception as e:
         #print(e)
         traceback.print_exc()
