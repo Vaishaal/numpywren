@@ -696,6 +696,7 @@ class LambdaPackProgram(object):
           assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
             # TODO: Re-add priorities here
+            print("Enqueueing", child)
             resp = client.send_message(QueueUrl=self.queue_urls[0], MessageBody=json.dumps([child[0], {key.name: val for key, val in child[1].items()}]))
             if REDIS_CLIENT is None:
               REDIS_CLIENT = redis.StrictRedis(ip=REDIS_ADDR, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
@@ -1244,7 +1245,7 @@ def _chol(X, out_bucket=None):
 
     block_len = len(X._block_idxs(0))
     trailing = BigMatrix(out_key + "_trailing",
-                         shape=[block_len, X.shape[0], X.shape[0]],
+                         shape=[block_len + 1, X.shape[0], X.shape[0]],
                          bucket=out_bucket,
                          shard_sizes=[1, X.shard_sizes[0], X.shard_sizes[0]],
                          parent_fn=constant_zeros,
@@ -1253,17 +1254,17 @@ def _chol(X, out_bucket=None):
         trailing.put_block(X.get_block(*idx)[np.newaxis, :, :], 0, *idx)
 
     program = Program(starters=[(0, {sympy.Symbol("i"): 0})], body=[
-    For(var="i", limits=[sympy.sympify(0), sympy.sympify(block_len)], body=[
+    For(var=sympy.sympify("i"), limits=[sympy.sympify(0), sympy.sympify(block_len)], body=[
         CholeskyExpr((trailing, [sympy.sympify("i"), sympy.sympify("i"), sympy.sympify("i")]),
-                 (trailing, [sympy.sympify(block_len - 1), sympy.sympify("i"), sympy.sympify("i")])),
-        For(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
-            TrsmExpr((trailing, [sympy.sympify(block_len - 1), sympy.sympify("i"), sympy.sympify("i")]),
+                     (trailing, [sympy.sympify(block_len), sympy.sympify("i"), sympy.sympify("i")])),
+        For(var=sympy.sympify("j"), limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
+            TrsmExpr((trailing, [sympy.sympify(block_len), sympy.sympify("i"), sympy.sympify("i")]),
                      (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
-                     (trailing, [sympy.sympify(block_len - 1), sympy.sympify("j"), sympy.sympify("i")]),
+                     (trailing, [sympy.sympify(block_len), sympy.sympify("j"), sympy.sympify("i")]),
                      lower=False, right=True)
         ]),
-        For(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
-            For(var="k", limits=[sympy.sympify("j"), sympy.sympify(block_len)], body=[
+        For(var=sympy.sympify("j"), limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
+            For(var=sympy.sympify("k"), limits=[sympy.sympify("j"), sympy.sympify(block_len)], body=[
                 SyrkExpr((trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("k")]),
                          (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
                          (trailing, [sympy.sympify("i"), sympy.sympify("k"), sympy.sympify("i")]),

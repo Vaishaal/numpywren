@@ -129,7 +129,7 @@ class LambdaPackExecutor(object):
                     continue
                 else:
                     raise Exception("Unknown status: {0}".format(node_status))
-                if next_instr is not None:
+                if next_operator is not None:
                     operator_refs.append(next_operator)
             except fs._base.TimeoutError as e:
                 self.program.decr_up(1)
