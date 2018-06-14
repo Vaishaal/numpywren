@@ -646,10 +646,12 @@ class LambdaPackProgram(object):
         # post op needs to ATOMICALLY check dependencies
         global REDIS_CLIENT
         try:
-          expr = self.program.get_expr(expr_idx)
           write_ref = expr.eval_write_ref(var_values)
-          # for i in range(self.program.num_exprs):
-              
+          children = self.program.eval_read_operators(write_ref)
+          child_parents = []
+          for _, read_ref in children:
+              child_parents += self.progra.eval_write_operators(read_ref)
+ 
           post_op_start = time.time()
           node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
@@ -659,12 +661,11 @@ class LambdaPackProgram(object):
           self.set_node_status(expr_idx, var_values, NS.POST_OP)
           if (ret_code == PS.EXCEPTION and tb != None):
             self.handle_exception(" EXCEPTION", tb=tb, block=i)
-          # children = expr.eval_children(
           ready_children = []
           for child in children:
-            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), "STILL IN POST OP")
-            my_child_edge = self._edge_key(expr_idx, var_values, child_expr_idx, child_var_values)
-            child_edge_sum_key = self._node_edge_sum_key(child_expr_idx, child_var_values)
+            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, *child)), "STILL IN POST OP")
+            my_child_edge = self._edge_key(expr_idx, var_values, *child)
+            child_edge_sum_key = self._node_edge_sum_key(*child)
             # redis transaction should be atomic
             tp = fs.ThreadPoolExecutor(1)
             val_future = tp.submit(conditional_increment, child_edge_sum_key, my_child_edge, ip=self.redis_ip)
@@ -672,19 +673,15 @@ class LambdaPackProgram(object):
             if len(done) == 0:
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
-            if (val == len(self.parents[child]) and self.get_node_status(child) != NS.FINISHED):
-              self.set_node_status(child, NS.READY)
+            if (val == len(child_parents) and self.get_node_status(*child) != NS.FINISHED):
+              self.set_node_status(*child, NS.READY)
               ready_children.append(child)
 
-          # clear result() blocks
-          if (self.eager == True and len(ready_children) >=  1):
-              max_priority_idx = max(range(len(ready_children)), key=lambda i: self.priorities[i])
-              next_pc = ready_children[max_priority_idx]
-              eager_child = ready_children[max_priority_idx]
-              del ready_children[max_priority_idx]
+          if self.eager and ready_children:
+              next_instr = ready_children[-1]
+              del ready_children[-1]
           else:
-            next_pc = None
-            eager_child = None
+              next_instr = None
 
           # move the highest priority job thats ready onto the local task queue
           # this is JRK's idea of dynamic node fusion or eager scheduling
@@ -693,20 +690,17 @@ class LambdaPackProgram(object):
           # this has 2 key benefits, first we completely obliviete scheduling overhead between these two nodes but also because of the local LRU cache the first read of this node will be saved this will translate
 
           client = boto3.client('sqs', region_name='us-west-2')
-          # this should NEVER happen...
-          assert not i in ready_children
+          assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
-            #print("Adding {0} to sqs queue".format(child))
             resp = client.send_message(QueueUrl=self.queue_urls[self.priorities[child]], MessageBody=str(child))
-            if (REDIS_CLIENT == None):
+            if REDIS_CLIENT is None:
               REDIS_CLIENT = redis.StrictRedis(ip=REDIS_ADDR, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
-              #REDIS_CLIENT = redis.StrictRedis(ip, port=REDIS_PORT, db=0, socket_timeout=5)
-            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, child)), str(resp))
+            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), str(resp))
 
           profile_start = time.time()
           inst_block.end_time = time.time()
           inst_block.clear()
-          self.set_profiling_info(i, inst_block)
+          self.set_profiling_info(expr_idx, var_values, inst_block)
           profile_end = time.time()
           #print("Profile started: {0}".format(i))
           profile_time = profile_end - profile_start
@@ -714,7 +708,7 @@ class LambdaPackProgram(object):
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
           #print("Post finished : {0}, took {1}".format(i, post_op_time))
-          return next_pc
+          return next_instr
         except Exception as e:
             #print("POST OP EXCEPTION ", e)
             #print(self.inst_blocks[i])
@@ -803,7 +797,7 @@ class LambdaPackProgram(object):
     def get_all_profiling_info(self):
         return [self.get_profiling_info(i) for i in range(self.num_inst_blocks) if i is not None]
 
-    def get_profiling_info(self, pc):
+    def get_profiling_info(self, expr_idx, var_values):
         try:
           client = boto3.client('s3')
           byte_string = client.get_object(Bucket=self.bucket, Key="{0}/{1}/{2}".format("lambdapack", self.hash, pc))["Body"].read()
@@ -811,11 +805,11 @@ class LambdaPackProgram(object):
         except:
           print("key {0}/{1} not found in bucket {2}".format(self.hash, pc, self.bucket))
 
-    def set_profiling_info(self, pc, inst_block):
+    def set_profiling_info(self, expr_idx, var_values, inst_block):
         serializer = serialize.SerializeIndependent()
         byte_string = serializer([inst_block])[0][0]
         client = boto3.client('s3', region_name='us-west-2')
-        client.put_object(Bucket=self.bucket, Key="{0}/{1}/{2}".format("lambdapack", self.hash, pc), Body=byte_string)
+        client.put_object(Bucket=self.bucket, Key="{0}/{1}/{2}".format("lambdapack", self.hash, self._node_str(expr_idx, var_values)), Body=byte_string)
 
 
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):
