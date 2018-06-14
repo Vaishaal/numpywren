@@ -1241,25 +1241,26 @@ def _chol(X, out_bucket=None):
     out_key = generate_key_name_uop(X, "chol")
 
     block_len = len(X._block_idxs(0))
-    L = BigMatrix(out_key,
-                  shape=[X.shape[0], X.shape[0]],
-                  bucket=out_bucket,
-                  shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]],
-                  parent_fn=constant_zeros,
-                  write_header=True)
+    def parent_fn(bigm, *block_idx):
+        if block_idx[0] == block_len - 1:
+            return X.get_block(block_idx[1], block_idx[2])[np.newaxis, :, :]
+        else:
+            return constant_zeros(bigm, *block_idx)
     trailing = BigMatrix(out_key + "_trailing",
-                         shape=[block_len - 1, X.shape[0], X.shape[0]],
+                         shape=[block_len, X.shape[0], X.shape[0]],
                          bucket=out_bucket,
-                         shard_sizes=[1, X.shard_sizes[0], X.shard_sizes[0]])
+                         shard_sizes=[1, X.shard_sizes[0], X.shard_sizes[0]],
+                         parent_fn=parent_fn,
+                         write_header=True)
 
     program = Program([
     ForBlock(var="i", limits=[sympy.sympify(0), sympy.sympify(block_len)], body=[
         Cholesky((trailing, [sympy.sympify("i"), sympy.sympify("i"), sympy.sympify("i")]),
-                 (trailing, [sympy.sympify(-1), sympy.sympify("i"), sympy.sympify("i")])),
+                 (trailing, [sympy.sympify(block_len - 1), sympy.sympify("i"), sympy.sympify("i")])),
         ForBlock(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
-            TrsmExpr((trailing, [sympy.sympify(-1), sympy.sympify("i"), sympy.sympify("i")]),
+            TrsmExpr((trailing, [sympy.sympify(block_len - 1), sympy.sympify("i"), sympy.sympify("i")]),
                      (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
-                     (trailing, [sympy.sympify(-1), sympy.sympify("j"), sympy.sympify("i")]),
+                     (trailing, [sympy.sympify(block_len - 1), sympy.sympify("j"), sympy.sympify("i")]),
                      lower=False, right=True)
         ]),
         ForBlock(var="j", limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
@@ -1272,58 +1273,7 @@ def _chol(X, out_bucket=None):
         ]),
     ])])
 
-    return program, trailing
-
-
-def _chol(X, out_bucket=None):
-    if (out_bucket == None):
-        out_bucket = X.bucket
-    out_key = generate_key_name_uop(X, "chol")
-    # generate output matrix
-    L = BigMatrix(out_key, shape=(X.shape[0], X.shape[0]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]], parent_fn=constant_zeros, write_header=True)
-    # generate intermediate matrices
-    trailing = [X]
-    all_blocks = list(L.block_idxs)
-    block_idxs = sorted(X._block_idxs(0))
-
-    for i,j0 in enumerate(X._block_idxs(0)):
-        L_trailing = BigMatrix(out_key + "_{0}_trailing".format(i),
-                       shape=(X.shape[0], X.shape[0]),
-                       bucket=out_bucket,
-                       shard_sizes=[X.shard_sizes[0], X.shard_sizes[0]])
-        block_size =  min(X.shard_sizes[0], X.shape[0] - X.shard_sizes[0]*j0)
-        trailing.append(L_trailing)
-    trailing.append(L)
-    all_instructions = []
-
-    pc = 0
-    par_block = 0
-    for i in block_idxs:
-        instructions, count = make_local_cholesky(pc, trailing[-1], trailing[i], i, label="local")
-        all_instructions.append(instructions)
-        pc += count
-
-        par_count = 0
-        parallel_block = []
-        for j in block_idxs[i+1:]:
-            instructions, count = make_column_update(pc, trailing[-1], trailing[i], j, i, label="parallel_block_{0}_job_{1}".format(par_block, par_count))
-            all_instructions.append(instructions)
-            pc += count
-            par_count += 1
-        #all_instructions.append(PywrenInstructionBlock(pwex, parallel_block))
-        par_block += 1
-        par_count = 0
-        parallel_block = []
-        for j in block_idxs[i+1:]:
-            for k in block_idxs[i+1:]:
-                if (k > j): continue
-                instructions, count = make_low_rank_update(pc, trailing[i+1], trailing[i], trailing[-1], i, j, k, label="parallel_block_{0}_job_{1}".format(par_block, par_count))
-                all_instructions.append(instructions)
-                pc += count
-                par_count += 1
-        #all_instructions.append(PywrenInstructionBlock(pwex, parallel_block))
-    # return all_instructions, intermediate_matrices, final result, barrier_look_ahead
-    return all_instructions, trailing[-1], trailing[:-1]
+    return program, trailing.submatrix(block_len - 1), trailing
 
 
 def perf_profile(blocks, num_bins=100):
