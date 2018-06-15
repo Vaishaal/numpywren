@@ -106,7 +106,6 @@ class CholeskyTest(unittest.TestCase):
         print("Waiting...")
         pywren.wait(futures)
         [f.result() for f in futures]
-        program.wait()
         print("Program status")
         print(program.program_status())
         program.free()
@@ -173,7 +172,6 @@ class CholeskyTest(unittest.TestCase):
         print("sharding....")
         shard_matrix(A_sharded, A)
         instructions,L_sharded,trailing = lp._chol(A_sharded)
-        L_sharded.free()
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
         config = pwex.config
@@ -182,13 +180,15 @@ class CholeskyTest(unittest.TestCase):
         program.start()
         num_cores = 100
         all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)
-        program.wait()
+        [f.result() for f in all_futures]
         print("Program status")
         print(program.program_status())
         print(program.hash)
         program.free()
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
+        print(L_npw)
+        print(L)
         assert(np.allclose(L_npw, L))
 
 
