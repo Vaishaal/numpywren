@@ -333,10 +333,12 @@ class RemoteSYRK(RemoteInstruction):
         def compute():
           self.start_time = time.time()
           if (self.result is None):
+            # TODO: we shouldn't need to squeeze here.
             old_block = self.argv[0].result
-            block_2 = self.argv[1].result
-            block_1 = self.argv[2].result
-            res = old_block - block_2.dot(block_1.T)
+            real_shape = old_block.shape
+            block_2 = np.squeeze(self.argv[1].result)
+            block_1 = np.squeeze(self.argv[2].result)
+            res = old_block - (block_2.dot(block_1.T)).reshape(real_shape)
             self.result = res
             self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
           else:
@@ -458,7 +460,11 @@ class RemoteTRSM(RemoteInstruction):
           if self.result is None:
               A_block = self.argv[0].result
               B_block = self.argv[1].result
-              self.result = scipy.linalg.blas.dtrsm(1.0, A_block, B_block, side=int(self.right),lower=int(self.lower))
+              # TODO: this is a transpose hack for cholesky
+              A_block_shape = A_block.shape
+              A_block = A_block.squeeze()
+              self.result = scipy.linalg.blas.dtrsm(1.0, A_block.T, B_block, side=int(self.right),lower=int(self.lower))
+              A_block.reshape(A_block_shape)
               self.flops =  A_block.shape[0] * B_block.shape[0] * B_block.shape[1]
               self.ret_code = 0
           else:
@@ -495,7 +501,6 @@ class RemoteCholesky(RemoteInstruction):
       def compute():
           self.start_time = time.time()
           s = time.time()
-          print(self.result)
           if (self.result is None):
               L_bb = self.argv[0].result
               self.result = np.linalg.cholesky(L_bb)
@@ -647,14 +652,11 @@ class LambdaPackProgram(object):
         # post op needs to ATOMICALLY check dependencies
         global REDIS_CLIENT
         try:
+          post_op_start = time.time()
           operator_expr = self.program.get_expr(expr_idx)
           write_ref = operator_expr.eval_write_ref(var_values)
           children = self.program.eval_read_operators(write_ref)
-          child_parents = []
-          for _, read_ref in children:
-              child_parents += self.progra.eval_write_operators(read_ref)
  
-          post_op_start = time.time()
           node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
@@ -662,10 +664,10 @@ class LambdaPackProgram(object):
             return
           self.set_node_status(expr_idx, var_values, NS.POST_OP)
           if (ret_code == PS.EXCEPTION and tb != None):
-            self.handle_exception(" EXCEPTION", tb=tb, block=i)
+            self.handle_exception(" EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
           ready_children = []
           for child in children:
-            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(i, *child)), "STILL IN POST OP")
+            REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), "STILL IN POST OP")
             my_child_edge = self._edge_key(expr_idx, var_values, *child)
             child_edge_sum_key = self._node_edge_sum_key(*child)
             # redis transaction should be atomic
@@ -675,6 +677,12 @@ class LambdaPackProgram(object):
             if len(done) == 0:
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
+            child_parents = []
+            child_operator_expr = self.program.get_expr(child[0])
+            read_refs = child_operator_expr.eval_read_refs(child[1])
+            for read_ref in read_refs:
+                child_parents += self.program.eval_write_operators(read_ref)
+            child_parents = utils.remove_duplicates(child_parents)
             if (val == len(child_parents) and self.get_node_status(*child) != NS.FINISHED):
               self.set_node_status(*child, NS.READY)
               ready_children.append(child)
@@ -696,23 +704,17 @@ class LambdaPackProgram(object):
           assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
             # TODO: Re-add priorities here
-            print("Enqueueing", child)
-            resp = client.send_message(QueueUrl=self.queue_urls[0], MessageBody=json.dumps([child[0], {key.name: val for key, val in child[1].items()}]))
+            message_body = json.dumps([child[0], {key.name: val for key, val in child[1].items()}])
+            resp = client.send_message(QueueUrl=self.queue_urls[0], MessageBody=message_body)
             if REDIS_CLIENT is None:
               REDIS_CLIENT = redis.StrictRedis(ip=REDIS_ADDR, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
             REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), str(resp))
 
-          profile_start = time.time()
           inst_block.end_time = time.time()
           inst_block.clear()
-          self.set_profiling_info(expr_idx, var_values, inst_block)
-          profile_end = time.time()
-          #print("Profile started: {0}".format(i))
-          profile_time = profile_end - profile_start
-          #print("Profile finished: {0} took {1}".format(i, profile_time))
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
-          #print("Post finished : {0}, took {1}".format(i, post_op_time))
+          print("Post finished : {0}, took {1}".format((expr_idx, var_values), post_op_time))
           return next_operator
         except Exception as e:
             #print("POST OP EXCEPTION ", e)
@@ -733,9 +735,9 @@ class LambdaPackProgram(object):
           queue.send_message(MessageBody=json.dumps([starter[0], {key.name: val for key, val in starter[1].items()}]))
         return 0
 
-    def handle_exception(self, error, tb, block):
+    def handle_exception(self, error, tb, expr_idx, var_values):
         client = boto3.client('s3')
-        client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTION.{0}".format(block), Bucket=self.bucket, Body=tb + str(error))
+        client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTION.{0}".format(self._node_str(expr_idx, var_values)), Bucket=self.bucket, Body=tb + str(error))
         e = PS.EXCEPTION.value
         put(self.hash, e, ip=self.redis_ip)
 
@@ -790,9 +792,10 @@ class LambdaPackProgram(object):
 
     def wait(self, sleep_time=1):
         status = self.program_status()
-        while (status == PS.RUNNING):
-            time.sleep(sleep_time)
-            status = self.program_status()
+        # TODO reinstate status change
+        # while (status == PS.RUNNING):
+        #     time.sleep(sleep_time)
+        #     status = self.program_status()
 
     def free(self):
         for queue_url in self.queue_urls:
@@ -809,13 +812,6 @@ class LambdaPackProgram(object):
           return pickle.loads(byte_string)
         except:
           print("key {0}/{1} not found in bucket {2}".format(self.hash, pc, self.bucket))
-
-    def set_profiling_info(self, expr_idx, var_values, inst_block):
-        serializer = serialize.SerializeIndependent()
-        byte_string = serializer([inst_block])[0][0]
-        client = boto3.client('s3', region_name='us-west-2')
-        client.put_object(Bucket=self.bucket, Key="{0}/{1}/{2}".format("lambdapack", self.hash, self._node_str(expr_idx, var_values)), Body=byte_string)
-
 
 def make_column_update(pc, L_out, L_in, b0, b1, label=None):
     L_load = RemoteRead(pc, L_in, b0, b1)
@@ -1056,18 +1052,18 @@ class OperatorExpr(Statement, abc.ABC):
         return InstructionBlock(read_instrs + [compute_instr, write_instr], priority=0)
 
     def find_reader_var_values(self, write_ref, var_names, var_limits):
-        refs = []
+        results = []
         for read_expr in self._read_exprs:
             if write_ref[0] != read_expr[0]:
                 continue
             if not var_names:
                 if write_ref[1] == read_expr[1]:
-                    refs.append({})
+                    results.append({})
                 continue
             assert len(write_ref[1]) == len(read_expr[1])
-            refs += self._enumerate_possibilities(write_ref[1], read_expr[1],
-                                                  var_names, var_limits)
-        return refs
+            results += self._enumerate_possibilities(write_ref[1], read_expr[1],
+                                                     var_names, var_limits)
+        return utils.remove_duplicates(results) 
 
     def find_writer_var_values(self, read_ref, var_names, var_limits):
         if read_ref[0] != self._write_expr[0]:
@@ -1076,8 +1072,9 @@ class OperatorExpr(Statement, abc.ABC):
             if read_ref[1] == self._write_expr[1]:
                 return [{}]
         assert len(read_ref[1]) == len(self._write_expr[1])
-        return self._enumerate_possibilities(read_ref[1], self._write_expr[1],
-                                             var_names, var_limits)
+        results = self._enumerate_possibilities(read_ref[1], self._write_expr[1],
+                                                var_names, var_limits)
+        return utils.remove_duplicates(results)
 
     def eval_read_instrs(self, var_values):
         read_refs = self.eval_read_refs(var_values)
@@ -1264,16 +1261,16 @@ def _chol(X, out_bucket=None):
                      lower=False, right=True)
         ]),
         For(var=sympy.sympify("j"), limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
-            For(var=sympy.sympify("k"), limits=[sympy.sympify("j"), sympy.sympify(block_len)], body=[
+            For(var=sympy.sympify("k"), limits=[sympy.sympify("i + 1"), sympy.sympify("j + 1")], body=[
                 SyrkExpr((trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("k")]),
-                         (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
-                         (trailing, [sympy.sympify("i"), sympy.sympify("k"), sympy.sympify("i")]),
+                         (trailing, [sympy.sympify(block_len), sympy.sympify("j"), sympy.sympify("i")]),
+                         (trailing, [sympy.sympify(block_len), sympy.sympify("k"), sympy.sympify("i")]),
                          (trailing, [sympy.sympify("i + 1"), sympy.sympify("j"), sympy.sympify("k")]))
             ]),
         ]),
     ])])
 
-    return program, trailing.submatrix(block_len - 1), trailing
+    return program, trailing.submatrix(block_len), trailing
 
 
 def perf_profile(blocks, num_bins=100):

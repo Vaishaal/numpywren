@@ -22,3 +22,19 @@ def convert_to_slice(l):
     else:
         raise ValueError("Could not convert to slice.")
 
+def remove_duplicates(l):
+    try: 
+        return list(set(l))
+    except TypeError:
+        pass
+
+    try:
+        [dict(t) for t in set([tuple(d.items()) for d in l])]
+    except AttributeError:
+        pass
+
+    new_list = []
+    for elt in l:
+        if elt not in new_list:
+            new_list.append(elt)
+    return new_list 

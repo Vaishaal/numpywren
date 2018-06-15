@@ -64,7 +64,6 @@ class CholeskyTest(unittest.TestCase):
         program.start()
         #job_runner.main(program, program.queue_url)
         job_runner.lambdapack_run(program)
-        program.wait()
         print("Program status")
         print(program.program_status())
         program.free()
@@ -111,14 +110,6 @@ class CholeskyTest(unittest.TestCase):
         print("Program status")
         print(program.program_status())
         program.free()
-        profiled_blocks = program.get_all_profiling_info()
-        print(lp.perf_profile(profiled_blocks))
-        for pc,profiled_block in enumerate(profiled_blocks):
-            total_time = 0
-            actual_time = profiled_block.end_time - profiled_block.start_time
-            for instr in profiled_block.instrs:
-                total_time += instr.end_time - instr.start_time
-            print("Block {0} total_time {1} end to end time {2}".format(pc, total_time, actual_time))
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
         print(L_npw)
@@ -160,14 +151,6 @@ class CholeskyTest(unittest.TestCase):
         print("Program status")
         print(program.program_status())
         program.free()
-        profiled_blocks = program.get_all_profiling_info()
-        print(lp.perf_profile(profiled_blocks))
-        for pc,profiled_block in enumerate(profiled_blocks):
-            total_time = 0
-            actual_time = profiled_block.end_time - profiled_block.start_time
-            for instr in profiled_block.instrs:
-                total_time += instr.end_time - instr.start_time
-            print("Block {0} total_time {1} end to end time {2}".format(pc, total_time, actual_time))
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
         print(L_npw)
@@ -207,15 +190,6 @@ class CholeskyTest(unittest.TestCase):
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
         assert(np.allclose(L_npw, L))
-        profiled_blocks = program.get_all_profiling_info()
-        print(lp.perf_profile(profiled_blocks))
-        for pc,profiled_block in enumerate(profiled_blocks):
-            total_time = 0
-            actual_time = profiled_block.end_time - profiled_block.start_time
-            for instr in profiled_block.instrs:
-                if (instr.end_time == None or instr.start_time == None): continue
-                total_time += instr.end_time - instr.start_time
-            print("Instruction Block {0} operation_time {1} end_to_end time {2}".format(pc, total_time, actual_time))
 
 
 
