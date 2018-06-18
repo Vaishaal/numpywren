@@ -1,0 +1,25 @@
+iam:
+    role_name: DEFAULT_ROLE_NAME
+    instance_profile_name: DEFAULT_INSTANCE_PROFILE_NAME
+s3:
+    bucket: BUCKET_NAME
+    prefix: DEFAULT_PREFIX
+    # how many days do you want object to stay alive
+    lifespan: 1
+
+runtime:
+    bucket: numpywrenpublic
+    s3_key: pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz
+
+control_plane:
+    ec2_instance_type: m4.4xlarge
+    target_ami : ami-db710fa3
+    password: potato
+    spot_price: 0.0
+    port: 6379
+    max_idle_time: 300
+    idle_terminate_granularity: 1200
+    control_plane_prefix: numpywren.control
+
+
+
