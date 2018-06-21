@@ -25,7 +25,7 @@ import sympy
 
 REDIS_ADDR = os.environ.get("REDIS_ADDR", "127.0.0.1")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
-REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
+REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
 REDIS_CLIENT = None
 
 def mem():
