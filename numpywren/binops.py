@@ -1,7 +1,7 @@
 import boto3
 import itertools
 import numpy as np
-from .matrix import BigSymmetricMatrix, BigMatrix
+from .matrix import BigMatrix
 from .matrix_utils import load_mmap, chunk, generate_key_name_binop, constant_zeros
 from . import matrix_utils
 from .matrix_init import local_numpy_init

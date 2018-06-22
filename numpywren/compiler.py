@@ -4,8 +4,10 @@ import inspect
 import astor
 import sympy
 from numpywren.matrix import BigMatrix
-from numpywren import exceptions
-from numpywren.lambdapack import RemoteCholesky, RemoteTRSM, RemoteSYRK
+from numpywren import exceptions, utils
+from numpywren.lambdapack import RemoteCholesky, RemoteTRSM, RemoteSYRK, RemoteRead, RemoteWrite, InstructionBlock, RemoteReturn
+from numpywren.matrix_utils import constant_zeros
+import numpy as np
 
 ########
 ## ir ##
@@ -69,7 +71,7 @@ class Block(ast.AST):
 class If(ast.AST):
     _fields = ['cond', 'body', 'elseBody']
 
-    def __init__(self, cond, body, elseBody=None):
+    def __init__(self, cond, body, elseBody=[]):
         return super().__init__(cond, body, elseBody)
 
 class For(ast.AST):
@@ -88,7 +90,7 @@ class NumpywrenWrite(ast.AST):
     _fields = ['matrix_block']
 
 class BigMatrixBlock(ast.AST):
-    _fields = ['key', 'bidx']
+    _fields = ['bigm', 'bidx']
 
 class Lambdapack(ast.AST):
     _fields = ['compute', 'reads', 'writes', 'options']
@@ -154,7 +156,13 @@ class NumpywrenParse(ast.NodeVisitor):
 
 
     def visit_Name(self, node):
-        print(node)
+        if (node.id in self.symbols):
+            val = self.symbols[node.id]
+            if (isinstance(val, int)):
+                return IntConst(val)
+            elif (isinstance(val, float)):
+                return FloatConst(val)
+
         return Ref(node.id)
 
     def visit_NameConstant(self, node):
@@ -187,8 +195,8 @@ class NumpywrenParse(ast.NodeVisitor):
 
     def visit_If(self, node):
         cond = self.visit(node.test)
-        body = Block([self.visit(x) for x in node.body])
-        else_body = Block([self.visit(x) for x in node.orelse])
+        body = [self.visit(x) for x in node.body]
+        else_body = [self.visit(x) for x in node.orelse]
         return If(cond, body, else_body)
 
     def visit_FunctionDef(self, func):
@@ -246,7 +254,7 @@ class NumpywrenParse(ast.NodeVisitor):
         if (node.value.id not in self.symbols):
             raise exceptions.LambdaPackParsingException("Unknown BigMatrix references")
 
-        return BigMatrixBlock(self.symbols[node.value.id].key, [self.visit(x) for x in node.slice.value.elts])
+        return BigMatrixBlock(self.symbols[node.value.id], [self.visit(x) for x in node.slice.value.elts])
 
 
 
@@ -262,9 +270,9 @@ def lpcompile(function):
         lp_ast = parser.visit(function_ast)
         print("Source code: \n{}\n".format(inspect.getsource(function)))
         print("IR:\n{}\n".format(astor.dump_tree(lp_ast)))
-        print(parser.loop_variables)
         program = BackendGenerator.generate_program(lp_ast)
         print(program)
+        return program
     return func
 
 
@@ -275,7 +283,7 @@ class Statement(abc.ABC):
 
 
 class OperatorExpr(Statement):
-    def __init__(self, opid, compute_expr, read_exprs, write_expr, **kwargs):
+    def __init__(self, opid, compute_expr, read_exprs, write_expr, **options):
         ''' compute_expr is a subclass RemoteInstruction (not an instance)
              read_exprs, and write_exprs
             are of lists of type (BigMatrix, [sympy_expr, sympy_expr...])
@@ -285,6 +293,7 @@ class OperatorExpr(Statement):
         self.compute_expr = compute_expr
         self.opid = opid
         self.num_exprs = 1
+        self.options = options
 
     def get_expr(self, index):
         assert index == 0
@@ -292,12 +301,14 @@ class OperatorExpr(Statement):
 
     def eval_operator(self, var_values):
         read_instrs = self.eval_read_instrs(var_values)
-        compute_instr = self._eval_compute_instr(read_instrs) 
+        compute_instr = self._eval_compute_instr(read_instrs)
+        print("var values", var_values)
+        print("compute instr", compute_instr)
         write_instr = self.eval_write_instr(compute_instr, var_values)
         return InstructionBlock(read_instrs + [compute_instr, write_instr], priority=0)
 
     def _eval_compute_instr(self, read_instrs):
-        return self.compute_expr(self.opid, read_instrs, **kwargs)
+        return self.compute_expr(self.opid, read_instrs, **self.options)
 
     def find_reader_var_values(self, write_ref, var_names, var_limits):
         results = []
@@ -348,6 +359,7 @@ class OperatorExpr(Statement):
             if len(parametric_eqns) == len(var_names):
                 var_values = {}
                 value = []
+                #print("limits",var_limits)
                 new_limits = [(lim[0].subs(parametric_eqns), lim[1].subs(parametric_eqns))
                                for lim in var_limits]
                 for var, limit in zip(var_names, new_limits):
@@ -393,18 +405,17 @@ class OperatorExpr(Statement):
             read_str += str(read_expr[1])
             read_str += ","
         read_str = read_str[:-1]
-
-        write_str = ""
-        for write_expr in self._write_expr:
-            write_str += write_expr[0].key
-            write_str += str(write_expr[1])
+        if (len(self._write_expr) > 0):
+            write_str = ""
+            write_str += self._write_expr[0].key
+            write_str += str(self._write_expr[1])
             write_str += ","
-        write_str = write_str[:-1]
+            write_str = write_str[:-1]
 
-        str_expr = "{2} = {0}({1})".format(self.compute_expr.__name__, read_str, write_str)
+            str_expr = "{2} = {0}({1})".format(self.compute_expr.__name__, read_str, write_str)
+        else:
+            str_expr = "{0}({1})".format(self.compute_expr.__name__, read_str)
         return str_expr
-        
-
 
 
 
@@ -440,10 +451,61 @@ class BlockStatement(Statement, abc.ABC):
 
 
 class Program(BlockStatement):
-    def __init__(self, body=[], starters=None):
+    def __init__(self, name, body=[], starters=None):
+        self.name = name
         self.starters = starters
         self.symbols = {}
         super().__init__(body)
+
+    def get_children(self, expr_idx, var_values):
+        operator_expr = self.get_expr(expr_idx)
+        if (operator_expr == self.return_expr):
+            return []
+        write_ref = operator_expr.eval_write_ref(var_values)
+        children = self.eval_read_operators(write_ref)
+        if (len(children) == 0):
+            children = [self.return_expr]
+        # handle returns
+        return children
+
+    def get_parents(self, expr_idx, var_values):
+        operator_expr = self.get_expr(expr_idx)
+        write_ref = operator_expr.eval_write_ref(var_values)
+        parents = []
+        operator_expr = self.program.get_expr(expr_idx)
+        read_refs = child_operator_expr.eval_read_refs(var_values)
+        for read_ref in read_refs:
+            parents += self.program.eval_write_operators(read_ref)
+        parents = utils.remove_duplicates(parents)
+        return parents
+
+    def find_terminators(self):
+        terminators = []
+        def recurse_find_terminators(body, expr_counter, var_values):
+            i = expr_counter
+            i_start = expr_counter
+            for statement in body:
+                if isinstance(statement, OperatorExpr):
+                    #print("analyzing statement...", statement)
+                    #print(i)
+                    children = self.get_children(i, var_values)
+                    #print("children", children)
+                    if (len(children) == 1 and children[0] == self.return_expr):
+                        terminators.append((i, var_values))
+                if isinstance(statement, BackendFor):
+                    start_val = statement._limits[0].subs(var_values)
+                    end_val = statement._limits[1].subs(var_values)
+                    var = statement._var
+                    for j in range(start_val, end_val):
+                        var_values_recurse =var_values.copy()
+                        var_values_recurse[var] = j
+                        recurse_find_terminators(statement._body, i, var_values_recurse)
+                i += statement.num_exprs
+            return terminators
+        return utils.remove_duplicates(recurse_find_terminators(self._body, 0, {}))
+
+
+
 
     def eval_read_operators(self, write_ref):
         def recurse_eval_read_ops(body, expr_counter, var_names, var_limits):
@@ -453,7 +515,7 @@ class Program(BlockStatement):
                     valid_var_values = statement.find_reader_var_values(
                         write_ref, var_names, var_limits)
                     read_ops += [(expr_counter, vals) for vals in valid_var_values]
-                elif isinstance(statement, For):
+                elif isinstance(statement, BackendFor):
                     read_ops += recurse_eval_read_ops(statement._body,
                                                       expr_counter,
                                                       var_names + [statement._var],
@@ -483,6 +545,18 @@ class Program(BlockStatement):
             return write_ops
         return recurse_eval_write_ops(self._body, 0, [], [])
 
+    def __str__(self):
+        str_repr = "def {0}():\n".format(self.name)
+        for stmt in self._body:
+            new_stmt_str = ["\t" + x for x in str(stmt).split("\n")]
+            for substmt in new_stmt_str:
+                str_repr += substmt + "\n"
+        return str_repr
+
+
+
+
+
 
 class BackendGenerator(ast.NodeVisitor):
     # Public interface. Leave this alone.
@@ -498,8 +572,17 @@ class BackendGenerator(ast.NodeVisitor):
 
     def visit_FuncDef(self, node):
         body = [self.visit(x) for x in node.body]
-        self.program = Program(body=body)
+        return_expr = OperatorExpr(self.count, RemoteReturn, [], [])
+        body.append(return_expr)
+        self.program = Program(node.name, body=body)
+        self.program.return_expr = return_expr
         return self.program
+
+    def visit_If(self, node):
+        cond = self.visit(node.cond)
+        ifbody = [self.visit(x) for x in node.body]
+        elsebody = [self.visit(x) for x in node.elsebody]
+        return BackendIf(cond, ifbody, elsebody)
 
 
     def visit_Lambdapack(self, node):
@@ -508,13 +591,15 @@ class BackendGenerator(ast.NodeVisitor):
             raise LambdaPackBackendGenerationException("Unknown operation : {0}".format(node.compute))
 
         reads = [self.visit(x) for x in node.reads]
-        writes = [self.visit(x) for x in node.writes]
+        #TODO support multi-writes?
+        write = self.visit(node.writes[0])
         kwargs = {k:self.visit(v) for k,v in node.options.items()}
-        return OperatorExpr(self.count, compute_expr, reads, writes, **kwargs)
+        opexpr = OperatorExpr(self.count, compute_expr, reads, write, **kwargs)
         self.count += 1
+        return opexpr
 
     def visit_BigMatrixBlock(self, node):
-        bigm = BigMatrix(node.key)
+        bigm = node.bigm
         sympy_idx_expr = [self.visit(x) for x in node.bidx]
         return (bigm, sympy_idx_expr)
 
@@ -527,10 +612,10 @@ class BackendGenerator(ast.NodeVisitor):
             return sympy.Mul(-1, val)
 
     def visit_IntConst(self, node):
-        return node.val
+        return sympy.Integer(node.val)
 
     def visit_FloatConst(self, node):
-        return node.val
+        return sympy.Float(node.val)
 
     def visit_BinOp(self, node):
         lhs = self.visit(node.left)
@@ -551,28 +636,52 @@ class BackendGenerator(ast.NodeVisitor):
         body = [self.visit(x) for x in node.body]
         return BackendFor(var=loop_var, limits=[min_idx, max_idx], body=body)
 
+def cholesky_with_if(I:BigMatrix, O:BigMatrix, N:int):
+    for i in range(n):
+        O[-1,i,i] = cholesky(O[i,i,i], foo=True)
 
-
-
-
-
-
-
-
-
-
-
-
+    if (i == 0):
+        for j in range(i,n):
+            O[-1,i,j] = trsm(I[-1,i,i], I[i,i,i+j])
+        for j in range(i,n):
+            for k in range(j,n):
+                O[i+1,j,k] = syrk(I[i,j,k], I[i,i,j], I[i,i,k])
+    else:
+        for j in range(i,n):
+            O[-1,i,j] = trsm(O[-1,i,i], O[i,i,i+j])
+        for j in range(i,n):
+            for k in range(j,n):
+                O[i+1,j,k] = syrk(O[i,j,k], O[i,i,j], O[i,i,k])
 
 
 def cholesky(O:BigMatrix, N:int):
-    for i in range(n):
-        O[-1,i,i] = cholesky(O[i,i,i], foo=True)
-    for j in range(i,n):
-        O[-1,i,j] = trsm(O[-1,i,i], O[i,i,i+j])
-    for j in range(i,n):
-        for k in range(j,n):
-            O[i+1,j,k] = syrk(O[i,j,k], O[i,i,j], O[i,i,k])
+    for i in range(N):
+        O[N-1,i,i] = cholesky(O[i,i,i])
+        for j in range(i+1,N):
+            O[N-1,i,j] = trsm(O[N-1,i,i], O[i,i,i+j])
+        for j in range(i+1,N):
+            for k in range(j+1,N):
+                O[i+1,j,k] = syrk(O[i,j,k], O[i,i,j], O[i,i,k])
+
+
+class BackendIf(BlockStatement):
+    def __init__(self, cond_expr, ifbody, elsebody):
+        self._var = var
+        self._limits = limits
+        self._ifbody = ifbody
+        self._elsebody = elsebody
+        super().__init__([ifbody, elsebody])
+
+    def __str__(self):
+        str_repr = "if {0}:".format(self.cond_expr)
+        str_repr += "\n"
+        for stmt in self._ifbody:
+            str_repr += "\n".join(["\t" + x for x in str(stmt).split("\n")])
+        if (len(self._elsebody) > 0):
+            str_repr += "else:"
+        for stmt in self._elsebody:
+            str_repr += "\n".join(["\t" + x for x in str(stmt).split("\n")])
+        return str_repr
 
 class BackendFor(BlockStatement):
     def __init__(self, var, limits, body):
@@ -584,13 +693,64 @@ class BackendFor(BlockStatement):
         str_repr = "for {0} in range({1},{2}):".format(self._var, self._limits[0], self._limits[1])
         str_repr += "\n"
         for stmt in self._body:
-            str_repr += "\n".join(["\t" + x for x in str(stmt).split("\n")])
+            new_stmt_str = ["\t" + x for x in str(stmt).split("\n")]
+            for substmt in new_stmt_str:
+                str_repr += substmt + "\n"
         return str_repr
 
 
 
+def make_3d_input_parent_fn(I):
+    def parent_fn(self, *bidxs):
+        if bidxs[0] == 0:
+            return I.get_block(*bidxs[1:])
+        else:
+            raise Exception("This shouldn't happen")
+            return constant_zeros(self, *bidxs)
+    return parent_fn
+
+def make_3d_input_parent_fn_async(I):
+    async def parent_fn_async(self, loop, *bidxs):
+        if bidxs[0] == 0:
+            print("CALLING PARENT FN")
+            return (await I.get_block_async(loop, *bidxs[1:]))[np.newaxis]
+        else:
+            raise Exception("This shouldn't happen")
+            return constant_zeros(self, *bidxs)[np.newaxis]
+    return parent_fn_async
 
 
+
+def cholesky(O:BigMatrix, N:int):
+    for i in range(N):
+        O[N,i,i] = cholesky(O[i,i,i])
+        for j in range(i+1,N):
+            O[N,i,j] = trsm(O[N,i,i], O[i,i,j])
+        for j in range(i+1,N):
+            for k in range(j,N):
+                O[i+1,j,k] = syrk(O[i,j,k], O[N,i,j], O[N,i,k])
+
+def _chol(X, out_bucket=None):
+    O = BigMatrix("Cholesky({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
+    block_len = len(X._block_idxs(0))
+    parent_fn = make_3d_input_parent_fn(X)
+    parent_fn_async = make_3d_input_parent_fn_async(X)
+    O.parent_fn = parent_fn
+    O.parent_fn_async = parent_fn_async
+    starters = [(0, {sympy.Symbol("i"): 0})]
+    program = lpcompile(cholesky)(O,int(np.ceil(X.shape[0]/X.shard_sizes[0])))
+    print(program.get_children(*starters[0]))
+    print(program.get_expr(3))
+    print("Terminators", program.find_terminators())
+    return
+    operator_expr = program.get_expr(starters[0][0])
+    inst_block = operator_expr.eval_operator(starters[0][1])
+    instrs = inst_block.instrs
+    print("matrix_parent_fn", instrs[0].matrix, instrs[0].matrix.parent_fn)
+    print("matrix_parent_fn", repr(instrs[0].matrix), instrs[0].matrix.parent_fn)
+    program.starters = starters
+    print(repr(O), O.parent_fn)
+    return program, O.submatrix(block_len), O
 
 
 
@@ -600,5 +760,6 @@ class BackendFor(BlockStatement):
 
 
 if __name__ == "__main__":
-    bigm = BigMatrix("test_matrix", shape=(10,10), shard_sizes=(10,10))
-    lpcompile(cholesky)(bigm, 10)
+    N = 65536*4
+    I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
+    _chol(I)

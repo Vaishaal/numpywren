@@ -54,6 +54,10 @@ class BigMatrix(object):
         A function that gets called when a previously uninitialized block is
         accessed. Gets passed the BigMatrix object and the relevant block index
         and is expected to appropriately initialize the given block.
+    parent_fn_async: async function, optional
+        An async function that gets called when a previously uninitialized block is
+        accessed. Gets passed the BigMatrix object and the relevant block index
+        and is expected to appropriately initialize the given block.
     write_header : bool, optional
         If write_header is True then a header will be stored alongside the array
         to allow other BigMatrix objects to be initialized with the same key
@@ -73,6 +77,7 @@ class BigMatrix(object):
                  prefix='numpywren.objects/',
                  dtype=np.float64,
                  parent_fn=None,
+                 parent_fn_async=None,
                  write_header=False):
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
@@ -85,6 +90,7 @@ class BigMatrix(object):
         self.key_base = os.path.join(prefix, self.key)
         self.dtype = dtype
         self.parent_fn = parent_fn
+        self.parent_fn_async = parent_fn_async
         self.transposed = False
         if (shape == None or shard_sizes == None):
             header = self.__read_header__()
@@ -132,6 +138,9 @@ class BigMatrix(object):
             updated_block_slices.append(utils.convert_to_slice(block_slice))
 
         return BigMatrixView(self, updated_block_slices)
+
+    def num_blocks(self, axis=None):
+        return len(self._block_idxs(axis=axis))
 
     @property
     def T(self):
@@ -267,13 +276,14 @@ class BigMatrix(object):
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
         key = self.__shard_idx_to_key__(block_idx)
+        print(key)
         exists = await key_exists_async(self.bucket, key, loop)
-        if (not exists and self.parent_fn == None):
+        if (not exists and self.parent_fn_async == None):
             print(self.bucket)
             print(key)
             raise Exception("Key does {0} not exist, and no parent function prescripted")
-        elif (not exists and self.parent_fn != None):
-            X_block = self.parent_fn(self, *block_idx)
+        elif (not exists and self.parent_fn_async != None):
+            X_block = await self.parent_fn_async(self, loop, *block_idx)
         else:
             bio = await self.__s3_key_to_byte_io__(key, loop=loop)
             X_block = np.load(bio)
@@ -753,142 +763,5 @@ class BigMatrixView(BigMatrix):
         rep += str(tuple(self.shape))
         return rep
 
-class Scalar(BigMatrix):
-    def __init__(self, key,
-                 bucket=DEFAULT_BUCKET,
-                 prefix='numpywren.objects/',
-                 parent_fn=None, 
-                 dtype='float64'):
-        self.bucket = bucket
-        self.prefix = prefix
-        self.key = key
-        self.key_base = prefix + self.key + "/"
-        self.dtype = dtype
-        self.transposed = False
-        self.parent_fn = parent_fn
-        self.shard_sizes = [1]
-        self.shape = [1]
 
-    def numpy(self, workers=1):
-        return BigMatrix.get_block(self, 0)[0]
-
-    def get(self, workers=1):
-        return BigMatrix.get_block(self, 0)[0]
-
-    def put(self, value):
-        value = np.array([value])
-        BigMatrix.put_block(self, value, 0)
-
-    def __str__(self):
-        rep = "Scalar({0})".format(self.key)
-        return rep
-
-
-
-
-class BigSymmetricMatrix(BigMatrix):
-
-    def __init__(self, key,
-                 shape=None,
-                 shard_sizes=[],
-                 bucket=DEFAULT_BUCKET,
-                 prefix='numpywren.objects/',
-                 dtype=np.float64,
-                 parent_fn=None,
-                 write_header=False,
-                 lambdav = 0.0):
-        BigMatrix.__init__(self, key=key, shape=shape, shard_sizes=shard_sizes, bucket=bucket, prefix=prefix, dtype=dtype, parent_fn=parent_fn, write_header=write_header)
-        self.symmetric = True
-        self.lambdav = lambdav
-
-
-    @property
-    def T(self):
-        return self
-
-
-    def _symmetrize_idx(self, block_idx):
-        if np.all(block_idx[0] > block_idx[-1]):
-            return tuple(block_idx)
-        else:
-            return tuple(reversed(block_idx))
-
-    def _symmetrize_all_idxs(self, all_block_idxs):
-        return sorted(list(set((map(lambda x: tuple(self._symmetrize_idx(x)), all_block_idxs)))))
-
-    def _blocks(self, axis=None):
-        if axis is None:
-            block_idxs = self._block_idxs()
-            blocks = [self.__block_idx_to_real_idx__(x) for x in block_idxs]
-            return blocks
-        elif (type(axis) != int):
-            raise Exception("Axis must be integer")
-        else:
-            return super()._blocks(axis=axis)
-
-    def _block_idxs(self, axis=None):
-        all_block_idxs = super()._block_idxs(axis=axis)
-        if (axis == None):
-            valid_block_idxs = self._symmetrize_all_idxs(all_block_idxs)
-            return valid_block_idxs
-        else:
-            return all_block_idxs
-
-    async def get_block_async(self, loop=None, *block_idx):
-        if (loop == None):
-            loop = asyncio.get_event_loop()
-        # For symmetric matrices it suffices to only read from lower triangular
-        flipped = False
-        block_idx_sym = self._symmetrize_idx(block_idx)
-        if block_idx_sym != block_idx:
-            flipped = True
-        key = self.__shard_idx_to_key__(block_idx_sym)
-        exists = await key_exists_async(self.bucket, key)
-        if (not exists and self.parent_fn == None):
-            raise Exception("Key {0} does not exist, and no parent function prescripted".format(key))
-        elif (not exists and self.parent_fn != None):
-            X_block = self.parent_fn(self, *block_idx_sym)
-        else:
-            bio = await self.__s3_key_to_byte_io__(key, loop=loop)
-            X_block = np.load(bio).astype(self.dtype, loop)
-            del bio
-        if (flipped):
-            X_block = X_block.T
-        if (len(list(set(block_idx))) == 1):
-            idxs = np.diag_indices(X_block.shape[0])
-            X_block[idxs] += self.lambdav
-        return X_block
-
-    async def put_block_async(self, block, loop=None, *block_idx, no_overwrite=False):
-        if (loop == None):
-            loop = asyncio.get_event_loop()
-        if (no_overwrite):
-            exists = await key_exists_async(self.bucket, key, loop)
-            if (exists):
-                old_block = await self.get_block_async(loop, *block_idx)
-                assert(np.allclose(old_block, block))
-        block_idx_sym = self._symmetrize_idx(block_idx)
-        if block_idx_sym != block_idx:
-            flipped = True
-            block = block.T
-        real_idxs = self.__block_idx_to_real_idx__(block_idx_sym)
-        current_shape = tuple([e - s for s,e in real_idxs])
-        if (block.shape != current_shape):
-            raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
-        key = self.__shard_idx_to_key__(block_idx)
-        block = block.astype(self.dtype)
-        return await self.__save_matrix_to_s3__(block, key, loop)
-
-
-    async def delete_block_async(self, loop, *block_idx):
-        if (loop == None):
-            loop = asyncio.get_event_loop()
-        block_idx_sym = self._symmetrize_idx(block_idx)
-        if block_idx_sym != block_idx:
-            flipped = True
-        key = self.__shard_idx_to_key__(block_idx_sym)
-        session = aiobotocore.get_session(loop=loop)
-        async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
-            resp = client.delete_object(Key=key, Bucket=self.bucket)
-        return resp
 

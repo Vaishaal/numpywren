@@ -27,7 +27,7 @@ import sympy
 import redis
 import scipy.linalg
 
-from .matrix import BigMatrix, BigSymmetricMatrix, Scalar
+from .matrix import BigMatrix
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
 from . import utils
 
@@ -39,7 +39,7 @@ except:
 
 REDIS_ADDR = os.environ.get("REDIS_ADDR", "127.0.0.1")
 REDIS_PASS = os.environ.get("REDIS_PASS", "")
-REDIS_PORT = os.environ.get("REDIS_PORT", "9001")
+REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
 REDIS_CLIENT = None
 
 class RemoteInstructionOpCodes(Enum):
@@ -47,11 +47,11 @@ class RemoteInstructionOpCodes(Enum):
     S3_WRITE = 1
     SYRK = 2
     TRSM = 3
-    GEMM = 4 
-    ADD = 5 
-    SUB = 6 
-    CHOL = 7 
-    INVRS = 8 
+    GEMM = 4
+    ADD = 5
+    SUB = 6
+    CHOL = 7
+    INVRS = 8
     RET = 9
     BARRIER = 10
     EXIT = 11
@@ -204,16 +204,6 @@ class RemoteInstruction(object):
     def clear(self):
         self.result = None
 
-class Barrier(RemoteInstruction):
-  def __init__(self, i_id):
-        super().__init__(i_id)
-        self.i_code = OC.BARRIER
-  def __str__(self):
-        return "BARRIER"
-  async def __call__(self):
-        return 0
-
-
 class RemoteRead(RemoteInstruction):
     def __init__(self, i_id, matrix, *bidxs):
         super().__init__(i_id)
@@ -364,7 +354,7 @@ class RemoteAdd(RemoteInstruction):
     def __init__(self, i_id, argv_instr):
         super().__init__(i_id)
         self.i_code = OC.ADD
-        assert len(argv_instr) == 2 
+        assert len(argv_instr) == 2
         self.argv = argv_instr
         self.result = None
     async def __call__(self, prev=None):
@@ -376,7 +366,7 @@ class RemoteAdd(RemoteInstruction):
           if self.result is None:
               block_1 = self.argv[0].result
               block_2 = self.argv[1].result
-              self.result = block_1 + block_2 
+              self.result = block_1 + block_2
               self.flops = block_1.shape[0]*block_1.shape[1]
               self.ret_code = 0
           self.end_time = time.time()
@@ -391,7 +381,7 @@ class RemoteSub(RemoteInstruction):
     def __init__(self, i_id, argv_instr):
         super().__init__(i_id)
         self.i_code = OC.SUB
-        assert len(argv_instr) == 2 
+        assert len(argv_instr) == 2
         self.argv = argv_instr
         self.result = None
     async def __call__(self, prev=None):
@@ -403,7 +393,7 @@ class RemoteSub(RemoteInstruction):
           if self.result is None:
               block_1 = self.argv[0].result
               block_2 = self.argv[1].result
-              self.result = block_1 - block_2 
+              self.result = block_1 - block_2
               self.flops = block_1.shape[0]*block_1.shape[1]
               self.ret_code = 0
           self.end_time = time.time()
@@ -418,7 +408,7 @@ class RemoteGemm(RemoteInstruction):
     def __init__(self, i_id, argv_instr):
         super().__init__(i_id)
         self.i_code = OC.GEMM
-        assert len(argv_instr) == 2 
+        assert len(argv_instr) == 2
         self.argv = argv_instr
         self.result = None
     async def __call__(self, prev=None):
@@ -430,7 +420,7 @@ class RemoteGemm(RemoteInstruction):
           if (self.result == None):
               block_1 = self.argv[0].result
               block_2 = self.argv[1].result
-              self.result = block_1.dot(block_2) 
+              self.result = block_1.dot(block_2)
               self.flops = 2*block_1.shape[0]*block_1.shape[1]*block_2.shape[1]
               self.ret_code = 0
           self.end_time = time.time()
@@ -503,6 +493,7 @@ class RemoteCholesky(RemoteInstruction):
           s = time.time()
           if (self.result is None):
               L_bb = self.argv[0].result
+              print(L_bb)
               self.result = np.linalg.cholesky(L_bb)
               self.flops = 1.0/3.0*(L_bb.shape[0]**3) + 2.0/3.0*(L_bb.shape[0])
               self.ret_code = 0
@@ -526,10 +517,9 @@ class RemoteCholesky(RemoteInstruction):
 
 
 class RemoteReturn(RemoteInstruction):
-    def __init__(self, i_id, return_loc):
+    def __init__(self, i_id):
         super().__init__(i_id)
         self.i_code = OC.RET
-        self.return_loc = return_loc
         self.result = None
     async def __call__(self, prev=None):
       if (prev != None):
@@ -603,7 +593,7 @@ class LambdaPackProgram(object):
         self.flop_rate = flop_rate
         self.eager = eager
         hashed = hashlib.sha1()
-        program_string = self.program.__str__() 
+        program_string = self.program.__str__()
         hashed.update(program_string.encode())
         # this is temporary hack?
         hashed.update(str(time.time()).encode())
@@ -653,10 +643,7 @@ class LambdaPackProgram(object):
         global REDIS_CLIENT
         try:
           post_op_start = time.time()
-          operator_expr = self.program.get_expr(expr_idx)
-          write_ref = operator_expr.eval_write_ref(var_values)
-          children = self.program.eval_read_operators(write_ref)
- 
+          children = self.program.get_children(expr_idx, var_values)
           node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
@@ -677,12 +664,7 @@ class LambdaPackProgram(object):
             if len(done) == 0:
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
-            child_parents = []
-            child_operator_expr = self.program.get_expr(child[0])
-            read_refs = child_operator_expr.eval_read_refs(child[1])
-            for read_ref in read_refs:
-                child_parents += self.program.eval_write_operators(read_ref)
-            child_parents = utils.remove_duplicates(child_parents)
+            child_parents = self.program.get_parents(child[0], child[1])
             if (val == len(child_parents) and self.get_node_status(*child) != NS.FINISHED):
               self.set_node_status(*child, NS.READY)
               ready_children.append(child)
@@ -850,5 +832,4 @@ def _chol(X, out_bucket=None):
     ])])
 
     return program, trailing.submatrix(block_len), trailing
-
 

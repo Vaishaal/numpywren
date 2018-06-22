@@ -8,7 +8,7 @@ import boto3
 import cloudpickle
 import numpy as np
 import hashlib
-from .matrix import BigMatrix, BigSymmetricMatrix
+from .matrix import BigMatrix
 from . import matrix
 from .matrix_utils import generate_key_name_local_matrix, constant_zeros, MmapArray
 from . import matrix_utils

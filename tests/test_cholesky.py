@@ -1,7 +1,8 @@
-from numpywren.matrix import BigMatrix, BigSymmetricMatrix
+from numpywren.matrix import BigMatrix
 from numpywren import matrix_utils, uops
 from numpywren import lambdapack as lp
 from numpywren import job_runner
+from numpywren import compiler
 from numpywren.matrix_init import shard_matrix
 import numpywren.wait
 import pytest
@@ -19,16 +20,18 @@ redis_env ={"REDIS_ADDR": os.environ.get("REDIS_ADDR", ""), "REDIS_PASS": os.env
 class CholeskyTest(unittest.TestCase):
     def test_cholesky_single(self):
         X = np.random.randn(4,4)
+        print(X)
         A = X.dot(X.T) + np.eye(X.shape[0])
         y = np.random.randn(16)
         pwex = pywren.default_executor()
         A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=A.shape, write_header=True)
         A_sharded.free()
         shard_matrix(A_sharded, A)
-        instructions,L_sharded,trailing = lp._chol(A_sharded)
+        instructions,L_sharded,trailing = compiler._chol(A_sharded)
         executor = pywren.lambda_executor
         config = pwex.config
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+        print(program)
         program.start()
         job_runner.lambdapack_run(program)
         program.wait()
