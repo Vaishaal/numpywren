@@ -308,7 +308,7 @@ class RemoteWrite(RemoteInstruction):
 
 
 class RemoteSYRK(RemoteInstruction):
-    def __init__(self, i_id, argv_instr):
+    def __init__(self, i_id, argv_instr, **kwargs):
         super().__init__(i_id)
         self.i_code = OC.SYRK
         assert len(argv_instr) == 3
@@ -431,7 +431,7 @@ class RemoteGemm(RemoteInstruction):
         return "{0} = GEMM {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
 
 class RemoteTRSM(RemoteInstruction):
-    def __init__(self, i_id, argv_instr, lower=False, right=False):
+    def __init__(self, i_id, argv_instr, lower=False, right=False, **kwargs):
         super().__init__(i_id)
         self.i_code = OC.TRSM
         assert len(argv_instr) == 2
@@ -476,7 +476,7 @@ class RemoteTRSM(RemoteInstruction):
         return "{0} = TRSM {1} {2} {3} {4}".format(self.id, self.argv[0].id,  self.argv[1].id, self.lower, self.right)
 
 class RemoteCholesky(RemoteInstruction):
-    def __init__(self, i_id, argv_instr):
+    def __init__(self, i_id, argv_instr, **kwargs):
         super().__init__(i_id)
         self.i_code = OC.CHOL
         assert len(argv_instr) == 1
@@ -517,10 +517,12 @@ class RemoteCholesky(RemoteInstruction):
 
 
 class RemoteReturn(RemoteInstruction):
-    def __init__(self, i_id):
+    def __init__(self, i_id, *args, **kwargs):
         super().__init__(i_id)
         self.i_code = OC.RET
         self.result = None
+        print("KWARGS",kwargs)
+        self.return_loc = kwargs["hash"]
     async def __call__(self, prev=None):
       if (prev != None):
           await prev
@@ -644,6 +646,7 @@ class LambdaPackProgram(object):
         try:
           post_op_start = time.time()
           children = self.program.get_children(expr_idx, var_values)
+          print(expr_idx, var_values, children)
           node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
@@ -654,6 +657,7 @@ class LambdaPackProgram(object):
             self.handle_exception(" EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
           ready_children = []
           for child in children:
+            print(child)
             REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), "STILL IN POST OP")
             my_child_edge = self._edge_key(expr_idx, var_values, *child)
             child_edge_sum_key = self._node_edge_sum_key(*child)
@@ -665,6 +669,7 @@ class LambdaPackProgram(object):
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
             child_parents = self.program.get_parents(child[0], child[1])
+            print("CHILD", child, "CHILD_PARENTS", child_parents)
             if (val == len(child_parents) and self.get_node_status(*child) != NS.FINISHED):
               self.set_node_status(*child, NS.READY)
               ready_children.append(child)
@@ -686,7 +691,7 @@ class LambdaPackProgram(object):
           assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
             # TODO: Re-add priorities here
-            message_body = json.dumps([child[0], {key.name: val for key, val in child[1].items()}])
+            message_body = json.dumps([int(child[0]), {key.name: int(val) for key, val in child[1].items()}])
             resp = client.send_message(QueueUrl=self.queue_urls[0], MessageBody=message_body)
             if REDIS_CLIENT is None:
               REDIS_CLIENT = redis.StrictRedis(ip=REDIS_ADDR, port=REDIS_PORT, passw=REDIS_PASS, db=0, socket_timeout=5)
@@ -696,6 +701,8 @@ class LambdaPackProgram(object):
           inst_block.clear()
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
+          print(children)
+          print(ready_children)
           print("Post finished : {0}, took {1}".format((expr_idx, var_values), post_op_time))
           return next_operator
         except Exception as e:

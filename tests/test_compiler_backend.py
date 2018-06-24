@@ -12,7 +12,7 @@ from numpywren.matrix_init import shard_matrix
 class CompilerBackendTestClass(unittest.TestCase):
     def test_single_operator(self):
         X_sharded = BigMatrix("test_0", shape=[4, 4], shard_sizes=[2, 2])
-        program = lp.Program([
+        program = compiler.Program([
             lp.CholeskyExpr((X_sharded, (sympify(1), sympify(0))),
                             (X_sharded, (sympify(1), sympify(0))))
         ])

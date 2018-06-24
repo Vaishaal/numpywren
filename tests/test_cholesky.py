@@ -59,7 +59,7 @@ class CholeskyTest(unittest.TestCase):
         A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
         A_sharded.free()
         shard_matrix(A_sharded, A)
-        instructions,L_sharded,trailing = lp._chol(A_sharded)
+        instructions,L_sharded,trailing = compiler._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
         config = pwex.config

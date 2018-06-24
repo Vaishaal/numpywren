@@ -83,11 +83,11 @@ class LambdaPackExecutor(object):
             node_status = self.program.get_node_status(expr_idx, var_values)
             #print(node_status)
             operator_expr = self.program.program.get_expr(expr_idx)
-            inst_block = operator_expr.eval_operator(var_values)
+            inst_block = operator_expr.eval_operator(var_values, hash=self.program.hash)
             inst_block.start_time = time.time()
             print(inst_block)
             instrs = inst_block.instrs
-            print("matrix_parent_fn", instrs[0].matrix, instrs[0].matrix.parent_fn)
+            print(instrs)
             next_operator = None
             if (len(instrs) != len(set(instrs))):
                 raise Exception("Duplicate instruction in instruction stream")

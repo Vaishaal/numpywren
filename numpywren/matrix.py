@@ -16,6 +16,7 @@ import botocore
 import cloudpickle
 import numpy as np
 import pywren.wrenconfig as wc
+import dill
 
 from . import matrix_utils
 from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists_async
@@ -50,12 +51,8 @@ class BigMatrix(object):
     dtype : data-type, optional
         Any object that can be interpreted as a numpy data type. Determines
         the type of the object stored in the array.
-    parent_fn : function, optional
+    parent_fn : async function, optional
         A function that gets called when a previously uninitialized block is
-        accessed. Gets passed the BigMatrix object and the relevant block index
-        and is expected to appropriately initialize the given block.
-    parent_fn_async: async function, optional
-        An async function that gets called when a previously uninitialized block is
         accessed. Gets passed the BigMatrix object and the relevant block index
         and is expected to appropriately initialize the given block.
     write_header : bool, optional
@@ -77,7 +74,6 @@ class BigMatrix(object):
                  prefix='numpywren.objects/',
                  dtype=np.float64,
                  parent_fn=None,
-                 parent_fn_async=None,
                  write_header=False):
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
@@ -89,8 +85,7 @@ class BigMatrix(object):
         self.key = key
         self.key_base = os.path.join(prefix, self.key)
         self.dtype = dtype
-        self.parent_fn = parent_fn
-        self.parent_fn_async = parent_fn_async
+        self.parent_fn = dill.dumps(parent_fn)
         self.transposed = False
         if (shape == None or shard_sizes == None):
             header = self.__read_header__()
@@ -278,12 +273,12 @@ class BigMatrix(object):
         key = self.__shard_idx_to_key__(block_idx)
         print(key)
         exists = await key_exists_async(self.bucket, key, loop)
-        if (not exists and self.parent_fn_async == None):
+        if (not exists and self.parent_fn == None):
             print(self.bucket)
             print(key)
             raise Exception("Key does {0} not exist, and no parent function prescripted")
-        elif (not exists and self.parent_fn_async != None):
-            X_block = await self.parent_fn_async(self, loop, *block_idx)
+        elif (not exists and self.parent_fn != None):
+            X_block = await dill.loads(self.parent_fn)(self, loop, *block_idx)
         else:
             bio = await self.__s3_key_to_byte_io__(key, loop=loop)
             X_block = np.load(bio)
