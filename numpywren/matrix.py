@@ -59,6 +59,8 @@ class BigMatrix(object):
         If write_header is True then a header will be stored alongside the array
         to allow other BigMatrix objects to be initialized with the same key
         and underlying S3 representation.
+    autosqueeze: bool, optional
+        Squeeze all 1-dimensional entries when calling get_block, and put_block's input shape must be shard_size except without 1 dimensionally entries
 
     Notes
     -----
@@ -74,7 +76,8 @@ class BigMatrix(object):
                  prefix='numpywren.objects/',
                  dtype=np.float64,
                  parent_fn=None,
-                 write_header=False):
+                 write_header=False,
+                 autosqueeze=True):
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
             if bucket is None:
@@ -87,6 +90,7 @@ class BigMatrix(object):
         self.dtype = dtype
         self.parent_fn = dill.dumps(parent_fn)
         self.transposed = False
+        self.autosqueeze = autosqueeze
         if (shape == None or shard_sizes == None):
             header = self.__read_header__()
         else:
@@ -276,12 +280,15 @@ class BigMatrix(object):
         if (not exists and self.parent_fn == None):
             print(self.bucket)
             print(key)
+            print(bidxs)
             raise Exception("Key does {0} not exist, and no parent function prescripted")
         elif (not exists and self.parent_fn != None):
             X_block = await dill.loads(self.parent_fn)(self, loop, *block_idx)
         else:
             bio = await self.__s3_key_to_byte_io__(key, loop=loop)
             X_block = np.load(bio)
+        if (self.autosqueeze):
+            X_block = np.squeeze(X_block)
         return X_block
 
     def put_block(self, block, *block_idx):
@@ -325,6 +332,9 @@ class BigMatrix(object):
 
         real_idxs = self.__block_idx_to_real_idx__(block_idx)
         current_shape = tuple([e - s for s,e in real_idxs])
+        if (self.autosqueeze):
+            if (list(block.shape) == [x for x in current_shape if x != 1]):
+                block = block.reshape(current_shape)
 
         if (block.shape != current_shape):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))

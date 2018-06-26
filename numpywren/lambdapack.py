@@ -90,8 +90,6 @@ def put(key, value, ip=REDIS_ADDR, passw=REDIS_PASS , s3=False, s3_bucket=""):
 
 def upload(key, bucket, data):
     client = boto3.client('s3')
-    #print("key", key)
-    #print("bucket", bucket)
     client.put_object(Bucket=bucket, Key=key, Body=data)
 
 def get(key, ip=REDIS_ADDR, passw=REDIS_PASS, s3=False, s3_bucket=""):
@@ -162,10 +160,7 @@ def conditional_increment(key_to_incr, condition_key, ip=REDIS_ADDR):
           condition_val = 0
         condition_val = int(condition_val)
         res = current_value
-        #print("CONDITION KEY IS ", condition_key)
-        #print("Condition val is ", condition_val)
         if (condition_val == 0):
-          #print("doing transaction")
           pipe.multi()
           pipe.incr(key_to_incr)
           pipe.set(condition_key, 1)
@@ -328,7 +323,11 @@ class RemoteSYRK(RemoteInstruction):
             real_shape = old_block.shape
             block_2 = np.squeeze(self.argv[1].result)
             block_1 = np.squeeze(self.argv[2].result)
+            print("SYRK INPUT 1", block_1)
+            print("SYRK INPUT 2", block_2)
+            print("SYRK OLD_BLOCK", old_block)
             res = old_block - (block_2.dot(block_1.T)).reshape(real_shape)
+            print("SYRK RESULT", res)
             self.result = res
             self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
           else:
@@ -431,7 +430,7 @@ class RemoteGemm(RemoteInstruction):
         return "{0} = GEMM {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
 
 class RemoteTRSM(RemoteInstruction):
-    def __init__(self, i_id, argv_instr, lower=False, right=False, **kwargs):
+    def __init__(self, i_id, argv_instr, lower=False, right=True, **kwargs):
         super().__init__(i_id)
         self.i_code = OC.TRSM
         assert len(argv_instr) == 2
@@ -454,6 +453,7 @@ class RemoteTRSM(RemoteInstruction):
               A_block_shape = A_block.shape
               A_block = A_block.squeeze()
               self.result = scipy.linalg.blas.dtrsm(1.0, A_block.T, B_block, side=int(self.right),lower=int(self.lower))
+              print("TRSM RESULT", self.result)
               A_block.reshape(A_block_shape)
               self.flops =  A_block.shape[0] * B_block.shape[0] * B_block.shape[1]
               self.ret_code = 0
@@ -521,7 +521,6 @@ class RemoteReturn(RemoteInstruction):
         super().__init__(i_id)
         self.i_code = OC.RET
         self.result = None
-        print("KWARGS",kwargs)
         self.return_loc = kwargs["hash"]
     async def __call__(self, prev=None):
       if (prev != None):
@@ -646,34 +645,39 @@ class LambdaPackProgram(object):
         try:
           post_op_start = time.time()
           children = self.program.get_children(expr_idx, var_values)
-          print(expr_idx, var_values, children)
+          print("CHILDREN", children)
           node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
           if (node_status == NS.FINISHED):
             return
+          print(expr_idx, var_values)
           self.set_node_status(expr_idx, var_values, NS.POST_OP)
           if (ret_code == PS.EXCEPTION and tb != None):
             self.handle_exception(" EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
           ready_children = []
           for child in children:
-            print(child)
             REDIS_CLIENT.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), "STILL IN POST OP")
             my_child_edge = self._edge_key(expr_idx, var_values, *child)
             child_edge_sum_key = self._node_edge_sum_key(*child)
             # redis transaction should be atomic
             tp = fs.ThreadPoolExecutor(1)
+            print("child_edge_sum_key", child_edge_sum_key)
             val_future = tp.submit(conditional_increment, child_edge_sum_key, my_child_edge, ip=self.redis_ip)
             done, not_done = fs.wait([val_future], timeout=60)
             if len(done) == 0:
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
             child_parents = self.program.get_parents(child[0], child[1])
-            print("CHILD", child, "CHILD_PARENTS", child_parents)
+            print("parents ", child_parents, "val ", val)
+            for p in child_parents:
+              print("parent {0}, val: {1}".format(p, self.get_node_status(*p)))
+
             if (val == len(child_parents) and self.get_node_status(*child) != NS.FINISHED):
               self.set_node_status(*child, NS.READY)
               ready_children.append(child)
 
+          print("READY CHILDREN", ready_children)
           if self.eager and ready_children:
               # TODO: Re-add priorities here
               next_operator = ready_children[-1]
@@ -701,8 +705,6 @@ class LambdaPackProgram(object):
           inst_block.clear()
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
-          print(children)
-          print(ready_children)
           print("Post finished : {0}, took {1}".format((expr_idx, var_values), post_op_time))
           return next_operator
         except Exception as e:

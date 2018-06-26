@@ -164,6 +164,14 @@ def get_local_matrix(bigm, workers=cpu_count, mmap_loc=None, big_axis=0):
     '''
 
     executor = fs.ProcessPoolExecutor(max_workers=workers)
+    print(bigm.shape)
+    print(bigm.shard_sizes)
+    print(bigm.key)
+    print("BLOCKS0", bigm._blocks(0))
+    print("BLOCKS1", bigm._blocks(1))
+    print(bigm._block_idxs(0))
+    print(bigm._block_idxs(1))
+
     blocks_to_get = [bigm._block_idxs(i) for i in range(len(bigm.shape))]
     big_axis = np.argmax([len(bigm._block_idxs(i)) for i in range(len(bigm.shape))])
     futures = get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=big_axis)
@@ -268,6 +276,7 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
     '''
     mmap_shape = []
     local_idxs = []
+    print("BLOCKS_TO_GET", blocks_to_get)
 
     matrix_locations = [{} for _ in range(len(bigm.shape))]
     matrix_maxes = [0 for _ in range(len(bigm.shape))]
@@ -317,7 +326,7 @@ def make_constant_parent(cnst):
     return constant_parent
 
 
-def constant_zeros(bigm, *block_idx):
+async def constant_zeros(bigm, loop, *block_idx):
     real_idxs = bigm.__block_idx_to_real_idx__(block_idx)
     current_shape = tuple([e - s for s,e in real_idxs])
     return np.zeros(current_shape)

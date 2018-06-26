@@ -78,16 +78,15 @@ class LambdaPackExecutor(object):
     async def run(self, expr_idx, var_values, computer=None, profile=True):
         operator_refs = [(expr_idx, var_values)]
         for expr_idx, var_values in operator_refs:
-            print("STARTING INSTRUCTION ", expr_idx, var_values)
+            expr = self.program.program.get_expr(expr_idx)
+            print("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
             t = time.time()
             node_status = self.program.get_node_status(expr_idx, var_values)
             #print(node_status)
             operator_expr = self.program.program.get_expr(expr_idx)
             inst_block = operator_expr.eval_operator(var_values, hash=self.program.hash)
             inst_block.start_time = time.time()
-            print(inst_block)
             instrs = inst_block.instrs
-            print(instrs)
             next_operator = None
             if (len(instrs) != len(set(instrs))):
                 raise Exception("Duplicate instruction in instruction stream")
@@ -341,6 +340,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             operator_refs = await lmpk_executor.run(*operator_ref, computer=computer)
 
             for operator_ref in operator_refs:
+                print("Marking {0} as done".format(operator_ref))
                 program.set_node_status(*operator_ref, lp.NS.FINISHED)
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
                 lock[0] = 0

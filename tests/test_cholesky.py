@@ -27,7 +27,7 @@ class CholeskyTest(unittest.TestCase):
         A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=A.shape, write_header=True)
         A_sharded.free()
         shard_matrix(A_sharded, A)
-        instructions,L_sharded,trailing = compiler._chol(A_sharded)
+        instructions, trailing, L_sharded = compiler._chol(A_sharded)
         executor = pywren.lambda_executor
         config = pwex.config
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
@@ -38,6 +38,8 @@ class CholeskyTest(unittest.TestCase):
         program.free()
         print("Program status")
         print(program.program_status())
+        print(L_sharded.shape)
+        print(L_sharded.get_block(0,0))
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
         print(L_npw)
@@ -59,17 +61,19 @@ class CholeskyTest(unittest.TestCase):
         A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
         A_sharded.free()
         shard_matrix(A_sharded, A)
-        instructions,L_sharded,trailing = compiler._chol(A_sharded)
+        instructions, trailing, L_sharded = compiler._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
         config = pwex.config
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+        print("TERMINATORS", program.program.find_terminators())
         program.start()
         #job_runner.main(program, program.queue_url)
         job_runner.lambdapack_run(program)
         print("Program status")
         print(program.program_status())
         program.free()
+        print(L_sharded.shape)
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
         print(L_npw)

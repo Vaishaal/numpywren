@@ -189,7 +189,7 @@ class NumpywrenParse(ast.NodeVisitor):
         assert(node.value.func.id in VALID_CALLS)
         reads = []
         for arg in node.value.args:
-            assert(isinstance(arg, ast.Subscript))
+            assert(isinstance(arg, ast.Subscript) or isinstance(arg, ast.Attribute))
             reads.append(self.visit(arg))
         options = {}
         for kw in node.value.keywords:
@@ -270,6 +270,13 @@ class NumpywrenParse(ast.NodeVisitor):
         self.loop_variables.add(node.target.id)
         return For(var, start, end, body, is_par_range)
 
+    def visit_Attribute(self, node):
+        assert(node.attr == 'T')
+        child = self.visit(node.value)
+        assert(isinstance(child, BigMatrixBlock))
+        child.bigm = child.bigm.T
+        return child
+
     def visit_Subscript(self, node):
         assert(isinstance(node.slice.value, ast.Tuple))
         if (node.value.id not in self.symbols):
@@ -335,8 +342,6 @@ class OperatorExpr(Statement):
     def eval_operator(self, var_values, **kwargs):
         read_instrs = self.eval_read_instrs(var_values)
         compute_instr = self._eval_compute_instr(read_instrs, **kwargs)
-        print("var values", var_values)
-        print("compute instr", compute_instr)
         if (self._write_expr != []):
             write_instr = [self.eval_write_instr(compute_instr, var_values)]
         else:
@@ -351,7 +356,6 @@ class OperatorExpr(Statement):
         results = []
         for read_expr in self._read_exprs:
             if write_ref[0] != read_expr[0]:
-                print("not same matrix")
                 continue
             if not var_names:
                 if tuple(write_ref[1]) == tuple(read_expr[1]):
@@ -413,7 +417,6 @@ class OperatorExpr(Statement):
                     return []
             for val in range(limits[0], limits[1]):
                 var_values = var_values.copy()
-                print(sol)
                 var_values[simple_var] = sol[0].subs({simple_var: val})
                 limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
                 if (len(limits_left) > 0):
@@ -627,8 +630,8 @@ class Program(BlockStatement):
             return []
         write_ref = operator_expr.eval_write_ref(var_values)
         children = self.eval_read_operators(write_ref)
-        if (len(children) == 0):
-            children = [(self.num_exprs - 1, {})]
+        if (operator_expr._is_output):
+            children += [(self.num_exprs - 1, {})]
         return children
 
     def get_parents(self, expr_idx, var_values):
@@ -908,15 +911,6 @@ def cholesky_with_if(I:BigMatrix, O:BigMatrix, N:int):
                 O[i+1,j,k] = syrk(O[i,j,k], O[i,i,j], O[i,i,k])
 
 
-def cholesky(O:BigMatrix, N:int):
-    for i in range(N):
-        O[N-1,i,i] = cholesky(O[i,i,i])
-        for j in range(i+1,N):
-            O[N-1,i,j] = trsm(O[N-1,i,i], O[i,i,i+j])
-        for j in range(i+1,N):
-            for k in range(j+1,N):
-                O[i+1,j,k] = syrk(O[i,j,k], O[i,i,j], O[i,i,k])
-
 
 class BackendIf(BlockStatement):
     def __init__(self, cond_expr, ifbody, elsebody):
@@ -959,7 +953,7 @@ class BackendFor(BlockStatement):
 def make_3d_input_parent_fn(I):
     async def parent_fn_async(self, loop, *bidxs):
         if bidxs[0] == 0:
-            print("CALLING PARENT FN")
+            #print("CALLING PARENT FN")
             return (await I.get_block_async(loop, *bidxs[1:]))[np.newaxis]
         else:
             exist = self.block_idxs_exist
@@ -969,27 +963,27 @@ def make_3d_input_parent_fn(I):
 
 def cholesky(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
     # handle first loop differently
-    O[N,0,0] = cholesky(I[0,0,0])
+    O[0,0] = cholesky(I[0,0])
     for j in range(1,N):
-        O[N,j,0] = trsm(O[N,0,0], I[0,j,0])
+        O[j,0] = trsm(O[0,0], I[j,0])
         for k in range(1,j+1):
-            S[1,j,k] = syrk(I[0,j,k], O[N,j,0], O[N,k,0])
+            S[1,j,k] = syrk(I[j,k], O[j,0], O[k,0])
 
     for i in range(1,N):
-        O[N,i,i] = cholesky(S[i,i,i])
+        O[i,i] = cholesky(S[i,i,i])
         for j in range(i+1,N):
-            O[N,i,j] = trsm(O[N,i,i], S[i,i,j])
+            O[j,i] = trsm(O[i,i], S[i,j,i])
             for k in range(i+1,j+1):
-                S[i+1,j,k] = syrk(S[i,j,k], O[N,j,i], O[N,k,i])
+                S[i+1,j,k] = syrk(S[i,j,k], O[j,i], O[k,i])
 
 def _chol(X, out_bucket=None, truncate=0):
-    O = BigMatrix("Cholesky({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
+    S = BigMatrix("Cholesky.Intermediate({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
+    O = BigMatrix("Cholesky({0})".format(X.key), shape=(X.shape[0], X.shape[0]), shard_sizes=(X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
+    O.parent_fn = dill.dumps(constant_zeros)
     block_len = len(X._block_idxs(0))
-    parent_fn = dill.dumps(make_3d_input_parent_fn(X))
-    O.parent_fn = parent_fn
-    starters = [(0, {sympy.Symbol("i"): 0})]
-    program = lpcompile(cholesky, inputs=["I"], outputs=["O"])(O=O,I=O,S=O,N=int(np.ceil(X.shape[0]/X.shard_sizes[0])), truncate=truncate)
+    program = lpcompile(cholesky, inputs=["I"], outputs=["O"])(O=O,I=X,S=S,N=int(np.ceil(X.shape[0]/X.shard_sizes[0])), truncate=truncate)
     print("Starters", program.find_starters())
+    starters = program.find_starters()
     print("Terminators", len(program.find_terminators()))
     print("parents", program.get_parents(*(1, {'j': 3})))
     #print("Terminators", program.num_terminators)
@@ -997,7 +991,7 @@ def _chol(X, out_bucket=None, truncate=0):
     inst_block = operator_expr.eval_operator(starters[0][1])
     instrs = inst_block.instrs
     program.starters = starters
-    return program, O.submatrix(block_len), O
+    return program, S, O
 
 if __name__ == "__main__":
     N = 128
