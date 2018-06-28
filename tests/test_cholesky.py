@@ -90,7 +90,6 @@ class CholeskyTest(unittest.TestCase):
         size = 128
         shard_size = 128
         num_cores = 1
-        pwex = pywren.default_executor()
         np.random.seed(1)
         print("Generating X")
         X = np.random.randn(size, 128)
@@ -100,8 +99,9 @@ class CholeskyTest(unittest.TestCase):
         A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
         A_sharded.free()
         shard_matrix(A_sharded, A)
-        instructions,L_sharded,trailing = lp._chol(A_sharded)
-        executor = pywren.lambda_executor
+        instructions, trailing, L_sharded = compiler._chol(A_sharded)
+        pwex = pywren.default_executor()
+        executor = pywren.standalone_executor
         config = pwex.config
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
         print(program)
@@ -109,6 +109,13 @@ class CholeskyTest(unittest.TestCase):
         num_cores = 1
         print("Mapping...")
         futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)
+        #futures = pwex.map(lambda x: x, range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)
+        print(dir(futures[0]))
+        print("EXCEPTION", futures[0]._exception)
+        print("INVOKE_STATUS", futures[0].invoke_status)
+        print("RUN_STATUS", futures[0]._call_invoker_result)
+        print("Poop", futures[0].run_status)
+        print("dict", futures[0].__dict__)
         futures[0].result()
         print("Waiting...")
         pywren.wait(futures)
@@ -139,8 +146,8 @@ class CholeskyTest(unittest.TestCase):
         print("sharding A..")
         shard_matrix(A_sharded, A)
         instructions,L_sharded,trailing = lp._chol(A_sharded)
-        pwex = pywren.default_executor()
-        executor = pywren.lambda_executor
+        pwex = pywren.standalone_executor()
+        executor = pywren.standalone_executor
         config = pwex.config
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
         print(program)
@@ -204,6 +211,6 @@ class CholeskyTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    tests = LambdapackExecutorTest()
-    tests.test_cholesky_multi()
+    tests = CholeskyTest()
+    tests.test_cholesky_single()
 

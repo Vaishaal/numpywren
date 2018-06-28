@@ -1,5 +1,4 @@
 import ast
-import abc
 import inspect
 import astor
 import sympy
@@ -8,6 +7,7 @@ from numpywren import exceptions, utils
 from numpywren.lambdapack import RemoteCholesky, RemoteTRSM, RemoteSYRK, RemoteRead, RemoteWrite, InstructionBlock, RemoteReturn
 from numpywren.matrix_utils import constant_zeros
 import numpy as np
+
 import dill
 
 ########
@@ -307,8 +307,7 @@ def lpcompile(function, inputs, outputs):
     return func
 
 
-class Statement(abc.ABC):
-    @abc.abstractmethod
+class Statement():
     def get_expr(self, index):
         pass
 
@@ -325,7 +324,6 @@ class OperatorExpr(Statement):
         self.opid = opid
         self.num_exprs = 1
         self.options = options
-        self._read_expr_lambdas = []
         self._read_subs = read_subs
         self._write_sub = write_sub
         self._is_input = is_input
@@ -566,7 +564,7 @@ class OperatorExpr(Statement):
 
 
 
-class BlockStatement(Statement, abc.ABC):
+class BlockStatement(Statement):
     def __init__(self, body=[]):
         self._body = body
         self.num_stmts = 0
@@ -652,6 +650,7 @@ class Program(BlockStatement):
         terminators = []
         expr_id = 0
         var_values = {}
+        cached_sub_funcs = {}
         def recurse_find_terminators(body, expr_id, var_values):
             for statement in body:
                 if isinstance(statement, OperatorExpr):
@@ -661,11 +660,24 @@ class Program(BlockStatement):
                         terminators.append((expr_id, var_values))
                     expr_id += 1
                 elif isinstance(statement, BackendFor):
+                    symbols = tuple(self.symbols.keys())
                     sub_dict = self.symbols
                     for k,v in var_values.items():
                         sub_dict[str(k)] = v
-                    start_val = statement._limit_lambdas[0](**sub_dict)
-                    end_val = statement._limit_lambdas[1](**sub_dict)
+                    '''
+                    if (statement in cached_sub_funcs):
+                        min_idx_lambda, max_idx_lambda = cached_sub_funcs[statement]
+                    else:
+                        min_idx_lambda = sympy.lambdify(symbols, statement._limits[0], 'numpy', dummify=False)
+                        max_idx_lambda = sympy.lambdify(symbols, statement._limits[1], 'numpy', dummify=False)
+                        cached_sub_funcs[statement] = (min_idx_lambda, max_idx_lambda)
+                    '''
+
+                    #start_val = min_idx_lambda(**sub_dict)
+                    #end_val = max_idx_lambda(**sub_dict)
+                    start_val = statement._limits[0].subs(var_values)
+                    end_val = statement._limits[1].subs(var_values)
+
                     #print("STARTING FOR LOOP FROM {0} to {1}".format(start_val, end_val))
                     var = statement._var
                     outputs = False
@@ -686,6 +698,7 @@ class Program(BlockStatement):
         starters = []
         expr_id = 0
         var_values = {}
+        cached_sub_funcs = {}
         def recurse_find_starters(body, expr_id, var_values):
             for statement in body:
                 if isinstance(statement, OperatorExpr):
@@ -695,8 +708,19 @@ class Program(BlockStatement):
                         starters.append((expr_id, var_values))
                     expr_id += 1
                 if isinstance(statement, BackendFor):
-                    start_val = statement._limits[0].subs(var_values)
-                    end_val = statement._limits[1].subs(var_values)
+                    symbols = tuple(self.symbols.keys())
+                    sub_dict = self.symbols
+                    for k,v in var_values.items():
+                        sub_dict[str(k)] = v
+                    if (statement in cached_sub_funcs):
+                        min_idx_lambda, max_idx_lambda = cached_sub_funcs[statement]
+                    else:
+                        min_idx_lambda = sympy.lambdify(symbols, statement._limits[0], 'numpy', dummify=False)
+                        max_idx_lambda = sympy.lambdify(symbols, statement._limits[1], 'numpy', dummify=False)
+                        cached_sub_funcs[statement] = (min_idx_lambda, max_idx_lambda)
+
+                    start_val = min_idx_lambda(**sub_dict)
+                    end_val = max_idx_lambda(**sub_dict)
                     var = statement._var
                     inputs = False
                     # if there are no inputs in this for loop SKIP
@@ -837,14 +861,9 @@ class BackendGenerator(ast.NodeVisitor):
         symbols_seen = tuple(self.symbols.values())
         for matrix, idxs in reads:
             read_sub = []
-            for idx in idxs:
-                # idx is a sympy expression
-                read_sub.append(sympy.lambdify(symbols_seen, idx, 'numpy', dummify=False))
             read_subs.append(read_sub)
         matrix, idxs = write
         write_sub = []
-        for idx in idxs:
-            write_sub.append(sympy.lambdify(symbols_seen, idx, 'numpy', dummify=False))
 
         opexpr = OperatorExpr(self.count, compute_expr, reads, write, read_subs, write_sub, node.is_input, node.is_output, **kwargs)
         self.count += 1
@@ -888,10 +907,8 @@ class BackendGenerator(ast.NodeVisitor):
         min_idx = self.visit(node.min)
         max_idx = self.visit(node.max)
         all_symbols = tuple(self.symbols.values())
-        min_idx_lambda = sympy.lambdify(all_symbols, min_idx, 'numpy', dummify=False)
-        max_idx_lambda = sympy.lambdify(all_symbols, max_idx, 'numpy', dummify=False)
         body = [self.visit(x) for x in node.body]
-        return BackendFor(var=loop_var, limits=[min_idx, max_idx], limit_lambdas=[min_idx_lambda, max_idx_lambda], body=body, parallel=node.parallel)
+        return BackendFor(var=loop_var, limits=[min_idx, max_idx], body=body, parallel=node.parallel)
 
 def cholesky_with_if(I:BigMatrix, O:BigMatrix, N:int):
     for i in range(n):
@@ -932,10 +949,9 @@ class BackendIf(BlockStatement):
         return str_repr
 
 class BackendFor(BlockStatement):
-    def __init__(self, var, limits, limit_lambdas, body, parallel):
+    def __init__(self, var, limits, body, parallel):
         self._var = var
         self._limits = limits
-        self._limit_lambdas = limit_lambdas
         self.parallel = parallel
         super().__init__(body)
 
@@ -986,6 +1002,7 @@ def _chol(X, out_bucket=None, truncate=0):
     starters = program.find_starters()
     print("Terminators", len(program.find_terminators()))
     print("parents", program.get_parents(*(1, {'j': 3})))
+    print("children", program.get_parents(*starters[0]))
     #print("Terminators", program.num_terminators)
     operator_expr = program.get_expr(starters[0][0])
     inst_block = operator_expr.eval_operator(starters[0][1])
@@ -994,6 +1011,6 @@ def _chol(X, out_bucket=None, truncate=0):
     return program, S, O
 
 if __name__ == "__main__":
-    N = 128
+    N = 4096*16
     I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(32, 32), write_header=True)
     _chol(I)
