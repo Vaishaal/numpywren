@@ -145,9 +145,9 @@ class CholeskyTest(unittest.TestCase):
         A_sharded.free()
         print("sharding A..")
         shard_matrix(A_sharded, A)
-        instructions,L_sharded,trailing = lp._chol(A_sharded)
-        pwex = pywren.standalone_executor()
-        executor = pywren.standalone_executor
+        instructions, trailing, L_sharded = compiler._chol(A_sharded)
+        pwex = pywren.default_executor()
+        executor = pywren.lambda_executor
         config = pwex.config
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
         print(program)
@@ -185,7 +185,7 @@ class CholeskyTest(unittest.TestCase):
         A_sharded.free()
         print("sharding....")
         shard_matrix(A_sharded, A)
-        instructions,L_sharded,trailing = lp._chol(A_sharded)
+        instructions, trailing, L_sharded = compiler._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
         config = pwex.config

@@ -7,7 +7,7 @@ from numpywren import exceptions, utils
 from numpywren.lambdapack import RemoteCholesky, RemoteTRSM, RemoteSYRK, RemoteRead, RemoteWrite, InstructionBlock, RemoteReturn
 from numpywren.matrix_utils import constant_zeros
 import numpy as np
-
+import time
 import dill
 
 ########
@@ -664,19 +664,15 @@ class Program(BlockStatement):
                     sub_dict = self.symbols
                     for k,v in var_values.items():
                         sub_dict[str(k)] = v
-                    '''
                     if (statement in cached_sub_funcs):
                         min_idx_lambda, max_idx_lambda = cached_sub_funcs[statement]
                     else:
                         min_idx_lambda = sympy.lambdify(symbols, statement._limits[0], 'numpy', dummify=False)
                         max_idx_lambda = sympy.lambdify(symbols, statement._limits[1], 'numpy', dummify=False)
                         cached_sub_funcs[statement] = (min_idx_lambda, max_idx_lambda)
-                    '''
 
-                    #start_val = min_idx_lambda(**sub_dict)
-                    #end_val = max_idx_lambda(**sub_dict)
-                    start_val = statement._limits[0].subs(var_values)
-                    end_val = statement._limits[1].subs(var_values)
+                    start_val = min_idx_lambda(**sub_dict)
+                    end_val = max_idx_lambda(**sub_dict)
 
                     #print("STARTING FOR LOOP FROM {0} to {1}".format(start_val, end_val))
                     var = statement._var
@@ -1001,8 +997,15 @@ def _chol(X, out_bucket=None, truncate=0):
     print("Starters", program.find_starters())
     starters = program.find_starters()
     print("Terminators", len(program.find_terminators()))
+    t = time.time()
     print("parents", program.get_parents(*(1, {'j': 3})))
-    print("children", program.get_parents(*starters[0]))
+    e = time.time()
+    print("parents time {0}".format(e - t))
+    t = time.time()
+    print("children", program.get_children(*starters[0]))
+    e = time.time()
+    print("parents time {0}".format(e - t))
+    print("children time {0}".format(e - t))
     #print("Terminators", program.num_terminators)
     operator_expr = program.get_expr(starters[0][0])
     inst_block = operator_expr.eval_operator(starters[0][1])
@@ -1011,6 +1014,6 @@ def _chol(X, out_bucket=None, truncate=0):
     return program, S, O
 
 if __name__ == "__main__":
-    N = 4096*16
-    I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(32, 32), write_header=True)
+    N = 1281167*10
+    I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
     _chol(I)
