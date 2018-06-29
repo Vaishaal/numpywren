@@ -4,7 +4,8 @@ from numpywren import lambdapack as lp
 from numpywren import job_runner
 from numpywren import compiler
 from numpywren.matrix_init import shard_matrix
-import numpywren.wait
+import numpywren as npw
+
 import pytest
 import numpy as np
 from numpy.linalg import cholesky
@@ -29,8 +30,9 @@ class CholeskyTest(unittest.TestCase):
         shard_matrix(A_sharded, A)
         instructions, trailing, L_sharded = compiler._chol(A_sharded)
         executor = pywren.lambda_executor
-        config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+        pywren_config = pwex.config
+        config = npw.config.default()
+        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
         print(program)
         program.start()
         job_runner.lambdapack_run(program)
@@ -64,8 +66,9 @@ class CholeskyTest(unittest.TestCase):
         instructions, trailing, L_sharded = compiler._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
-        config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+        config = npw.config.default()
+        pywren_config = pwex.config
+        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
         print("TERMINATORS", program.program.find_terminators())
         program.start()
         #job_runner.main(program, program.queue_url)
@@ -102,8 +105,9 @@ class CholeskyTest(unittest.TestCase):
         instructions, trailing, L_sharded = compiler._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.standalone_executor
-        config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+        config = npw.config.default()
+        pywren_config = pwex.config
+        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
         print(program)
         program.start()
         num_cores = 1
@@ -148,8 +152,9 @@ class CholeskyTest(unittest.TestCase):
         instructions, trailing, L_sharded = compiler._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
-        config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
+        config = npw.config.default()
+        pywren_config = pwex.config
+        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
         print(program)
         program.start()
         num_cores = 16
@@ -188,9 +193,9 @@ class CholeskyTest(unittest.TestCase):
         instructions, trailing, L_sharded = compiler._chol(A_sharded)
         pwex = pywren.default_executor()
         executor = pywren.lambda_executor
-        config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=config)
-        print(program)
+        config = npw.config.default()
+        pywren_config = pwex.config
+        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
         program.start()
         num_cores = 100
         all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)

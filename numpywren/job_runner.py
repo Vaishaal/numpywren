@@ -23,9 +23,6 @@ import redis
 import sympy
 
 
-REDIS_ADDR = os.environ.get("REDIS_ADDR", "127.0.0.1")
-REDIS_PASS = os.environ.get("REDIS_PASS", "")
-REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
 REDIS_CLIENT = None
 
 def mem():
@@ -102,7 +99,10 @@ class LambdaPackExecutor(object):
                                      " REF: {0}, time: {1}, pid: {2}".format((expr_idx, var_values), time.time(), os.getpid()))
                             raise Exception(e_str)
                         instr.start_time = time.time()
-                        res = await instr()
+                        if (isinstance(instr, lp.RemoteReturn)):
+                           res = await instr(self.program.control_plane.client)
+                        else:
+                           res = await instr()
                         instr.end_time = time.time()
                         flops = int(instr.get_flops())
                         read_size = instr.read_size
@@ -167,10 +167,10 @@ def calculate_busy_time(rtimes):
     return wtimes
 
 
-async def check_failure(loop, failure_key):
+async def check_failure(loop, program, failure_key):
     global REDIS_CLIENT
     if (REDIS_CLIENT == None):
-      REDIS_CLIENT = redis.StrictRedis(REDIS_ADDR, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
+       REDIS_CLIENT = program.control_plane.client
     while (True):
       f_key = REDIS_CLIENT.get(failure_key)
       if (f_key is not None):
@@ -195,7 +195,7 @@ def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis
     shared_state["running_times"] = []
     shared_state["last_busy_time"] = time.time()
     loop.create_task(check_program_state(program, loop, shared_state, timeout, idle_timeout))
-    loop.create_task(check_failure(loop, failure_key))
+    loop.create_task(check_failure(loop, program, failure_key))
     tasks = []
     for i in range(pipeline_width):
         # all the async tasks share 1 compute thread and a io cache
@@ -211,7 +211,6 @@ def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"])}
 
-#@profile
 def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
     program.incr_up(1)
     lambda_start = time.time()
@@ -278,7 +277,6 @@ async def check_program_state(program, loop, shared_state, timeout, idle_timeout
     print("Closing loop")
     loop.stop()
 
-REDIS_CLIENT = None
 
 #@profile
 async def lambdapack_run_async(loop, program, computer, cache, shared_state, pipeline_width=1, msg_vis_timeout=60, timeout=200, msg_vis_timeout_jitter=15):
@@ -286,18 +284,11 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     #print("LAMBDAPACK_RUN_ASYNC")
     session = aiobotocore.get_session(loop=loop)
     # every pipelined worker gets its own copy of program so we don't step on eachothers toes!
-    #snapshot_before = tracemalloc.take_snapshot()
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
-    #snapshot_after = tracemalloc.take_snapshot()
-    #top_stats = snapshot_after.compare_to(snapshot_before, 'lineno')
-    #print("[ Top 100 differences for copy ]".format(pc))
-    #for stat in top_stats[:10]:
-    #   print(stat)
     start_time = time.time()
     running_times = shared_state['running_times']
-    #last_message_time = time.time()
     if (REDIS_CLIENT == None):
-      REDIS_CLIENT = redis.StrictRedis(REDIS_ADDR, port=REDIS_PORT, password=REDIS_PASS, db=0, socket_timeout=5)
+       REDIS_CLIENT = program.control_plane.client
     redis_client = REDIS_CLIENT
     try:
         while(True):
@@ -345,10 +336,6 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
                 lock[0] = 0
                 await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            '''
-            sqs_client = boto3.client('sqs')
-            sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            '''
             end_processing_time = time.time()
             running_times.append((start_processing_time, end_processing_time))
             shared_state["busy_workers"] -= 1
