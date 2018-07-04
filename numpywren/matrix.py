@@ -275,12 +275,11 @@ class BigMatrix(object):
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
         key = self.__shard_idx_to_key__(block_idx)
-        print(key)
         exists = await key_exists_async(self.bucket, key, loop)
         if (not exists and self.parent_fn == None):
-            print(self.bucket)
-            print(key)
-            print(bidxs)
+            logger.warning(self.bucket)
+            logger.warning(key)
+            logger.warning(bidxs)
             raise Exception("Key does {0} not exist, and no parent function prescripted")
         elif (not exists and self.parent_fn != None):
             X_block = await dill.loads(self.parent_fn)(self, loop, *block_idx)

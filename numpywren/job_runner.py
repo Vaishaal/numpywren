@@ -24,6 +24,7 @@ import sympy
 
 
 REDIS_CLIENT = None
+logger = logging.getLogger(__name__)
 
 def mem():
    mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
@@ -74,9 +75,10 @@ class LambdaPackExecutor(object):
     #@profile
     async def run(self, expr_idx, var_values, computer=None, profile=True):
         operator_refs = [(expr_idx, var_values)]
+        operator_refs_to_ret = []
         for expr_idx, var_values in operator_refs:
             expr = self.program.program.get_expr(expr_idx)
-            print("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
+            logger.debug("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
             t = time.time()
             node_status = self.program.get_node_status(expr_idx, var_values)
             #print(node_status)
@@ -90,6 +92,7 @@ class LambdaPackExecutor(object):
             try:
                 if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
                     self.program.set_node_status(expr_idx, var_values, lp.NS.RUNNING)
+                    operator_refs_to_ret.append((expr_idx, var_values))
                     for instr in instrs:
                         instr.executor = computer
                         instr.cache = self.cache
@@ -110,7 +113,6 @@ class LambdaPackExecutor(object):
                         self.program.incr_flops(flops)
                         self.program.incr_read(read_size)
                         self.program.incr_write(write_size)
-                        #print("END: {0}, PC: {1}, time: {2}, pid: {3}".format(instr, pc, time.time(), os.getpid()))
                         sys.stdout.flush()
 
                         instr.run = True
@@ -122,12 +124,16 @@ class LambdaPackExecutor(object):
 
                     next_operator = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                 elif (node_status == lp.NS.POST_OP):
+                    operator_refs_to_ret.append((expr_idx, var_values))
+                    logger.warning("node: {0}:{1} finished work skipping to post_op...".format(expr_idx, var_values))
                     next_operator = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                 elif (node_status == lp.NS.NOT_READY):
-                    raise
-                    continue
+                   logger.warning("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
+
+                   continue
                 elif (node_status == lp.NS.FINISHED):
-                    continue
+                   logger.warning("node: {0}:{1} finished post_op skipping...".format(expr_idx, var_values))
+                   continue
                 else:
                     raise Exception("Unknown status: {0}".format(node_status))
                 if next_operator is not None:
@@ -148,7 +154,7 @@ class LambdaPackExecutor(object):
                 self.program.post_op(expr_idx, var_values, lp.PS.EXCEPTION, inst_block, tb=tb)
                 raise
         e = time.time()
-        return operator_refs
+        return operator_refs_to_ret
 
 
 def calculate_busy_time(rtimes):
@@ -174,6 +180,8 @@ async def check_failure(loop, program, failure_key):
     while (True):
       f_key = REDIS_CLIENT.get(failure_key)
       if (f_key is not None):
+         logger.error("FAIL FAIL FAIL FAIL FAIL")
+         logger.error(f_key)
          loop.stop()
       await asyncio.sleep(5)
 
@@ -203,11 +211,10 @@ def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis
         tasks.append(loop.create_task(coro))
     #results = loop.run_until_complete(asyncio.gather(*tasks))
     loop.run_forever()
-    print("loop end")
     loop.close()
     lambda_stop = time.time()
     program.decr_up(1)
-    print(program.program_status())
+    logger.debug("Loop end program status: {0}".format(program.program_status()))
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"])}
 
@@ -272,15 +279,17 @@ async def check_program_state(program, loop, shared_state, timeout, idle_timeout
         #TODO make this coroutine friendly
         s = program.program_status()
         if(s != lp.PS.RUNNING):
+           print("program status is ", s)
            break
         await asyncio.sleep(1)
-    print("Closing loop")
+    print("Closing loop from program")
     loop.stop()
 
 
 #@profile
 async def lambdapack_run_async(loop, program, computer, cache, shared_state, pipeline_width=1, msg_vis_timeout=60, timeout=200, msg_vis_timeout_jitter=15):
     global REDIS_CLIENT
+    print("timeout is ", timeout)
     #print("LAMBDAPACK_RUN_ASYNC")
     session = aiobotocore.get_session(loop=loop)
     # every pipelined worker gets its own copy of program so we don't step on eachothers toes!
@@ -331,7 +340,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             operator_refs = await lmpk_executor.run(*operator_ref, computer=computer)
 
             for operator_ref in operator_refs:
-                print("Marking {0} as done".format(operator_ref))
+                logger.debug("Marking {0} as done".format(operator_ref))
                 program.set_node_status(*operator_ref, lp.NS.FINISHED)
             async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
                 lock[0] = 0
@@ -342,8 +351,6 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             redis_client.decr("{0}_busy".format(program.hash))
             shared_state["last_busy_time"] = time.time()
             current_time = time.time()
-            if (current_time - start_time > timeout):
-                return
     except Exception as e:
         #print(e)
         traceback.print_exc()

@@ -1,5 +1,5 @@
 import numpywren as npw
-from numpywren import control_plane
+from numpywren import control_plane as cp
 import argparse
 import os
 import click
@@ -110,7 +110,7 @@ def control_plane():
 def launch():
     t = time.time()
     click.echo("Launching instance...")
-    info = control_plane.launch_and_provision_redis()
+    info = cp.launch_and_provision_redis()
     ip = info["public_ip"]
     click.echo("Waiting for redis")
     config = npw.config.default()
@@ -126,7 +126,7 @@ def launch():
             pass
     e = time.time()
     click.echo("redis launch took {0} seconds".format(e - t))
-    control_plane.set_control_plane(info, config=config)
+    cp.set_control_plane(info, config=config)
 
 @click.command()
 def list():

@@ -38,7 +38,7 @@ class CompilerTest(unittest.TestCase):
         X = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
         O = BigMatrix("Cholesky({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
         block_len = len(X._block_idxs(0))
-        parent_fn = dill.dumps(compiler.make_3d_input_parent_fn_async(X))
+        parent_fn = dill.dumps(compiler.make_3d_input_parent_fn(X))
         O.parent_fn = parent_fn
         program = compiler.lpcompile(cholesky, inputs=["I"], outputs=["O"])(O=O,I=O,S=O,N=int(np.ceil(X.shape[0]/X.shard_sizes[0])), truncate=truncate)
         assert len(program.find_starters()) == 1
@@ -50,7 +50,7 @@ class CompilerTest(unittest.TestCase):
         X = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
         O = BigMatrix("Cholesky({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
         block_len = len(X._block_idxs(0))
-        parent_fn = dill.dumps(compiler.make_3d_input_parent_fn_async(X))
+        parent_fn = dill.dumps(compiler.make_3d_input_parent_fn(X))
         O.parent_fn = parent_fn
         s = time.time()
         program = compiler.lpcompile(cholesky, inputs=["I"], outputs=["O"])(O=O,I=O,S=O,N=int(np.ceil(X.shape[0]/X.shard_sizes[0])), truncate=truncate)
@@ -69,6 +69,6 @@ class CompilerTest(unittest.TestCase):
             parents = program.get_parents(*child)
             e  = time.time()
             assert(parents[0] == starter)
-        assert(len(children) == X.num_blocks(1) - 1)
+        assert(len(children) == O.num_blocks(1))
 
 

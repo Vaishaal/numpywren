@@ -94,7 +94,7 @@ def get(client, key, s3=False, s3_bucket=""):
         raise Exception("No redis client up")
       return client.get(key)
 
-def incr(client, key, amount, s3=False, s3_bucket=""):
+def incr(client, key, amount=1, s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
     if (s3):
       # read from S3
@@ -596,7 +596,7 @@ class LambdaPackProgram(object):
                                   self._node_str(expr_idx2, var_values2))
 
     def _node_str(self, expr_idx, var_values):
-        var_strs = sorted(["{0}:{1}".format(key.name, value) for key, value in var_values.items()])
+        var_strs = sorted(["{0}:{1}".format(key, value) for key, value in var_values.items()])
         return "{0}_({1})".format(expr_idx, "-".join(var_strs))
 
     def get_node_status(self, expr_idx, var_values):
@@ -670,11 +670,13 @@ class LambdaPackProgram(object):
           inst_block.clear()
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
+          self.incr_progress()
           return next_operator
         except Exception as e:
             tb = traceback.format_exc()
             traceback.print_exc()
-            raise
+            print("Exception raised...")
+            self.handle_exception("POST OP EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
 
     def start(self):
         put(self.control_plane.client, self.hash, PS.RUNNING.value)
@@ -698,6 +700,10 @@ class LambdaPackProgram(object):
 
     def incr_up(self, amount):
       incr(self.control_plane.client, self.up, amount)
+
+    def incr_progress(self):
+      incr(self.control_plane.client, "{0}_progress".format(self.hash))
+
 
     def incr_flops(self, amount):
       if (amount > 0):
@@ -738,6 +744,9 @@ class LambdaPackProgram(object):
     def get_write(self):
       return get(self.control_plane.client, "{0}_write".format(self.hash))
 
+    def get_progress(self):
+      return get(self.control_plane.client, "{0}_progress".format(self.hash))
+
     def set_up(self, value):
       put(self.control_plane.client,self.control_plane.client, self.up, value)
 
@@ -763,42 +772,4 @@ class LambdaPackProgram(object):
           return pickle.loads(byte_string)
         except:
           print("key {0}/{1} not found in bucket {2}".format(self.hash, pc, self.bucket))
-
-
-def _chol(X, out_bucket=None):
-    if out_bucket is None:
-        out_bucket = X.bucket
-    out_key = generate_key_name_uop(X, "chol")
-
-    block_len = len(X._block_idxs(0))
-    trailing = BigMatrix(out_key + "_trailing",
-                         shape=[block_len + 1, X.shape[0], X.shape[0]],
-                         bucket=out_bucket,
-                         shard_sizes=[1, X.shard_sizes[0], X.shard_sizes[0]],
-                         parent_fn=constant_zeros,
-                         write_header=True)
-    for idx in X.block_idxs:
-        trailing.put_block(X.get_block(*idx)[np.newaxis, :, :], 0, *idx)
-
-    program = Program(starters=[(0, {sympy.Symbol("i"): 0})], body=[
-    For(var=sympy.sympify("i"), limits=[sympy.sympify(0), sympy.sympify(block_len)], body=[
-        CholeskyExpr((trailing, [sympy.sympify("i"), sympy.sympify("i"), sympy.sympify("i")]),
-                     (trailing, [sympy.sympify(block_len), sympy.sympify("i"), sympy.sympify("i")])),
-        For(var=sympy.sympify("j"), limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
-            TrsmExpr((trailing, [sympy.sympify(block_len), sympy.sympify("i"), sympy.sympify("i")]),
-                     (trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("i")]),
-                     (trailing, [sympy.sympify(block_len), sympy.sympify("j"), sympy.sympify("i")]),
-                     lower=False, right=True)
-        ]),
-        For(var=sympy.sympify("j"), limits=[sympy.sympify("i + 1"), sympy.sympify(block_len)], body=[
-            For(var=sympy.sympify("k"), limits=[sympy.sympify("i + 1"), sympy.sympify("j + 1")], body=[
-                SyrkExpr((trailing, [sympy.sympify("i"), sympy.sympify("j"), sympy.sympify("k")]),
-                         (trailing, [sympy.sympify(block_len), sympy.sympify("j"), sympy.sympify("i")]),
-                         (trailing, [sympy.sympify(block_len), sympy.sympify("k"), sympy.sympify("i")]),
-                         (trailing, [sympy.sympify("i + 1"), sympy.sympify("j"), sympy.sympify("k")]))
-            ]),
-        ]),
-    ])])
-
-    return program, trailing.submatrix(block_len), trailing
 

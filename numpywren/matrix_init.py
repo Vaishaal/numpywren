@@ -12,6 +12,7 @@ from .matrix import BigMatrix
 from . import matrix
 from .matrix_utils import generate_key_name_local_matrix, constant_zeros, MmapArray
 from . import matrix_utils
+import numpywren as npw
 import numpy as np
 
 
@@ -78,7 +79,7 @@ def shard_matrix(bigm, X_local, n_jobs=1, executor=None, overwrite=True):
         executor = fs.ThreadPoolExecutor(n_jobs)
     futures = []
     t = time.time()
-    X_local_mmaped = np.memmap("/dev/shm/{0}".format(bigm.key), dtype=bigm.dtype, shape=bigm.shape, mode="w+")
+    X_local_mmaped = np.memmap("{0}/{1}".format(npw.TMP_DIR, bigm.key), dtype=bigm.dtype, shape=bigm.shape, mode="w+")
     e = time.time()
     np.copyto(X_local_mmaped, X_local)
     X_local_mmap = MmapArray(X_local_mmaped, "r")

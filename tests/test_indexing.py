@@ -23,7 +23,7 @@ class IndexingTestClass(unittest.TestCase):
 
     def test_multiple_shard_index_get(self):
         X = np.random.randn(128,128)
-        shard_sizes = [64, 64] 
+        shard_sizes = [64, 64]
         X_sharded = BigMatrix("test_2", shape=X.shape, shard_sizes=shard_sizes)
         shard_matrix(X_sharded, X)
         assert(np.all(X[0:64, 0:64] == X_sharded.submatrix(0).get_block(0)))
@@ -33,7 +33,7 @@ class IndexingTestClass(unittest.TestCase):
 
     def test_simple_slices(self):
         X = np.random.randn(128,128)
-        shard_sizes = [32, 32] 
+        shard_sizes = [32, 32]
         X_sharded = BigMatrix("test_3", shape=X.shape, shard_sizes=shard_sizes)
         shard_matrix(X_sharded, X)
         assert(np.all(X[0:64] == X_sharded.submatrix([2]).numpy()))
@@ -43,7 +43,7 @@ class IndexingTestClass(unittest.TestCase):
 
     def test_step_slices(self):
         X = np.random.randn(128,128)
-        shard_sizes = [16, 16] 
+        shard_sizes = [16, 16]
         X_sharded = BigMatrix("test_4", shape=X.shape, shard_sizes=shard_sizes)
         shard_matrix(X_sharded, X)
         assert(np.all(X[::32] == X_sharded.submatrix([None, None, 2]).numpy()[::16]))
@@ -52,10 +52,10 @@ class IndexingTestClass(unittest.TestCase):
         assert(np.all(X[:, 96:128:64] == X_sharded.submatrix(None, [6, 8, 4]).numpy()[:, ::16]))
 
     def test_complex_slices(self):
-        X = np.random.randn(21, 67, 53, 27)
-        shard_sizes = [3, 16, 11, 9] 
+        X = np.random.randn(21, 67, 53)
+        shard_sizes = [21, 16, 11]
         X_sharded = BigMatrix("test_5", shape=X.shape, shard_sizes=shard_sizes)
         shard_matrix(X_sharded, X)
-        assert(np.all(X[18:21, 64:67, 44:53, 18:27] == X_sharded.submatrix(6, 4, 4, 2).numpy()))
-        assert(np.all(X[15:18, 64:67, 11:22, 9:18] == X_sharded.submatrix([2, None, 3], [2, None, 2], [1, None, 3], 1).get_block(1, 1, 0)))
+        assert(np.all(X[:, :16, :11] == X_sharded.submatrix(0, 0, 0).numpy()))
+        assert(np.all(X[:, 64:67, 44:53] == X_sharded.submatrix(0, 4, 4).numpy()))
 

@@ -36,16 +36,6 @@ class SimpleTestClass(unittest.TestCase):
         X_sharded_local_2 = X_sharded_2.numpy()
         assert(np.all(X == X_sharded_local_2))
 
-    def test_multiple_shard_symmetric_matrix(self):
-        X = np.random.randn(128,128)
-        X = X.dot(X.T)
-        shard_sizes = tuple(map(int, np.array(X.shape)/2))
-        X_sharded = local_numpy_init(X, shard_sizes=shard_sizes, symmetric=True)
-        X_sharded_local = X_sharded.numpy()
-        X_sharded.free()
-        assert(np.all(X == X_sharded_local))
-
-
     def test_multiple_shard_matrix_uneven(self):
         X = np.random.randn(200,200)
         shard_sizes = (101,101)
@@ -53,17 +43,6 @@ class SimpleTestClass(unittest.TestCase):
         X_sharded_local = X_sharded.numpy()
         X_sharded.free()
         assert(np.all(X == X_sharded_local))
-
-    def test_multiple_shard_symmetric_matrix_uneven(self):
-        X = np.random.randn(200,200)
-        shard_sizes = (101,101)
-        X = X.T.dot(X)
-        X_sharded = local_numpy_init(X, shard_sizes=shard_sizes, symmetric=True)
-        X_sharded_local = X_sharded.numpy()
-        X_sharded.free()
-        assert(np.all(X == X_sharded_local))
-
-
 
 
 

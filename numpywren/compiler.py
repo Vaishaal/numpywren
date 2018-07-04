@@ -9,6 +9,7 @@ from numpywren.matrix_utils import constant_zeros
 import numpy as np
 import time
 import dill
+import logging
 
 ########
 ## ir ##
@@ -42,6 +43,7 @@ VALID_CALLS = ['cholesky','syrk','trsm']
 COMPUTE_EXPR_MAP = {"cholesky": RemoteCholesky, "syrk": RemoteSYRK, "trsm":RemoteTRSM}
 
 VALID_TYPES = {'BigMatrix', 'int'}
+logger = logging.getLogger(__name__)
 
 ## Exprs ##
 class BinOp(ast.AST):
@@ -291,18 +293,13 @@ class NumpywrenParse(ast.NodeVisitor):
 
 def lpcompile(function, inputs, outputs):
     def func(*args, **kwargs):
-        print(function)
-        print(inspect.getsource(function))
         function_ast = ast.parse(inspect.getsource(function)).body[0]
-        print("Python AST:\n{}\n".format(astor.dump(function_ast)))
         parser = NumpywrenParse(args, kwargs, inputs, outputs)
         lp_ast = parser.visit(function_ast)
-        print(parser.symbols)
-        print(parser.input_kwargs)
-        print("Source code: \n{}\n".format(inspect.getsource(function)))
-        print("IR:\n{}\n".format(astor.dump_tree(lp_ast)))
+        logger.debug("Source code AST: \n{}\n".format(inspect.getsource(function)))
+        logger.debug("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
         program = BackendGenerator.generate_program(lp_ast)
-        print(program)
+        logger.debug("Program: {0}".format(program))
         return program
     return func
 
@@ -690,6 +687,42 @@ class Program(BlockStatement):
         recurse_find_terminators(self._body, expr_id, var_values)
         return terminators
 
+    def unroll_program(self):
+        ''' Warning: this is very expensive! only use on small matrics and/or large block size, primarily for debugging purposes '''
+        nodes  = []
+        expr_id = 0
+        var_values = {}
+        cached_sub_funcs = {}
+        def recurse_find_nodes(body, expr_id, var_values):
+            for statement in body:
+                if isinstance(statement, OperatorExpr):
+                    nodes.append((expr_id, var_values))
+                    expr_id += 1
+                if isinstance(statement, BackendFor):
+                    symbols = tuple(self.symbols.keys())
+                    sub_dict = self.symbols
+                    for k,v in var_values.items():
+                        sub_dict[str(k)] = v
+                    if (statement in cached_sub_funcs):
+                        min_idx_lambda, max_idx_lambda = cached_sub_funcs[statement]
+                    else:
+                        min_idx_lambda = sympy.lambdify(symbols, statement._limits[0], 'numpy', dummify=False)
+                        max_idx_lambda = sympy.lambdify(symbols, statement._limits[1], 'numpy', dummify=False)
+                        cached_sub_funcs[statement] = (min_idx_lambda, max_idx_lambda)
+
+                    start_val = min_idx_lambda(**sub_dict)
+                    end_val = max_idx_lambda(**sub_dict)
+                    var = statement._var
+                    inputs = False
+                    for j in range(start_val, end_val):
+                        var_values_recurse = var_values.copy()
+                        var_values_recurse[str(var)] = j
+                        recurse_find_nodes(statement._body, expr_id, var_values_recurse)
+                    expr_id += statement.num_exprs
+
+        recurse_find_nodes(self._body, expr_id, var_values)
+        return nodes
+
     def find_starters(self):
         starters = []
         expr_id = 0
@@ -961,7 +994,6 @@ class BackendFor(BlockStatement):
         return str_repr
 
 
-
 def make_3d_input_parent_fn(I):
     async def parent_fn_async(self, loop, *bidxs):
         if bidxs[0] == 0:
@@ -994,19 +1026,9 @@ def _chol(X, out_bucket=None, truncate=0):
     O.parent_fn = dill.dumps(constant_zeros)
     block_len = len(X._block_idxs(0))
     program = lpcompile(cholesky, inputs=["I"], outputs=["O"])(O=O,I=X,S=S,N=int(np.ceil(X.shape[0]/X.shard_sizes[0])), truncate=truncate)
-    print("Starters", program.find_starters())
+    logging.debug("Starters: " + str(program.find_starters()))
     starters = program.find_starters()
-    print("Terminators", len(program.find_terminators()))
-    t = time.time()
-    print("parents", program.get_parents(*(1, {'j': 3})))
-    e = time.time()
-    print("parents time {0}".format(e - t))
-    t = time.time()
-    print("children", program.get_children(*starters[0]))
-    e = time.time()
-    print("parents time {0}".format(e - t))
-    print("children time {0}".format(e - t))
-    #print("Terminators", program.num_terminators)
+    logging.debug("Terminators: " + str(program.find_terminators()))
     operator_expr = program.get_expr(starters[0][0])
     inst_block = operator_expr.eval_operator(starters[0][1])
     instrs = inst_block.instrs
@@ -1014,6 +1036,6 @@ def _chol(X, out_bucket=None, truncate=0):
     return program, S, O
 
 if __name__ == "__main__":
-    N = 1281167*10
+    N = 1281167*1
     I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
     _chol(I)

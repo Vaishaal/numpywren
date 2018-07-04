@@ -157,20 +157,7 @@ def get_local_matrix(bigm, workers=cpu_count, mmap_loc=None, big_axis=0):
     hash_key = hash_string(bigm.key)
     if (mmap_loc == None):
         mmap_loc = "/dev/shm/{0}".format(hash_key)
-
-    '''
-    if (os.path.isfile(mmap_loc)):
-        return np.memmap(mmap_loc, dtype=bigm.dtype, mode="r+", shape=tuple(bigm.shape))
-    '''
-
     executor = fs.ProcessPoolExecutor(max_workers=workers)
-    print(bigm.shape)
-    print(bigm.shard_sizes)
-    print(bigm.key)
-    print("BLOCKS0", bigm._blocks(0))
-    print("BLOCKS1", bigm._blocks(1))
-    print(bigm._block_idxs(0))
-    print(bigm._block_idxs(1))
 
     blocks_to_get = [bigm._block_idxs(i) for i in range(len(bigm.shape))]
     big_axis = np.argmax([len(bigm._block_idxs(i)) for i in range(len(bigm.shape))])
@@ -276,8 +263,6 @@ def get_matrix_blocks_full_async(bigm, mmap_loc, *blocks_to_get, big_axis=0, exe
     '''
     mmap_shape = []
     local_idxs = []
-    print("BLOCKS_TO_GET", blocks_to_get)
-
     matrix_locations = [{} for _ in range(len(bigm.shape))]
     matrix_maxes = [0 for _ in range(len(bigm.shape))]
     current_local_idx = np.zeros(len(bigm.shape), np.int)
