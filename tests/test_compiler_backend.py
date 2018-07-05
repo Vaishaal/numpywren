@@ -5,16 +5,18 @@ import sympy
 from sympy import sympify
 
 import numpywren.lambdapack as lp
+from numpywren.lambdapack import RemoteCholesky, RemoteTRSM, RemoteSYRK, RemoteRead, RemoteWrite, InstructionBlock, RemoteReturn
 from numpywren.matrix import BigMatrix
+from numpywren import compiler
 from numpywren.matrix_init import shard_matrix
 
 
 class CompilerBackendTestClass(unittest.TestCase):
     def test_single_operator(self):
         X_sharded = BigMatrix("test_0", shape=[4, 4], shard_sizes=[2, 2])
-        program = compiler.Program([
-            lp.CholeskyExpr((X_sharded, (sympify(1), sympify(0))),
-                            (X_sharded, (sympify(1), sympify(0))))
+        program = compiler.Program("test", [
+            compiler.OperatorExpr(0, RemoteCholesky, [(X_sharded, (sympify(1), sympify(0)))],
+                            (X_sharded, (sympify(1), sympify(0))), is_output=False, is_input=False)
         ])
         chol = program.get_expr(0)
         assert program.num_exprs == 1
@@ -30,12 +32,12 @@ class CompilerBackendTestClass(unittest.TestCase):
     def test_single_for_loop(self):
         X_sharded = BigMatrix("test_1", shape=[4, 4], shard_sizes=[2, 2])
         i = sympy.Symbol("i")
-        program = lp.Program([
-            lp.For(var=i, limits=[sympify(0), sympify(2)], body=[
-                lp.CholeskyExpr((X_sharded, (sympify(0), i)),
+        program = compiler.Program("test_for",[
+            compiler.BackendFor(var=i, limits=[sympify(0), sympify(2)], body=[
+                compiler.OperatorExpr(0, RemoteCholesky, [(X_sharded, (sympify(0), i))],
                                 (X_sharded, (i, sympify(0)))),
-                lp.CholeskyExpr((X_sharded, (i, sympify(1))),
-                                (X_sharded, (sympify(1), i))),
+                compiler.OperatorExpr(0, RemoteCholesky, [(X_sharded, (i, sympify(1)))],
+                                (X_sharded, (sympify(1), i)))
             ])
         ])
         chol1 = program.get_expr(0)
@@ -55,14 +57,14 @@ class CompilerBackendTestClass(unittest.TestCase):
         X_sharded = BigMatrix("X_test_2", shape=[4, 4], shard_sizes=[2, 2])
         Y_sharded = BigMatrix("Y_test_2", shape=[4, 4], shard_sizes=[2, 2])
         i, j = sympy.symbols(["i", "j"])
-        program = lp.Program([
-            lp.For(var=i, limits=[sympify(0), sympify(2)], body=[
-                lp.CholeskyExpr((X_sharded, (i, sympify(1))),
+        program = compiler.Program("nested_for", [
+            compiler.BackendFor(var=i, limits=[sympify(0), sympify(2)], body=[
+                compiler.OperatorExpr(0, RemoteCholesky, [(X_sharded, (i, sympify(1)))],
                                 (X_sharded, (sympify(1), i))),
-                lp.For(var=j, limits=[sympify(i), sympify(2)], body=[
-                    lp.SyrkExpr((Y_sharded, (j - i, i)),
+                compiler.BackendFor(var=j, limits=[sympify(i), sympify(2)], body=[
+                    compiler.OperatorExpr(0, RemoteSYRK, [(Y_sharded, (j - i, i)),
                                 (Y_sharded, (i, i)),
-                                (Y_sharded, (j, sympify(1))),
+                                (Y_sharded, (j, sympify(1)))],
                                 (X_sharded, (i, j - i))),
                 ])
             ])
@@ -78,11 +80,11 @@ class CompilerBackendTestClass(unittest.TestCase):
         assert program.eval_read_operators((X_sharded, (0, 2))) == []
         assert program.eval_read_operators((Y_sharded, (0, 2))) == []
         assert (self.sort_eval(program.eval_read_operators((Y_sharded, (0, 0)))) ==
-                self.sort_eval([(1, {i: 0, j: 0}), (1, {i: 0, j: 0}), (1, {i: 0, j: 1})]))
+                self.sort_eval([(1, {i: 0, j: 0}), (1, {i: 0, j: 1})]))
         assert (self.sort_eval(program.eval_read_operators((Y_sharded, (1, 0)))) ==
                 self.sort_eval([(1, {i: 0, j: 1})]))
         assert (self.sort_eval(program.eval_read_operators((Y_sharded, (1, 1)))) ==
-                self.sort_eval([(1, {i: 1, j: 1}), (1, {i: 0, j: 1}), (1, {i: 1, j: 1})]))
+                self.sort_eval([(1, {i: 0, j: 1}), (1, {i: 1, j: 1})]))
         assert (self.sort_eval(program.eval_read_operators((X_sharded, (1, 1)))) ==
                 self.sort_eval([(0, {i: 1})]))
         assert (self.sort_eval(program.eval_write_operators((X_sharded, (1, 0)))) ==

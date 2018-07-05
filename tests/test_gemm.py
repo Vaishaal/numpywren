@@ -22,35 +22,6 @@ class GemmTestClass(unittest.TestCase):
         assert(np.all(np.isclose(XXT,XXT_sharded_local)))
         os.system("rm -rf /dev/shm/*")
 
-    def test_multiple_shard_matrix_multiply_symmetric(self):
-        X = np.random.randn(16,16)
-        shard_sizes = tuple(map(int, np.array(X.shape)/8))
-        X_sharded = BigMatrix("gemm_test_1", shape=X.shape, shard_sizes=shard_sizes)
-        shard_matrix(X_sharded, X)
-        pwex = pywren.lambda_executor()
-        XXT_sharded = binops.gemm(pwex, X_sharded, X_sharded.T, X_sharded.bucket, 1)
-        XXT_sharded_local = XXT_sharded.numpy()
-        XXT = X.dot(X.T)
-        X_sharded.free()
-        XXT_sharded.free()
-        assert(np.all(np.isclose(XXT,XXT_sharded_local)))
-        os.system("rm -rf /dev/shm/*")
-
-    def test_multiple_shard_matrix_multiply_symmetric_2(self):
-        X = np.random.randn(16,16)
-        shard_sizes = [8,16]
-        X_sharded = BigMatrix("gemm_test_1", shape=X.shape, shard_sizes=shard_sizes)
-        shard_matrix(X_sharded, X)
-        pwex = pywren.lambda_executor()
-        XTX_sharded = binops.gemm(pwex, X_sharded.T, X_sharded, X_sharded.bucket, 1, local=True)
-        XTX_sharded_local = XTX_sharded.numpy()
-        XTX = X.T.dot(X)
-        X_sharded.free()
-        XTX_sharded.free()
-        assert(np.all(np.isclose(XTX,XTX_sharded_local)))
-        os.system("rm -rf /dev/shm/*")
-
-
     def test_multiple_shard_matrix_multiply(self):
         X = np.random.randn(16,16)
         Y = np.random.randn(16,16)

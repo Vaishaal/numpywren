@@ -310,7 +310,7 @@ class Statement():
 
 
 class OperatorExpr(Statement):
-    def __init__(self, opid, compute_expr, read_exprs, write_expr, read_subs, write_sub, is_input, is_output, **options):
+    def __init__(self, opid, compute_expr, read_exprs, write_expr, is_input=False, is_output=False, **options):
         ''' compute_expr is a subclass RemoteInstruction (not an instance)
              read_exprs, and write_exprs
             are of lists of type (BigMatrix, [sympy_expr, sympy_expr...])
@@ -321,8 +321,6 @@ class OperatorExpr(Statement):
         self.opid = opid
         self.num_exprs = 1
         self.options = options
-        self._read_subs = read_subs
-        self._write_sub = write_sub
         self._is_input = is_input
         self._is_output = is_output
         for bigm, expr in read_exprs:
@@ -864,7 +862,7 @@ class BackendGenerator(ast.NodeVisitor):
     def visit_FuncDef(self, node):
         [self.visit(x) for x in node.body]
         body = [self.visit(x) for x in node.body]
-        return_expr = OperatorExpr(self.count, RemoteReturn, [], [], [], [], [], [])
+        return_expr = OperatorExpr(self.count, RemoteReturn, [], [], [], [])
         body.append(return_expr)
         self.program = Program(node.name, body, symbols=self.symbols)
         self.program.return_expr = return_expr
@@ -883,18 +881,13 @@ class BackendGenerator(ast.NodeVisitor):
             raise LambdaPackBackendGenerationException("Unknown operation : {0}".format(node.compute))
 
         reads = [self.visit(x) for x in node.reads]
-        read_subs = []
         #TODO support multi-writes?
         write = self.visit(node.writes[0])
         kwargs = {k:self.visit(v) for k,v in node.options.items()}
         symbols_seen = tuple(self.symbols.values())
-        for matrix, idxs in reads:
-            read_sub = []
-            read_subs.append(read_sub)
         matrix, idxs = write
-        write_sub = []
 
-        opexpr = OperatorExpr(self.count, compute_expr, reads, write, read_subs, write_sub, node.is_input, node.is_output, **kwargs)
+        opexpr = OperatorExpr(self.count, compute_expr, reads, write, node.is_input, node.is_output, **kwargs)
         self.count += 1
         return opexpr
 
@@ -937,7 +930,7 @@ class BackendGenerator(ast.NodeVisitor):
         max_idx = self.visit(node.max)
         all_symbols = tuple(self.symbols.values())
         body = [self.visit(x) for x in node.body]
-        return BackendFor(var=loop_var, limits=[min_idx, max_idx], body=body, parallel=node.parallel)
+        return BackendFor(var=loop_var, limits=[min_idx, max_idx], body=body)
 
 def cholesky_with_if(I:BigMatrix, O:BigMatrix, N:int):
     for i in range(n):
@@ -978,10 +971,9 @@ class BackendIf(BlockStatement):
         return str_repr
 
 class BackendFor(BlockStatement):
-    def __init__(self, var, limits, body, parallel):
+    def __init__(self, var, limits, body):
         self._var = var
         self._limits = limits
-        self.parallel = parallel
         super().__init__(body)
 
     def __str__(self):
