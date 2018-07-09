@@ -14,6 +14,7 @@ from .matrix_utils import generate_key_name_local_matrix, constant_zeros, MmapAr
 from . import matrix_utils
 import numpywren as npw
 import numpy as np
+import pywren
 
 
 def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=False, executor=None, write_header=False, bucket=matrix.DEFAULT_BUCKET, overwrite=True):
@@ -91,6 +92,57 @@ def shard_matrix(bigm, X_local, n_jobs=1, executor=None, overwrite=True):
         fs.wait(futures)
     [f.result() for f in futures]
     return bigm
+
+
+
+def reshard_down(bigm, breakdowns, pwex=None):
+    ''' Return a new bigm whose shard sizes are bigm.shard_sizes/break_downs
+        if a pwex is provided reshards in parallel, else reshards locally (very slow)
+        This will essentially break down a single block in bigm into several evenly sized sub blocks, breakdowns is a list of integers detailing how much to break a given dimension down into. breakdowns = [2,2] would break each dimension down into 2 independent block so a 4 x 4 block would be replaced by 4, 2 x 2 blocks.
+    '''
+
+    for x,y in zip(bigm.shard_sizes, breakdowns):
+        assert x % y == 0
+
+    new_shard_sizes = [int(x/y) for x,y in zip(bigm.shard_sizes, breakdowns)]
+
+    X_sharded_new = BigMatrix("reshard({0},{1})".format(bigm.key, breakdowns), bucket=bigm.bucket, shape=bigm.shape, shard_sizes=new_shard_sizes)
+
+    chunked_idxs = []
+    chunked_absolute_idxs = []
+    for i in range(len(bigm.shape)):
+        chunked_idxs.append([tuple(x) for x in matrix_utils.chunk(X_sharded_new._block_idxs(i), breakdowns[i])])
+        chunked_absolute_idxs.append([tuple(x) for x in matrix_utils.chunk(X_sharded_new._blocks(i), breakdowns[i])])
+
+
+    idxs = [bigm._block_idxs(i) for  i in range(len(bigm.shape))]
+    all_idxs_new = list(itertools.product(*chunked_idxs))
+    all_idxs_old = list(itertools.product(*idxs))
+    all_idxs_new_absolute = list(itertools.product(*chunked_absolute_idxs))
+    idx_info = list(zip(all_idxs_new, all_idxs_old, all_idxs_new_absolute))
+
+
+    def reshard_func(bidx_info, bigm, bigm_new):
+        idxs_new, idx_old, idx_absolute = bidx_info
+        data = bigm.get_block(*idx_old)
+        logical = list(itertools.product(*idxs_new))
+        absolute = list(itertools.product(*idx_absolute)) 
+        offsets = [x[0][0] for x in idx_absolute]
+        for lidx, aidx in zip(logical, absolute):
+            aidx_offsets = [ slice(x[0] - ox, x[1] - ox)  for x,ox in zip(aidx, offsets)]
+            sub_data = data.__getitem__(aidx_offsets)
+            print(lidx, aidx, idx_old)
+            bigm_new.put_block(sub_data, *lidx)
+
+    if (pwex is None):
+        [reshard_func(x, bigm, X_sharded_new) for x in idx_info]
+    else:
+
+        futures = pwex.map(lambda x: reshard_func(x, bigm, X_sharded_new), idx_info)
+        pywren.wait(futures)
+        [f.result() for f in futures]
+
+    return X_sharded_new
 
 
 

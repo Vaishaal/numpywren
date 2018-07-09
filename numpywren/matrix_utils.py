@@ -317,6 +317,20 @@ async def constant_zeros(bigm, loop, *block_idx):
     return np.zeros(current_shape)
 
 
+def reshard_down(pwex, bigm, breakdowns):
+    ''' Return a new bigm whose shard sizes are bigm.shard_sizes/break_downs
+    '''
+
+    new_shard_sizes = [int(x/y) for x,y in zip(bigm.shard_sizes, breakdowns)]
+
+    X_sharded_new = BigMatrix("reshard({0},{1})".format(bigm.key, breakdowns), bucket=bigm.bucket, shape=bigm.shape, shard_sizes=new_shard_sizes)
+    def reshard_func(bidx, new_bidxs):
+        pass
+    return X_sharded_new
+
+
+
+
 
 
 
