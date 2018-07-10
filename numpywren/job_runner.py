@@ -224,6 +224,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     computer = fs.ThreadPoolExecutor(1)
+    tot_messages = []
     if (cache_size > 0):
         cache = LRUCache(max_items=cache_size)
     else:
@@ -234,6 +235,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     shared_state["pipeline_width"] = pipeline_width
     shared_state["running_times"] = []
     shared_state["last_busy_time"] = time.time()
+    shared_state["tot_messages"]  = []
     loop.create_task(check_program_state(program, loop, shared_state, timeout, idle_timeout))
     tasks = []
     for i in range(pipeline_width):
@@ -249,7 +251,8 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     program.decr_up(1)
     print(program.program_status())
     return {"up_time": [lambda_start, lambda_stop],
-            "exec_time": calculate_busy_time(shared_state["running_times"])}
+            "exec_time": calculate_busy_time(shared_state["running_times"]),
+            "executed_messages": shared_state["tot_messages"]}
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lock):
     assert(timeout > timeout_jitter)
@@ -331,6 +334,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             # if we don't finish in 75s count as a failure
             #res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             operator_ref = json.loads(msg["Body"])
+            shared_state["tot_messages"].append(operator_ref)
             operator_ref = (operator_ref[0], {sympy.Symbol(key): val for key, val in operator_ref[1].items()})
             redis_client.set(msg["MessageId"], str(time.time()))
             #print("creating lock")
