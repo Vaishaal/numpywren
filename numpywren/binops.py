@@ -273,18 +273,13 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     def pywren_run(x):
         return _gemms[gemm_impl](x, XY, X, Y, reduce_idxs=reduce_idxs, dtype=dtype, block_chunk_size=gemm_chunk_size, **kwargs)
 
-    all_futures = []
-    for i, c in enumerate(chunked_blocks):
-        print("Submitting job for chunk {0} in axis 0".format(i))
-        if (local):
-            list(map(pywren_run, c))
-        else:
-            s = time.time()
-            futures = pwex.map(pywren_run, c)
-            e = time.time()
-            print("Pwex Map Time {0}".format(e - s))
-            all_futures.append((i,futures))
-
+    if (local):
+        list(map(pywren_run, chunked_blocks))
+    else:
+        s = time.time()
+        futures = pwex.map(pywren_run, chunked_blocks)
+        e = time.time()
+        print("Pwex Map Time {0}".format(e - s))
     if (local):
         return XY
 
