@@ -16,6 +16,129 @@ from . import lambdapack as lp
 from . import job_runner 
 
 
+def ind1Dto2D(i, len_A_coded, num_parity_blocks):
+    if i < len_A_coded:
+        return i//num_parity_blocks, i%num_parity_blocks
+    else:
+        return i - len_A_coded, num_parity_blocks
+
+def ind2Dto1D(i,j, len_A_coded, num_parity_blocks):
+    if j < num_parity_blocks:
+        return i*num_parity_blocks + j
+    else:
+        return i + len_A_coded
+
+
+def peel_row(y_local, i, bitmask, num_parity_blocks, len_A_coded, shard_size ):
+    if bitmask[i, num_parity_blocks] == 0:
+        ind = ind2Dto1D(i, num_parity_blocks, len_A_coded, num_parity_blocks)
+        total = y_local[ind*shard_size:(ind + 1)*shard_size]
+        for k in range(num_parity_blocks):
+            if bitmask[i, k] == 0:
+                ind = ind2Dto1D(i, k, len_A_coded, num_parity_blocks)
+                print("row ind used", ind)
+                total = total - y_local[ind*shard_size:(ind + 1)*shard_size]
+        a = [ind for (ind, val) in enumerate(bitmask[i]) if val == 1]
+        a = a[0]
+        print("Filling row singleton", ind2Dto1D(i, a, len_A_coded, num_parity_blocks))
+        return total, ind2Dto1D(i, a, len_A_coded, num_parity_blocks)
+    else:
+        total = None
+        for k in range(num_parity_blocks):
+            if total is None:
+                ind = ind2Dto1D(i, k, len_A_coded, num_parity_blocks)
+                total = y_local[ind * shard_size:(ind + 1) * shard_size]
+            else:
+                ind = ind2Dto1D(i, k, len_A_coded, num_parity_blocks)
+                total = total + y_local[ind * shard_size:(ind + 1) * shard_size]
+        print("Filling row singleton", ind2Dto1D(i, num_parity_blocks, len_A_coded, num_parity_blocks))
+        return total, ind2Dto1D(i, num_parity_blocks, len_A_coded, num_parity_blocks)
+
+
+def peel_col(y_local, j, bitmask, coding_length, len_A_coded, shard_size, num_parity_blocks):
+    if bitmask[coding_length, j] == 0:
+        ind = ind2Dto1D(coding_length, j, len_A_coded, num_parity_blocks)
+        total = y_local[ind*shard_size:(ind + 1)*shard_size]
+        for k in range(coding_length):
+            if bitmask[k, j] == 0:
+                ind = ind2Dto1D(k, j, len_A_coded, num_parity_blocks)
+                print("col ind used", ind)
+                total = total - y_local[ind * shard_size:(ind + 1) * shard_size]
+        a = [ind for (ind, val) in enumerate(bitmask[:, j]) if val == 1]
+        a = a[0]
+        print("Filling col singleton", ind2Dto1D(a, j, len_A_coded, num_parity_blocks))
+        return total, ind2Dto1D(a, j, len_A_coded, num_parity_blocks)
+    else:
+        total = None
+        for k in range(coding_length):
+            if total is None:
+                ind = ind2Dto1D(k, j, len_A_coded, num_parity_blocks)
+                total = y_local[ind * shard_size:(ind + 1) * shard_size]
+            else:
+                ind = ind2Dto1D(k, j, len_A_coded, num_parity_blocks)
+                total = total + y_local[ind * shard_size:(ind + 1) * shard_size]
+        print("Filling col singleton", ind2Dto1D(coding_length, j, len_A_coded, num_parity_blocks))
+        return total, ind2Dto1D(coding_length, j, len_A_coded, num_parity_blocks)
+
+
+def decode_vector(Y, num_parity_blocks):
+    print("DECODING STARTED")
+    block_idxs_exist = set([x[0] for x in Y.block_idxs_exist])
+    y_local = np.zeros(Y.shape)
+    shard_size = Y.shard_sizes[0]
+    vector_length_blocks = int(num_parity_blocks*(Y.shape[0]//shard_size - 1 - num_parity_blocks))//(num_parity_blocks+1)
+    coding_length = vector_length_blocks // num_parity_blocks
+    len_A_coded = vector_length_blocks + num_parity_blocks
+    bitmask = np.ones((coding_length + 1, num_parity_blocks + 1))
+    for r in block_idxs_exist:
+        y_local[r*shard_size:(r + 1)*shard_size] = Y.get_block(r, 0)
+        i, j = ind1Dto2D(r, len_A_coded, num_parity_blocks)
+        bitmask[i, j] = 0
+    print("BITmask\n", bitmask)
+    # print("y_local before decoding\n", np.isclose(y_local, bk_local))
+
+    while (bitmask.sum() > 0):
+        row_sum = bitmask.sum(axis=1)
+        r = [ind for (ind, val) in enumerate(row_sum) if val == 1]
+        print("row singletons", r)
+        for rr in r:
+            y_local_block, ind = peel_row(y_local, rr, bitmask, num_parity_blocks, len_A_coded, shard_size)
+            y_local[ind * shard_size:(ind + 1) * shard_size] = y_local_block
+        bitmask[r] = 0
+
+        col_sum = bitmask.sum(axis=0)
+        c = [ind for (ind, val) in enumerate(col_sum) if val == 1]
+        print("col singletons", c)
+        for cc in c:
+            y_local_block,ind = peel_col(y_local, cc, bitmask, coding_length, len_A_coded, shard_size, num_parity_blocks)
+            y_local[ind * shard_size:(ind + 1) * shard_size] = y_local_block
+        bitmask[:, c] = 0
+    # print ("y_decoded\n", np.isclose(y_local, bk_local))
+    y_local = y_local[0:vector_length_blocks*shard_size]
+    return y_local
+
+def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
+    assert(Y.shape[1] == 1)
+    num_parity_blocks = kwargs['num_parity_blocks']
+    y_local = decode_vector(Y, num_parity_blocks)
+    print("y_local after decoding", y_local)
+    for bp in block_pairs:
+        bidx_0, bidx_1 = bp
+        XY_block = None
+        X.dtype = dtype
+        for r in reduce_idxs:
+            block1 = X.get_block(bidx_0, r)
+            sidx,eidx = Y.blocks[r]
+            sidx, eidx = sidx
+            y_block = y_local[sidx:eidx]
+            # print ("r, y_block\n", r, y_block)
+            if (XY_block is None):
+                XY_block = block1.dot(y_block)
+            else:
+                XY_block = XY_block + block1.dot(y_block)
+        XY.put_block(XY_block, bidx_0, bidx_1)
+        return XY_block
+
 def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
     print(reduce_idxs)
     for bp in block_pairs:
@@ -54,7 +177,7 @@ def _gemm_remote_2(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
         result = gemm_with_prefetch(X, Y, bidx_0, bidx_1, block_chunk_size=block_chunk_size)
         XY.put_block(result, bidx_0, bidx_1)
 
-_gemms = [_gemm_remote_0, _gemm_remote_1, _gemm_remote_2]
+_gemms = [_gemm_remote_0, _gemm_remote_1, _gemm_remote_2, _gemm_remote_3]
 
 
 def gemm_with_prefetch(X, Y, bidx0, bidx1, block_chunk_size=16):
@@ -103,7 +226,7 @@ def gemm_with_prefetch(X, Y, bidx0, bidx1, block_chunk_size=16):
     return result
 
 
-def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.float64, overwrite=True, gemm_impl=0, gemm_chunk_size=16):
+def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.float64, overwrite=True, gemm_impl=0, gemm_chunk_size=16, straggler_thresh=1.0, parent_fn=None, **kwargs):
 
     '''
         Compute XY return
@@ -117,7 +240,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     '''
     # 0 -> 1 or 1 -> 0
 
-    reduce_idxs = Y._block_idxs(axis=0)
+    reduce_idxs = X._block_idxs(axis=1)
     if (out_bucket == None):
         out_bucket = X.bucket
 
@@ -148,7 +271,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
 
     print(_gemms[gemm_impl])
     def pywren_run(x):
-        return _gemms[gemm_impl](x, XY, X, Y, reduce_idxs=reduce_idxs, dtype=dtype, block_chunk_size=gemm_chunk_size)
+        return _gemms[gemm_impl](x, XY, X, Y, reduce_idxs=reduce_idxs, dtype=dtype, block_chunk_size=gemm_chunk_size, **kwargs)
 
     all_futures = []
     for i, c in enumerate(chunked_blocks):
@@ -165,12 +288,15 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     if (local):
         return XY
 
-    for i, futures, in all_futures:
-        print("waiting")
-        pywren.wait(futures)
-        [f.result() for f in futures]
-
-    return XY
+    print("waiting")
+    while (True):
+        fs_dones, fs_notdones = pywren.wait(futures, 3)
+        result_count = len(fs_dones)
+        print(result_count)
+        if (result_count >= straggler_thresh*len(futures)):
+            [f.result() for f in fs_dones]
+            return XY
+        time.sleep(1)
 
 # matrix vector multiply
 # hard
