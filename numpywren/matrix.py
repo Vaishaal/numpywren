@@ -249,11 +249,14 @@ class BigMatrix(object):
         return block_idx
 
     def get_block(self, *block_idx):
-        loop = asyncio.new_event_loop()
-        #asyncio.set_event_loop(loop)
-        get_block_async_coro = self.get_block_async(loop, *block_idx)
-        res = loop.run_until_complete(asyncio.ensure_future(get_block_async_coro, loop=loop))
-        return res
+        tp = fs.ThreadPoolExecutor(1)
+        def wrapper():
+            loop = asyncio.new_event_loop()
+            #asyncio.set_event_loop(loop)
+            get_block_async_coro = self.get_block_async(loop, *block_idx)
+            res = loop.run_until_complete(asyncio.ensure_future(get_block_async_coro, loop=loop))
+        future = tp.submit(wrapper)
+        return future.result()
 
     async def get_block_async(self, loop, *block_idx):
         """
@@ -291,10 +294,14 @@ class BigMatrix(object):
         return X_block
 
     def put_block(self, block, *block_idx):
-        loop = asyncio.new_event_loop()
-        put_block_async_coro = self.put_block_async(block, loop, *block_idx)
-        res = loop.run_until_complete(asyncio.ensure_future(put_block_async_coro, loop=loop))
-        return res
+        tp = fs.ThreadPoolExecutor(1)
+        def wrapper():
+            loop = asyncio.new_event_loop()
+            put_block_async_coro = self.put_block_async(block, loop, *block_idx)
+            res = loop.run_until_complete(asyncio.ensure_future(put_block_async_coro, loop=loop))
+            return res
+        future = tp.submit(wrapper)
+        return future.result()
 
     async def put_block_async(self, block, loop=None, *block_idx, no_overwrite=False):
         """
@@ -341,10 +348,14 @@ class BigMatrix(object):
         return await self.__save_matrix_to_s3__(block, key, loop)
 
     def delete_block(self, block, *block_idx):
-        loop = asyncio.new_event_loop()
-        delete_block_async_coro = self.delete_block_async(loop, block, *block_idx)
-        res = loop.run_until_complete(asyncio.ensure_future(delete_block_async_coro, loop=loop))
-        return res
+        tp = fs.ThreadPoolExecutor(1)
+        def wrapper():
+            loop = asyncio.new_event_loop()
+            delete_block_async_coro = self.delete_block_async(loop, block, *block_idx)
+            res = loop.run_until_complete(asyncio.ensure_future(delete_block_async_coro, loop=loop))
+            return res
+        future = tp.submit(wrapper)
+        return future.result()
 
     async def delete_block_async(self, loop=None, *block_idx):
         """
