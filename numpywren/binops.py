@@ -288,6 +288,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         print(result_count)
         if (result_count >= straggler_thresh*len(futures)):
             [f.result() for f in fs_dones]
+            break
     return XY
 
 # matrix vector multiply
