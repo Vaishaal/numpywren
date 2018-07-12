@@ -255,6 +255,7 @@ class BigMatrix(object):
             #asyncio.set_event_loop(loop)
             get_block_async_coro = self.get_block_async(loop, *block_idx)
             res = loop.run_until_complete(asyncio.ensure_future(get_block_async_coro, loop=loop))
+            return res
         future = tp.submit(wrapper)
         return future.result()
 
