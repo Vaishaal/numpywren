@@ -141,6 +141,7 @@ def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
 
 def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
     print(reduce_idxs)
+    print(block_pairs)
     for bp in block_pairs:
         bidx_0, bidx_1 = bp
         XY_block = None
@@ -263,10 +264,9 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         block_idxs_to_map = list(set(XY.block_idxs))
     else:
         block_idxs_to_map = list(set(XY.block_idxs_not_exist))
-
     print("Number of output blocks to generate ", len(block_idxs_to_map))
-    chunked_blocks = list(chunk(list(chunk(block_idxs_to_map, tasks_per_job)), num_jobs))
-    if (not isinstance(pwex.invoker, pywren.queues.SQSInvoker) and gemm_impl > 0):
+    chunked_blocks = chunk(block_idxs_to_map, tasks_per_job)
+    if (not isinstance(pwex.invoker, pywren.queues.SQSInvoker) and gemm_impl > 0 and gemm_impl < 3):
             raise Exception("GEMM IMPL > 0 only supported for standalone mode pywren")
 
     print(_gemms[gemm_impl])
@@ -282,16 +282,13 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         print("Pwex Map Time {0}".format(e - s))
     if (local):
         return XY
-
-    print("waiting")
     while (True):
         fs_dones, fs_notdones = pywren.wait(futures, 3)
         result_count = len(fs_dones)
         print(result_count)
         if (result_count >= straggler_thresh*len(futures)):
             [f.result() for f in fs_dones]
-            return XY
-        time.sleep(1)
+    return XY
 
 # matrix vector multiply
 # hard
