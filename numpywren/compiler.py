@@ -4,7 +4,7 @@ import astor
 import sympy
 from numpywren.matrix import BigMatrix
 from numpywren import exceptions, utils
-from numpywren.lambdapack import RemoteCholesky, RemoteTRSM, RemoteSYRK, RemoteRead, RemoteWrite, InstructionBlock, RemoteReturn
+from numpywren.lambdapack import RemoteCholesky, RemoteTRSM, RemoteSYRK, RemoteRead, RemoteWrite, InstructionBlock, RemoteReturn, RemoteIdentity, RemoteGEMM, RemoteSUM
 from numpywren.matrix_utils import constant_zeros
 import numpy as np
 import time
@@ -39,8 +39,9 @@ stmt = assign(ref ref, expr val)
 
 # this is the frontend
 
-VALID_CALLS = ['cholesky','syrk','trsm']
-COMPUTE_EXPR_MAP = {"cholesky": RemoteCholesky, "syrk": RemoteSYRK, "trsm":RemoteTRSM}
+VALID_CALLS = ['cholesky','syrk','trsm', 'identity', 'gemm']
+VALID_REDUCE_OPS = ['sum']
+COMPUTE_EXPR_MAP = {"cholesky": RemoteCholesky, "syrk": RemoteSYRK, "trsm":RemoteTRSM, "identity":RemoteIdentity, "gemm":RemoteGEMM}
 
 VALID_TYPES = {'BigMatrix', 'int'}
 logger = logging.getLogger(__name__)
@@ -98,6 +99,9 @@ class BigMatrixBlock(ast.AST):
 class Lambdapack(ast.AST):
     _fields = ['compute', 'reads', 'writes', 'options', 'is_input', 'is_output']
 
+class Reduce(ast.AST):
+    _fields = ['op', 'var', 'start', 'end', 'expr']
+
 
 
 class NumpywrenParse(ast.NodeVisitor):
@@ -130,6 +134,9 @@ class NumpywrenParse(ast.NodeVisitor):
         if (op not in VALID_BOPS):
             raise NotImplementedError("Unsupported BinOp {0}".format(op))
         return BinOp(op, left, right)
+
+    def visit_Str(self, node):
+        return node.s
 
     def visit_Compare(self, node):
         VALID_COMP_OPS = ["EQ", "NE", "LT", "GT",  "LE", "GE"]
@@ -180,32 +187,49 @@ class NumpywrenParse(ast.NodeVisitor):
             raise exceptions.LambdaPackParsingException("Unsupported Name constant")
 
 
-
     def visit_Assign(self, node):
         if (len(node.targets) != 1):
             raise NotImplementedError("Only single argument assignment supported")
 
-        assert(isinstance(node.value, ast.Call))
-        assert(isinstance(node.targets[0], ast.Subscript))
-        writes = [self.visit(node.targets[0])]
-        assert(node.value.func.id in VALID_CALLS)
-        reads = []
-        for arg in node.value.args:
-            assert(isinstance(arg, ast.Subscript) or isinstance(arg, ast.Attribute))
-            reads.append(self.visit(arg))
         options = {}
-        for kw in node.value.keywords:
-            options[kw.arg] = self.visit(kw.value)
-        if (set([read.name for read in reads]) == self.inputs):
+        writes = [self.visit(node.targets[0])]
+        if (isinstance(node.value, ast.Call)):
+            if (node.value.func.id == "reduce"):
+                kwargs = {x.arg: self.visit(x.value) for x in node.value.keywords}
+                assert isinstance(kwargs["var"], Ref)
+                assert isinstance(kwargs["expr"], BigMatrixBlock)
+                assert kwargs["op"] in VALID_REDUCE_OPS, "Invalid reduction operation"
+                return Reduce(**kwargs)
+
+            assert(isinstance(node.targets[0], ast.Subscript))
+            print(node.value.func.id)
+            assert(node.value.func.id in VALID_CALLS)
+            reads = []
+            for arg in node.value.args:
+                assert(isinstance(arg, ast.Subscript) or isinstance(arg, ast.Attribute))
+                reads.append(self.visit(arg))
+            func_id = node.value.func.id
+            for kw in node.value.keywords:
+                options[kw.arg] = self.visit(kw.value)
+        elif (isinstance(node.value, ast.Subscript) or isinstance(node.value, ast.Attribute)):
+            reads = [self.visit(node.value)]
+            writes = [self.visit(node.targets[0])]
+            func_id = "identity"
+
+        if (set([read.name for read in reads]).issubset(self.inputs)):
             is_input = True
         else:
             is_input = False
 
-        if (set([write.name for write in writes]) == self.outputs):
+        if (len(set([write.name for write in writes]).intersection(self.outputs)) > 0):
             is_output = True
         else:
             is_output = False
-        return Lambdapack(node.value.func.id, reads, writes, options, is_input, is_output)
+        return Lambdapack(func_id, reads, writes, options, is_input, is_output)
+
+
+
+
 
     def visit_If(self, node):
         cond = self.visit(node.test)
@@ -280,12 +304,18 @@ class NumpywrenParse(ast.NodeVisitor):
         return child
 
     def visit_Subscript(self, node):
-        assert(isinstance(node.slice.value, ast.Tuple))
-        if (node.value.id not in self.symbols):
-            raise exceptions.LambdaPackParsingException("Unknown BigMatrix references")
+        if (isinstance(node.slice.value, ast.Tuple)):
+            if (node.value.id not in self.symbols):
+                raise exceptions.LambdaPackParsingException("Unknown BigMatrix references")
+            return BigMatrixBlock(node.value.id, self.symbols[node.value.id], [self.visit(x) for x in node.slice.value.elts])
+        else:
+            val = self.visit(node.slice.value) 
+            assert(isinstance(val, IntConst) or isinstance(val, Ref))
+            return BigMatrixBlock(node.value.id, self.symbols[node.value.id], [val])
+    def visit_Return(self, node):
+        assert False, "Returns are not permitted in lambdapack"
 
-        assert isinstance(self.symbols[node.value.id], BigMatrix)
-        return BigMatrixBlock(node.value.id, self.symbols[node.value.id], [self.visit(x) for x in node.slice.value.elts])
+
 
 
 
@@ -293,13 +323,14 @@ class NumpywrenParse(ast.NodeVisitor):
 
 def lpcompile(function, inputs, outputs):
     def func(*args, **kwargs):
+        logger.warning("Source code : \n{}\n".format(inspect.getsource(function)))
         function_ast = ast.parse(inspect.getsource(function)).body[0]
+        print("Python AST:\n{}\n".format(astor.dump(function_ast)))
         parser = NumpywrenParse(args, kwargs, inputs, outputs)
         lp_ast = parser.visit(function_ast)
-        logger.debug("Source code AST: \n{}\n".format(inspect.getsource(function)))
-        logger.debug("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
+        logger.warning("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
         program = BackendGenerator.generate_program(lp_ast)
-        logger.debug("Program: {0}".format(program))
+        logger.warning("Program: {0}".format(program))
         return program
     return func
 
@@ -391,6 +422,7 @@ class OperatorExpr(Statement):
         return (block_expr[0], tuple([idx.subs(var_values) for idx in block_expr[1]]))
 
     def _enumerate_possibilities(self, in_ref, out_expr, var_names, var_limits):
+        s = time.time()
         def brute_force_limits(sol, var_values, var_names, var_limits):
             simple_var = None
             simple_var_idx = None
@@ -408,9 +440,13 @@ class OperatorExpr(Statement):
             solutions = []
             if ((not sol[0].is_Symbol) and (sol[0] < limits[0] or sol[0] >= limits[1])):
                     return []
+            simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
             for val in range(limits[0], limits[1]):
                 var_values = var_values.copy()
-                var_values[simple_var] = sol[0].subs({simple_var: val})
+
+                var_values[simple_var] = int(simple_var_func(val))
+                if(var_values[simple_var] != val):
+                    continue
                 limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
                 if (len(limits_left) > 0):
                     var_names_recurse = [x for x in var_names if x != simple_var]
@@ -449,11 +485,14 @@ class OperatorExpr(Statement):
             else:
                 limits = var_limits[simple_var_idx]
                 solutions = []
+                simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
                 if ((not sol[0].is_Symbol) and (sol[0] < limits[0] or sol[0] >= limits[1])):
                     return []
                 for val in range(limits[0], limits[1]):
                     var_values = {}
-                    var_values[simple_var] = sol[0].subs({simple_var: val})
+                    var_values[simple_var] = int(simple_var_func(val))
+                    if(var_values[simple_var] != val):
+                        continue
                     limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
                     if (len(limits_left) > 0):
                         var_names_recurse = [x for x in var_names if x != simple_var]
@@ -473,8 +512,10 @@ class OperatorExpr(Statement):
                     bad_sol = True
             if (not bad_sol):
                 ret_solutions.append(sol)
-
-        return utils.remove_duplicates(ret_solutions)
+        e = time.time()
+        ret = utils.remove_duplicates(ret_solutions)
+        #print("Enumerate possibilities called for in_ref: {0}, out_expr: {1}, var_names: {2}, var_limits {3} and took {4} seconds, sols: {5}, simple_var_idx: {6}".format(in_ref, out_expr, var_names, var_limits, e - s, sols, simple_var_idx))
+        return ret
 
     def _enumerate_possibilities_deprc(self, in_ref, out_expr, var_names, var_limits):
         def recurse_enum_pos(idx, var_limits, parametric_eqns):
@@ -615,7 +656,7 @@ class Program(BlockStatement):
         self.symbols = symbols
         super().__init__(body)
         self.starters = self.find_starters()
-        self.terminators = self.find_terminators()
+        self.num_terminators = len(self.find_terminators())
 
     def get_children(self, expr_idx, var_values):
         operator_expr = self.get_expr(expr_idx)
@@ -630,7 +671,7 @@ class Program(BlockStatement):
     def get_parents(self, expr_idx, var_values):
         operator_expr = self.get_expr(expr_idx)
         if (operator_expr == self.return_expr):
-            return self.terminators
+            raise Exception("get_parents() shouldn't be called on return node, use self.num_terminators or find_terminators() instead")
         write_ref = operator_expr.eval_write_ref(var_values)
         parents = []
         operator_expr = self.get_expr(expr_idx)
@@ -719,7 +760,7 @@ class Program(BlockStatement):
                     expr_id += statement.num_exprs
 
         recurse_find_nodes(self._body, expr_id, var_values)
-        return nodes
+        return utils.remove_duplicates(nodes)
 
     def find_starters(self):
         starters = []
@@ -912,6 +953,15 @@ class BackendGenerator(ast.NodeVisitor):
     def visit_FloatConst(self, node):
         return sympy.Float(node.val)
 
+    def visit_Reduce(self, node):
+        var = self.visit(node.var)
+        expr = self.visit(node.expr)
+        start = self.visit(node.start)
+        end  = self.visit(node.end)
+        raise Exception("Not implemented yet...")
+        return ReductionTree(var=var, expr=expr, limits=[start,end], op=node.op)
+
+
     def visit_BinOp(self, node):
         lhs = self.visit(node.left)
         rhs = self.visit(node.right)
@@ -985,6 +1035,17 @@ class BackendFor(BlockStatement):
                 str_repr += substmt + "\n"
         return str_repr
 
+class ReductionTree(BlockStatement):
+    def __init__(self, var, limits, op, expr):
+        self._var = var
+        self._limits = limits
+        self._op = op
+        self._expr = expr
+        super().__init__([])
+
+    def __str__(self):
+        str_repr = "reduce(expr={0}{1}, var={2}, start={3}, end={4}, op={5})".format(self._expr[0].key, self._expr[1], self._var, self._limits[0], self._limits[1], self._op)
+        return str_repr
 
 def make_3d_input_parent_fn(I):
     async def parent_fn_async(self, loop, *bidxs):
@@ -997,20 +1058,51 @@ def make_3d_input_parent_fn(I):
             return constant_zeros(self, *bidxs)[np.newaxis]
     return parent_fn_async
 
+def forward_sub(x:BigMatrix, L:BigMatrix, b:BigMatrix, S:BigMatrix, N:int):
+    for i in range(N):
+        S[i,0] = b[i]
+        for j in range(1, i):
+            S[i,j] = syrk(S[i,j-1], L[i,j], x[j])
+        x[i] = trsm(S[i,i], L[i,i])
+
+def forward_sub(x:BigMatrix, L:BigMatrix, b:BigMatrix, S:BigMatrix, N:int):
+    for i in range(N):
+        S[i,0] = b[i]
+        for j in range(1, i):
+            S[i,j] = gemm(L[i,j], x[j])
+        S[i,N] = reduce(expr=S[i,j], var=j, start=1, end=i, op="sum")
+        x[i] = trsm(S[i,N], L[i,i])
+
+def backward_sub(x:BigMatrix, L:BigMatrix, b:BigMatrix, S:BigMatrix, N:int):
+    for i in range(N):
+        S[i,0] = b[N - 1- i]
+        for j in range(1, i):
+            S[i,j] = syrk(S[i,j-1], L[N - 1 - i, N - 1 - j], x[N - 1 - j])
+        x[i] = trsm(S[i,i], L[i,i])
+
+
 def cholesky(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
     # handle first loop differently
     O[0,0] = cholesky(I[0,0])
-    for j in range(1,N):
+    for j in range(1,N - truncate):
         O[j,0] = trsm(O[0,0], I[j,0])
         for k in range(1,j+1):
             S[1,j,k] = syrk(I[j,k], O[j,0], O[k,0])
 
-    for i in range(1,N):
+    for i in range(1,N - truncate):
         O[i,i] = cholesky(S[i,i,i])
-        for j in range(i+1,N):
+        for j in range(i+1,N - truncate):
             O[j,i] = trsm(O[i,i], S[i,j,i])
             for k in range(i+1,j+1):
                 S[i+1,j,k] = syrk(S[i,j,k], O[j,i], O[k,i])
+
+
+def _forward_solve(L,b,out_bucket=None, truncate=0):
+    S = BigMatrix("Fsolve.Intermediate({0})".format(L.key), shape=(L.shape[0], L.shape[0]), shard_sizes=(L.shard_sizes[0], L.shard_sizes[0]), write_header=True)
+    X = BigMatrix("FSolve({0}, {1})".format(L.key, b.key), shape=(L.shape[0],1), shard_sizes=(L.shard_sizes[0],1), write_header=True)
+    program = lpcompile(forward_sub, inputs=["L", "b"], outputs=["x"])(x=X,S=S,b=b,L=L, N=int(np.ceil(X.shape[0]/X.shard_sizes[0])))
+    print(program.starters)
+    print(program.unroll_program())
 
 def _chol(X, out_bucket=None, truncate=0):
     S = BigMatrix("Cholesky.Intermediate({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
@@ -1023,11 +1115,31 @@ def _chol(X, out_bucket=None, truncate=0):
     logging.debug("Terminators: " + str(program.find_terminators()))
     operator_expr = program.get_expr(starters[0][0])
     inst_block = operator_expr.eval_operator(starters[0][1])
+
+    #print("program size", len(program.unroll_program()))
     instrs = inst_block.instrs
     program.starters = starters
     return program, S, O
 
 if __name__ == "__main__":
-    N = 1281167*1
+    N = 65536*16
     I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
-    _chol(I)
+    program, S, O = _chol(I)
+    print(program)
+    s = time.time()
+    c = program.get_children(0, {})
+    e = time.time()
+    print("1st cholesky child time: {0}".format(e - s))
+    print("1st cholesky num children: {0}".format(len(c)))
+    #print("1st cholesky children: {0}".format(c))
+
+    s = time.time()
+    c = program.get_children(3, {"i":1})
+    e = time.time()
+    print("2nd cholesky child time: {0}".format(e - s))
+    print("2nd cholesky num children: {0}".format(len(c)))
+    #print("2nd cholesky children: {0}".format(c))
+
+    #L = BigMatrix("SolveInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
+    #b = BigMatrix("SolveRHS", shape=(int(N),), shard_sizes=(4096,), write_header=True)
+    #_forward_solve(L, b)

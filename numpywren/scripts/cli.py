@@ -325,6 +325,15 @@ def interactive_setup(ctx):
     default_yaml["s3"]["prefix"] = prefix
     default_yaml["iam"]["role_name"] = npw.config.AWS_ROLE_DEFAULT
     default_yaml["iam"]["instance_profile_name"] = npw.config.AWS_INSTANCE_PROFILE_DEFAULT
+    try:
+        response = ec2_client.describe_key_pairs()
+        key_pairs = [x['KeyName'] for x in response["KeyPairs"]]
+        key_pair = key_pairs[0]
+    except:
+        click.echo("Error in acquiring ec2 key pair, perhaps you don't have any setup?")
+        return
+
+    default_yaml["control_plane"]["ec2_ssh_key"] = key_pair
     config_advanced = click.confirm(
         "Would you like to configure advanced numpywren properties?", default=False)
     if (config_advanced):
@@ -339,6 +348,8 @@ def interactive_setup(ctx):
         default_yaml["iam"]["role_name"] = role_name
         instance_profile_name= click_validate_prompt("What would you like to name the numpywren iam instance profile which will allow numpywren executors to access your AWS resources", default=default_yaml["iam"]["instance_profile_name"])
         default_yaml["iam"]["instance_profile_name"] = instance_profile_name
+        ec2_ssh_key = click_validate_prompt("Pick a valid ec2 ssh key pair", default=default_yaml["control_plane"]["ec2_ssh_key"])
+        default_yaml["control_plane"]["ec2_ssh_key"] = ec2_ssh_key
     else:
         role_name = default_yaml["iam"]["role_name"]
         instance_profile_name = default_yaml["iam"]["instance_profile_name"]

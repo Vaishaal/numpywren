@@ -61,6 +61,8 @@ class BigMatrix(object):
         and underlying S3 representation.
     autosqueeze: bool, optional
         Squeeze all 1-dimensional entries when calling get_block, and put_block's input shape must be shard_size except without 1 dimensionally entries
+    lambdav: float, optional
+        add a floating point value to diagonal (square matrices only)
 
     Notes
     -----
@@ -77,7 +79,8 @@ class BigMatrix(object):
                  dtype=np.float64,
                  parent_fn=None,
                  write_header=False,
-                 autosqueeze=True):
+                 autosqueeze=True,
+                 lambdav=0.0):
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
             if bucket is None:
@@ -91,6 +94,7 @@ class BigMatrix(object):
         self.parent_fn = dill.dumps(parent_fn)
         self.transposed = False
         self.autosqueeze = autosqueeze
+        self.lambdav = lambdav
         if (shape == None or shard_sizes == None):
             header = self.__read_header__()
         else:
@@ -114,6 +118,9 @@ class BigMatrix(object):
         if write_header:
             # Write a header if you want to load this value later.
             self.__write_header__()
+        if (self.lambdav != 0 and (len(self.shape) < 2 or len(set(self.shape)) != 1)):
+            raise Exception("Lambda can only be prescribed for square matrices/tensors")
+
 
     def submatrix(self, *block_slices):
         """
@@ -288,6 +295,10 @@ class BigMatrix(object):
             X_block = np.load(bio)
         if (self.autosqueeze):
             X_block = np.squeeze(X_block)
+        if (len(set(block_idx)) == 1 and len(set(self.shape)) == 1):
+            idxs = np.diag_indices(X_block.shape[0])
+            print("adding lambdav")
+            X_block[idxs] += self.lambdav
         return X_block
 
     def put_block(self, block, *block_idx):

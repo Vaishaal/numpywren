@@ -179,7 +179,7 @@ def launch_and_provision_redis(config=None):
     ami = rc["target_ami"]
     instance_type = rc["ec2_instance_type"]
     # TODO fix
-    key_name = pywren_config["standalone"]["ec2_ssh_key"]
+    key_name = config["control_plane"]["ec2_ssh_key"]
     aws_region = pywren_config['account']['aws_region']
     availability_zone = rc.get("availability_zone", None)
     redis_conf = open(sd("redis.conf")).read()

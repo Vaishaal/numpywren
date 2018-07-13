@@ -26,6 +26,7 @@ import pywren.wrenconfig as wc
 import sympy
 import redis
 import scipy.linalg
+import dill
 
 from .matrix import BigMatrix
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
@@ -224,7 +225,6 @@ class RemoteRead(RemoteInstruction):
 
     def clear(self):
         self.result = None
-
     def __str__(self):
         bidxs_str = ""
         for x in self.bidxs:
@@ -278,6 +278,14 @@ class RemoteWrite(RemoteInstruction):
             bidxs_str += " "
         return "{0} = S3_WRITE {1} {2} {3} {4}".format(self.id, self.matrix, len(self.bidxs), bidxs_str.strip(), self.data_instr.id)
 
+
+class RemoteIdentity(RemoteInstruction):
+    def __init__(self, i_id, argv_instr, **kwargs):
+        self.argv = argv_instr
+        pass
+    async def __call__(self, prev=None):
+        self.result = self.argv_instr[0].result
+        return self.result
 
 class RemoteSYRK(RemoteInstruction):
     def __init__(self, i_id, argv_instr, **kwargs):
@@ -375,8 +383,32 @@ class RemoteSub(RemoteInstruction):
     def __str__(self):
         return "{0} = SUB {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
 
+class RemoteSUM(RemoteInstruction):
+    def __init__(self, i_id, argv_instr):
+        super().__init__(i_id)
+        self.i_code = OC.GEMM
+        assert len(argv_instr) == 2
+        self.argv = argv_instr
+        self.result = None
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
+        def compute():
+          self.start_time = time.time()
+          if (self.result == None):
+              self.result = np.sum(self.argv)
+              self.flops = block_1.shape[0]*block_1.shape[1]*len(self.argv)
+              self.ret_code = 0
+          self.end_time = time.time()
+          return self.result
+        return await loop.run_in_executor(self.executor, compute)
 
-class RemoteGemm(RemoteInstruction):
+    def __str__(self):
+        return "{0} = GEMM {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
+
+
+class RemoteGEMM(RemoteInstruction):
     def __init__(self, i_id, argv_instr):
         super().__init__(i_id)
         self.i_code = OC.GEMM
@@ -574,7 +606,8 @@ class LambdaPackProgram(object):
         hashed.update(program_string.encode())
         # this is temporary hack?
         hashed.update(str(time.time()).encode())
-        self.hash = hashed.hexdigest()
+        #HACK to have interpretable runs
+        self.hash = str(int(time.time()))
         self.up = 'up' + self.hash
         self.set_up(0)
         client = boto3.client('sqs', region_name='us-west-2')
@@ -609,6 +642,11 @@ class LambdaPackProgram(object):
       put(self.control_plane.client, self._node_key(expr_id, var_values), status.value)
       return status
 
+    def set_profiling_info(self, inst_block, expr_idx, var_values):
+        byte_string = dill.dumps(inst_block)
+        client = boto3.client('s3', region_name='us-west-2')
+        client.put_object(Bucket=self.bucket, Key="lambdapack/{0}/{1}_{2}".format(self.hash, expr_idx, var_values), Body=byte_string)
+
     def post_op(self, expr_idx, var_values, ret_code, inst_block, tb=None):
         # need clean post op logic to handle
         # replays
@@ -630,20 +668,25 @@ class LambdaPackProgram(object):
             self.handle_exception(" EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
           ready_children = []
           for child in children:
-            self.control_plane.client.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), "STILL IN POST OP")
-            my_child_edge = self._edge_key(expr_idx, var_values, *child)
-            child_edge_sum_key = self._node_edge_sum_key(*child)
-            # redis transaction should be atomic
-            tp = fs.ThreadPoolExecutor(1)
-            val_future = tp.submit(conditional_increment, self.control_plane.client, child_edge_sum_key, my_child_edge)
-            done, not_done = fs.wait([val_future], timeout=60)
-            if len(done) == 0:
-              raise Exception("Redis Atomic Set and Sum timed out!")
-            val = val_future.result()
-            child_parents = self.program.get_parents(child[0], child[1])
-            if (val == len(child_parents) and self.get_node_status(*child) != NS.FINISHED):
-              self.set_node_status(*child, NS.READY)
-              ready_children.append(child)
+              operator_expr = self.program.get_expr(child[0])
+              self.control_plane.client.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), "STILL IN POST OP")
+              my_child_edge = self._edge_key(expr_idx, var_values, *child)
+              child_edge_sum_key = self._node_edge_sum_key(*child)
+              # redis transaction should be atomic
+              tp = fs.ThreadPoolExecutor(1)
+              val_future = tp.submit(conditional_increment, self.control_plane.client, child_edge_sum_key, my_child_edge)
+              done, not_done = fs.wait([val_future], timeout=60)
+              if len(done) == 0:
+                raise Exception("Redis Atomic Set and Sum timed out!")
+              val = val_future.result()
+              if (operator_expr == self.program.return_expr):
+                num_child_parents = self.program.num_terminators
+              else:
+                num_child_parents = len(self.program.get_parents(child[0], child[1]))
+
+              if ((val == num_child_parents) and self.get_node_status(*child) != NS.FINISHED):
+                self.set_node_status(*child, NS.READY)
+                ready_children.append(child)
 
           if self.eager and ready_children:
               # TODO: Re-add priorities here
@@ -671,6 +714,7 @@ class LambdaPackProgram(object):
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
           self.incr_progress()
+          self.set_profiling_info(inst_block, expr_idx, var_values)
           return next_operator
         except Exception as e:
             tb = traceback.format_exc()
@@ -687,6 +731,13 @@ class LambdaPackProgram(object):
           queue = sqs.Queue(self.queue_urls[0])
           queue.send_message(MessageBody=json.dumps([starter[0], {key.name: val for key, val in starter[1].items()}]))
         return 0
+
+    def stop(self):
+        client = boto3.client('s3')
+        print("Stopping program")
+        client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTION.DRIVER.CANCELLED", Bucket=self.bucket, Body="cancelled by driver")
+        e = PS.EXCEPTION.value
+        put(self.control_plane.client, self.hash, e)
 
     def handle_exception(self, error, tb, expr_idx, var_values):
         client = boto3.client('s3')
@@ -768,8 +819,8 @@ class LambdaPackProgram(object):
     def get_profiling_info(self, expr_idx, var_values):
         try:
           client = boto3.client('s3')
-          byte_string = client.get_object(Bucket=self.bucket, Key="{0}/{1}/{2}".format("lambdapack", self.hash, pc))["Body"].read()
-          return pickle.loads(byte_string)
+          byte_string = client.get_object(Bucket=self.bucket, Key="lambdapack/{0}/{1}_{2}".format(self.hash, expr_idx, var_values))["Body"].read()
+          return dill.loads(byte_string)
         except:
-          print("key {0}/{1} not found in bucket {2}".format(self.hash, pc, self.bucket))
+          raise
 

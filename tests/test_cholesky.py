@@ -16,7 +16,6 @@ import time
 import os
 import boto3
 
-redis_env ={"REDIS_ADDR": os.environ.get("REDIS_ADDR", ""), "REDIS_PASS": os.environ.get("REDIS_PASS", "")}
 
 class CholeskyTest(unittest.TestCase):
     def test_cholesky_single(self):
@@ -96,7 +95,7 @@ class CholeskyTest(unittest.TestCase):
         print(program)
         program.start()
         num_cores = 1
-        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)
+        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"])
         #futures = pwex.map(lambda x: x, range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)
         futures[0].result()
         pywren.wait(futures)
@@ -158,7 +157,7 @@ class CholeskyTest(unittest.TestCase):
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
         program.start()
         num_cores = 100
-        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)
+        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"])
         [f.result() for f in all_futures]
         program.free()
         L_npw = L_sharded.numpy()
