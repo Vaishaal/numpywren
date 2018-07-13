@@ -603,10 +603,6 @@ class LambdaPackProgram(object):
           raise Exception("No active control planes")
         self.control_plane = control_plane.get_control_plane(config=config)
         hashed = hashlib.sha1()
-        program_string = self.program.__str__()
-        hashed.update(program_string.encode())
-        # this is temporary hack?
-        hashed.update(str(time.time()).encode())
         #HACK to have interpretable runs
         self.hash = str(int(time.time()))
         self.up = 'up' + self.hash

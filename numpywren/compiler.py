@@ -1122,7 +1122,8 @@ def _chol(X, out_bucket=None, truncate=0):
     return program, S, O
 
 if __name__ == "__main__":
-    N = 65536*16
+    N = 65536*32
+    print("Problem size", N)
     I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
     program, S, O = _chol(I)
     print(program)
