@@ -1,0 +1,10 @@
+Metadata-Version: 1.0
+Name: numpywren
+Version: 0.0.1a0
+Summary: Run scientific computing applications transparently on AWS Lambda and other cloud services
+Home-page: UNKNOWN
+Author: Vaishaal Shankar
+Author-email: vaishaal@gmail.com
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN

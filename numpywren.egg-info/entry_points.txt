@@ -1,0 +1,3 @@
+[console_scripts]
+numpywren = numpywren.scripts.cli:main
+

@@ -118,7 +118,7 @@ def decode_vector(Y, num_parity_blocks):
     return y_local
 
 def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
-    assert(Y.shape[1] == 1)
+    assert(len(Y.shape) == 1 or Y.shape[1] == 1)
     num_parity_blocks = kwargs['num_parity_blocks']
     y_local = decode_vector(Y, num_parity_blocks)
     print("y_local after decoding", y_local)
@@ -248,7 +248,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     root_key = generate_key_name_binop(X, Y, "gemm")
     if (Y.shard_sizes[0] !=  X.shard_sizes[1]):
         raise Exception("X dim 1 shard size must match Y dim 0 shard size")
-    XY = BigMatrix(root_key, shape=(X.shape[0], Y.shape[1]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], Y.shard_sizes[1]], dtype=dtype, write_header=True)
+    XY = BigMatrix(root_key, shape=(X.shape[0], Y.shape[1]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], Y.shard_sizes[1]], dtype=dtype, parent_fn=parent_fn, autosqueeze=False, write_header=True)
 
 
     num_out_blocks = len(XY.blocks)
@@ -289,6 +289,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         if (result_count >= straggler_thresh*len(futures)):
             [f.result() for f in fs_dones]
             break
+        time.sleep(1)
     return XY
 
 # matrix vector multiply
