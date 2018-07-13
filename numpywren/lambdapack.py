@@ -18,6 +18,7 @@ import aiohttp
 import asyncio
 import boto3
 import botocore
+import botocore.exceptions
 import json
 import numpy as np
 import pywren
@@ -212,7 +213,7 @@ class RemoteRead(RemoteInstruction):
                 try:
                   self.result = await asyncio.wait_for(self.matrix.get_block_async(loop, *self.bidxs), self.MAX_READ_TIME)
                   break
-                except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError):
+                except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError):
                   await asyncio.sleep(backoff)
                   backoff *= 2
                   pass
@@ -259,7 +260,7 @@ class RemoteWrite(RemoteInstruction):
               try:
                 self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs), self.MAX_WRITE_TIME)
                 break
-              except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError) as e:
+              except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError) as e:
                   await asyncio.sleep(backoff)
                   backoff *= 2
                   pass

@@ -157,7 +157,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
             list(map(pywren_run, c))
         else:
             s = time.time()
-            futures = pwex.map(pywren_run, c)
+            futures = pwex.map(pywren_run, c, exclude_modules=["site-packages"])
             e = time.time()
             print("Pwex Map Time {0}".format(e - s))
             all_futures.append((i,futures))

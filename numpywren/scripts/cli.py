@@ -168,6 +168,34 @@ def terminate(idx):
     client.delete_object(Key=key, Bucket=bucket)
 
 
+@click.command()
+@click.argument('idx', default=0)
+def info(idx):
+    config = npw.config.default()
+    client = boto3.client('s3')
+    rc = config["control_plane"]
+    password = rc["password"]
+    port= rc["port"]
+    prefix = rc["control_plane_prefix"].strip("/")
+    bucket = config["s3"]["bucket"]
+    keys= list_all_keys(prefix=prefix, bucket=bucket)
+    if (idx >= len(keys)):
+        click.echo("idx must be less that number of total control planes")
+        return
+    key = keys[idx]
+    info = json.loads(client.get_object(Key=key, Bucket=config["s3"]["bucket"])["Body"].read())
+    host = info["public_ip"]
+    redis_client = redis.StrictRedis(host=host, port=port, password=password)
+    while (True):
+        try:
+            info =  redis_client.info()
+            for (k,v) in info.items():
+                print("{0}: {1}".format(k,v))
+            break
+        except redis.exceptions.ConnectionError as e:
+            click.echo("info failed.")
+            pass
+
 
 @click.command()
 @click.argument('idx', default=0)
@@ -203,6 +231,7 @@ def ping(idx):
 control_plane.add_command(launch)
 control_plane.add_command(list)
 control_plane.add_command(ping)
+control_plane.add_command(info)
 control_plane.add_command(terminate)
 
 @click.command()
