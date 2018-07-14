@@ -244,8 +244,10 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     reduce_idxs = X._block_idxs(axis=1)
     if (out_bucket == None):
         out_bucket = X.bucket
-
     root_key = generate_key_name_binop(X, Y, "gemm")
+    if len(root_key>200):
+        root_key = matrix_utils.hash_string(root_key)
+    print("Output key:", root_key)
     if (Y.shard_sizes[0] !=  X.shard_sizes[1]):
         raise Exception("X dim 1 shard size must match Y dim 0 shard size")
     XY = BigMatrix(root_key, shape=(X.shape[0], Y.shape[1]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], Y.shard_sizes[1]], dtype=dtype, parent_fn=parent_fn, autosqueeze=False, write_header=True)
