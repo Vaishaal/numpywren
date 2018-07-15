@@ -291,17 +291,31 @@ def get_control_plane(control_plane_id=None, config=None):
 
 # tiny hack to serialize redis
 class SerializableControlPlane(object):
-    def __init__(self, info, port, password, socket_timeout=60, db=0):
+    def __init__(self, info, port, password, socket_timeout=5, db=0):
         self.info = info
         self.port = port
         self.password = password
         self.db = 0
         self.socket_timeout = socket_timeout
+        self._cache = False
+        self._conn = None
+
+    def cache(self):
+        self._cache = True
+
+    def uncache(self):
+        self._cache = False
+        self._conn = None
 
     @property
     def client(self):
         host = self.info["public_ip"]
-        return redis.StrictRedis(host=host, port=self.port, password=self.password, socket_timeout=self.socket_timeout, db=self.db)
+        if (self._cache):
+            if (self._conn is None):
+                self._conn = redis.StrictRedis(host=host, port=self.port, password=self.password, socket_timeout=self.socket_timeout, db=self.db)
+            return self._conn
+        else:
+            return redis.StrictRedis(host=host, port=self.port, password=self.password, socket_timeout=self.socket_timeout, db=self.db)
 
 
 

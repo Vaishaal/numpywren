@@ -1,6 +1,5 @@
 import asyncio
 import concurrent.futures as fs
-import copy
 import gc
 import logging
 from multiprocessing.dummy import Pool as ThreadPool
@@ -224,6 +223,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     computer = fs.ThreadPoolExecutor(1)
+    program.control_plane.cache()
     tot_messages = []
     if (cache_size > 0):
         cache = LRUCache(max_items=cache_size)
@@ -284,7 +284,7 @@ async def check_program_state(program, loop, shared_state, timeout, idle_timeout
         if(s != lp.PS.RUNNING):
            print("program status is ", s)
            break
-        await asyncio.sleep(1)
+        await asyncio.sleep(30)
     print("Closing loop from program")
     loop.stop()
 
@@ -295,7 +295,6 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
     print("timeout is ", timeout)
     #print("LAMBDAPACK_RUN_ASYNC")
     session = aiobotocore.get_session(loop=loop)
-    # every pipelined worker gets its own copy of program so we don't step on eachothers toes!
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
     start_time = time.time()
     running_times = shared_state['running_times']

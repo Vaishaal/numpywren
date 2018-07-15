@@ -28,6 +28,7 @@ import sympy
 import redis
 import scipy.linalg
 import dill
+import redis.exceptions
 
 from .matrix import BigMatrix
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
@@ -75,12 +76,19 @@ class ProgramStatus(Enum):
 
 def put(client, key, value, s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
-    client.set(key, value)
-    return value
     if (s3):
       # flush write to S3
       raise Exception("Not Implemented")
-
+    backoff = 1
+    val = None
+    while(True):
+      try:
+        val = client.set(key, value)
+        break
+      except redis.exceptions.TimeoutError:
+        time.sleep(backoff)
+        backoff *= 2
+    return val
 
 def upload(key, bucket, data):
     client = boto3.client('s3')
@@ -94,7 +102,19 @@ def get(client, key, s3=False, s3_bucket=""):
     else:
       if (client is None):
         raise Exception("No redis client up")
-      return client.get(key)
+      backoff = 1
+      val = None
+      while(True):
+        try:
+          val = client.get(key)
+          break
+        except redis.exceptions.TimeoutError:
+          time.sleep(backoff)
+          backoff *= 2
+      return val
+
+
+
 
 def incr(client, key, amount=1, s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
@@ -104,7 +124,16 @@ def incr(client, key, amount=1, s3=False, s3_bucket=""):
     else:
       if (client is None):
         raise Exception("No redis client up")
-      return client.incr(key, amount=amount)
+      backoff = 1
+      val = None
+      while(True):
+        try:
+          val = client.incr(key, amount=amount)
+          break
+        except redis.exceptions.TimeoutError:
+          time.sleep(backoff)
+          backoff *= 2
+      return val
 
 def decr(client, key, amount, s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
@@ -114,7 +143,16 @@ def decr(client, key, amount, s3=False, s3_bucket=""):
     else:
       if (client is None):
         raise Exception("No redis client up")
-      return client.decr(key, amount=amount)
+      backoff = 1
+      val = None
+      while(True):
+        try:
+          val = client.decr(key, amount=amount)
+          break
+        except redis.exceptions.TimeoutError:
+          time.sleep(backoff)
+          backoff *= 2
+      return val
 
 
 
@@ -128,30 +166,38 @@ def conditional_increment(client, key_to_incr, condition_key):
   res = 0
 
   r = client
-  with r.pipeline() as pipe:
-    while True:
-      try:
-        pipe.watch(condition_key)
-        pipe.watch(key_to_incr)
-        current_value = pipe.get(key_to_incr)
-        if (current_value is None):
-          current_value = 0
-        current_value = int(current_value)
-        condition_val = pipe.get(condition_key)
-        if (condition_val is None):
-          condition_val = 0
-        condition_val = int(condition_val)
-        res = current_value
-        if (condition_val == 0):
-          pipe.multi()
-          pipe.incr(key_to_incr)
-          pipe.set(condition_key, 1)
-          t_results = pipe.execute()
-          res = int(t_results[0])
-          assert(t_results[1])
+  backoff = 1
+  success = False
+  while (True):
+    try:
+      with r.pipeline() as pipe:
+        while True:
+          try:
+            pipe.watch(condition_key)
+            pipe.watch(key_to_incr)
+            current_value = pipe.get(key_to_incr)
+            if (current_value is None):
+              current_value = 0
+            current_value = int(current_value)
+            condition_val = pipe.get(condition_key)
+            if (condition_val is None):
+              condition_val = 0
+            condition_val = int(condition_val)
+            res = current_value
+            if (condition_val == 0):
+              pipe.multi()
+              pipe.incr(key_to_incr)
+              pipe.set(condition_key, 1)
+              t_results = pipe.execute()
+              res = int(t_results[0])
+              assert(t_results[1])
+            break
+          except redis.WatchError as e:
+            continue
         break
-      except redis.WatchError as e:
-        continue
+    except redis.exceptions.TimeoutError:
+        time.sleep(backoff)
+        backoff *= 2
   return res
 
 
