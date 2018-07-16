@@ -147,7 +147,8 @@ def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
         XY_block = None
         X.dtype = dtype
         Y.dtype = dtype
-        for r in reduce_idxs:
+        for i,r in enumerate(reduce_idxs):
+            print ("At reduce id:", i, r)
             block1 = X.get_block(bidx_0, r)
             block2 = Y.get_block(r, bidx_1)
             if (XY_block is None):
@@ -245,7 +246,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     if (out_bucket == None):
         out_bucket = X.bucket
     root_key = generate_key_name_binop(X, Y, "gemm")
-    if len(root_key>200):
+    if len(root_key)>200:
         root_key = matrix_utils.hash_string(root_key)
     print("Output key:", root_key)
     if (Y.shard_sizes[0] !=  X.shard_sizes[1]):
@@ -289,9 +290,15 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         result_count = len(fs_dones)
         print(result_count)
         if (result_count >= straggler_thresh*len(futures)):
-            [f.result() for f in fs_dones]
+            #[f.result() for f in fs_dones]
+            for f in fs_dones:
+                try:
+                    f.result()
+                except Exception as e:
+                    print(e)
+                    pass
             break
-        time.sleep(1)
+        time.sleep(3)
     return XY
 
 # matrix vector multiply
