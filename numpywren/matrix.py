@@ -77,7 +77,7 @@ class BigMatrix(object):
                  dtype=np.float64,
                  parent_fn=None,
                  write_header=False,
-                 autosqueeze=True):
+                 autosqueeze=False):
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
             if bucket is None:

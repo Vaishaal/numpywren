@@ -89,6 +89,9 @@ def decode_vector(Y, num_parity_blocks):
     vector_length_blocks = int(num_parity_blocks*(Y.shape[0]//shard_size - 1 - num_parity_blocks))//(num_parity_blocks+1)
     coding_length = vector_length_blocks // num_parity_blocks
     len_A_coded = vector_length_blocks + num_parity_blocks
+    # if Y.shape[0] == coding_length*num_parity_blocks*shard_size:
+    #     bitmask = np.ones((coding_length, num_parity_blocks))
+    # else:
     bitmask = np.ones((coding_length + 1, num_parity_blocks + 1))
     for r in block_idxs_exist:
         y_local[r*shard_size:(r + 1)*shard_size] = Y.get_block(r, 0)
@@ -120,7 +123,17 @@ def decode_vector(Y, num_parity_blocks):
 def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
     assert(len(Y.shape) == 1 or Y.shape[1] == 1)
     num_parity_blocks = kwargs['num_parity_blocks']
-    y_local = decode_vector(Y, num_parity_blocks)
+    breakdown = kwargs['breakdown']
+    if num_parity_blocks==0:
+        shard_size = Y.shard_sizes[0]
+        y_local = np.zeros(Y.shape)
+        if Y.block_idxs_not_exist!=[]:
+            print("ERROR, some blocks in bk missing")
+        block_idxs_exist = set([x[0] for x in Y.block_idxs_exist])
+        for r in block_idxs_exist:
+            y_local[r*shard_size:(r + 1)*shard_size] = Y.get_block(r, 0)
+    else:
+        y_local = decode_vector(Y, num_parity_blocks)
     print("y_local after decoding", y_local)
     for bp in block_pairs:
         bidx_0, bidx_1 = bp
@@ -130,6 +143,8 @@ def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
             block1 = X.get_block(bidx_0, r)
             sidx,eidx = Y.blocks[r]
             sidx, eidx = sidx
+            sidx = int(sidx*breakdown)
+            eidx = int(eidx*breakdown)
             y_block = y_local[sidx:eidx]
             # print ("r, y_block\n", r, y_block)
             if (XY_block is None):
@@ -147,8 +162,8 @@ def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
         XY_block = None
         X.dtype = dtype
         Y.dtype = dtype
-        for i,r in enumerate(reduce_idxs):
-            print ("At reduce id:", i, r)
+        for r in reduce_idxs:
+            print ("At reduce id:", r)
             block1 = X.get_block(bidx_0, r)
             block2 = Y.get_block(r, bidx_1)
             if (XY_block is None):
@@ -249,7 +264,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
     if len(root_key)>200:
         root_key = matrix_utils.hash_string(root_key)
     print("Output key:", root_key)
-    if (Y.shard_sizes[0] !=  X.shard_sizes[1]):
+    if (Y.shard_sizes[0] !=  X.shard_sizes[1] and gemm_impl!=3):
         raise Exception("X dim 1 shard size must match Y dim 0 shard size")
     XY = BigMatrix(root_key, shape=(X.shape[0], Y.shape[1]), bucket=out_bucket, shard_sizes=[X.shard_sizes[0], Y.shard_sizes[1]], dtype=dtype, parent_fn=parent_fn, autosqueeze=False, write_header=True)
 
@@ -290,13 +305,13 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         result_count = len(fs_dones)
         print(result_count)
         if (result_count >= straggler_thresh*len(futures)):
-            #[f.result() for f in fs_dones]
-            for f in fs_dones:
-                try:
-                    f.result()
-                except Exception as e:
-                    print(e)
-                    pass
+            [f.result() for f in fs_dones]
+            # for f in fs_dones:
+            #     try:
+            #         f.result()
+            #     except Exception as e:
+            #         print(e)
+            #         pass
             break
         time.sleep(3)
     return XY
