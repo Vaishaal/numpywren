@@ -384,7 +384,7 @@ class BigMatrix(object):
         key = self.__shard_idx_to_key__(block_idx)
         session = aiobotocore.get_session(loop=loop)
         async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
-            resp = client.delete_object(Key=key, Bucket=self.bucket)
+            resp = await client.delete_object(Key=key, Bucket=self.bucket)
         return resp
 
     def free(self):
