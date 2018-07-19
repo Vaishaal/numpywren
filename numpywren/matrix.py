@@ -141,6 +141,9 @@ class BigMatrix(object):
     def num_blocks(self, axis=None):
         return len(self._block_idxs(axis=axis))
 
+    def add_parent_fn(self, parent_fn):
+        self.parent_fn = dill.dumps(parent_fn)
+
     @property
     def T(self):
         """Return the transpose with the same underlying representation."""
