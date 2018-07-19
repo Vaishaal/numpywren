@@ -285,18 +285,21 @@ def get_control_plane(control_plane_id=None, config=None):
     if (not key_exists):
         raise exceptions.ControlPlaneException("control plane id not found")
     info = json.loads(client.get_object(Key=key, Bucket=config["s3"]["bucket"])["Body"].read())
-    return SerializableControlPlane(info, rc["port"], rc["password"])
+    pywren_config = wc.default()
+    region = pywren_config['account']['aws_region']
+    return SerializableControlPlane(info, rc["port"], rc["password"], region=region)
 
 
 
 # tiny hack to serialize redis
 class SerializableControlPlane(object):
-    def __init__(self, info, port, password, socket_timeout=5, db=0):
+    def __init__(self, info, port, password, region, socket_timeout=5, db=0):
         self.info = info
         self.port = port
         self.password = password
         self.db = 0
         self.socket_timeout = socket_timeout
+        self.region = region
         self._cache = False
         self._conn = None
 

@@ -311,7 +311,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             await asyncio.sleep(0)
             # go from high priority -> low priority
             for queue_url in program.queue_urls[::-1]:
-                async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
+                async with session.create_client('sqs', use_ssl=False,  region_name=program.control_plane.region) as sqs_client:
                     messages = await sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
                 if ("Messages" not in messages):
                     continue
@@ -345,7 +345,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             for operator_ref in operator_refs:
                 logger.debug("Marking {0} as done".format(operator_ref))
                 program.set_node_status(*operator_ref, lp.NS.FINISHED)
-            async with session.create_client('sqs', use_ssl=False,  region_name='us-west-2') as sqs_client:
+            async with session.create_client('sqs', use_ssl=False,  region_name=program.control_plane.region) as sqs_client:
                 lock[0] = 0
                 await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             end_processing_time = time.time()

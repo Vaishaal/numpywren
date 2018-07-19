@@ -19,7 +19,7 @@ import boto3
 
 class CholeskyTest(unittest.TestCase):
     def test_cholesky_single(self):
-        X = np.random.randn(4,4)
+        X = np.random.randn(3,3)
         A = X.dot(X.T) + np.eye(X.shape[0])
         y = np.random.randn(16)
         pwex = pywren.default_executor()
@@ -154,6 +154,7 @@ class CholeskyTest(unittest.TestCase):
         executor = pywren.lambda_executor
         config = npw.config.default()
         pywren_config = pwex.config
+        print(pywren_config)
         program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
         program.start()
         num_cores = 100

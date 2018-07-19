@@ -27,8 +27,10 @@ logger = logging.getLogger(__name__)
 
 try:
     DEFAULT_BUCKET = wc.default()['s3']['bucket']
+    DEFAULT_REGION = wc.default()['account']['aws_region']
 except Exception as e:
     DEFAULT_BUCKET = ""
+    DEFAULT_REGION =  ""
 
 class BigMatrix(object):
     """
@@ -80,7 +82,8 @@ class BigMatrix(object):
                  parent_fn=None,
                  write_header=False,
                  autosqueeze=True,
-                 lambdav=0.0):
+                 lambdav=0.0,
+                 region=DEFAULT_REGION):
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
             if bucket is None:
@@ -95,6 +98,7 @@ class BigMatrix(object):
         self.transposed = False
         self.autosqueeze = autosqueeze
         self.lambdav = lambdav
+        self.region = region
         if (shape == None or shard_sizes == None):
             header = self.__read_header__()
         else:
@@ -382,7 +386,7 @@ class BigMatrix(object):
             asyncio.set_event_loop(loop)
         key = self.__shard_idx_to_key__(block_idx)
         session = aiobotocore.get_session(loop=loop)
-        async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
+        async with session.create_client('s3', use_ssl=False, verify=False, region_name=self.region) as client:
             resp = client.delete_object(Key=key, Bucket=self.bucket)
         return resp
 
@@ -490,7 +494,7 @@ class BigMatrix(object):
             loop = asyncio.get_event_loop()
 
         session = aiobotocore.get_session(loop=loop)
-        async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
+        async with session.create_client('s3', use_ssl=False, verify=False, region_name=self.region) as client:
             n_tries = 0
             max_n_tries = 5
             bio = None
@@ -512,7 +516,7 @@ class BigMatrix(object):
             loop = asyncio.get_event_loop()
 
         session = aiobotocore.get_session(loop=loop)
-        async with session.create_client('s3', use_ssl=False, verify=False, region_name="us-west-2") as client:
+        async with session.create_client('s3', use_ssl=False, verify=False, region_name=self.region) as client:
             outb = io.BytesIO()
             np.save(outb, X)
             response = await client.put_object(Key=out_key,

@@ -81,14 +81,7 @@ def check_bucket_exists(s3bucket):
     return exists
 
 def check_valid_bucket_name(bucket_name):
-    # Validates bucketname
-    # Based on http://info.easydynamics.com/blog/aws-s3-bucket-name-validation-regex
-    # https://docs.aws.amazon.com/AmazonS3/latest/dev/BucketRestrictions.html
-    bucket_regex = re.compile(r"""^([a-z]|(\d(?!\d{0,2}\.\d{1,3}\.\d{1,3}\.\d{1,3})))
-                                   ([a-z\d]|(\.(?!(\.|-)))|(-(?!\.))){1,61}[a-z\d\.]$""", re.X)
-    if re.match(bucket_regex, bucket_name):
-        return True
-    return False
+    return True
 
 
 
@@ -355,10 +348,12 @@ def interactive_setup(ctx):
     default_yaml["iam"]["role_name"] = npw.config.AWS_ROLE_DEFAULT
     default_yaml["iam"]["instance_profile_name"] = npw.config.AWS_INSTANCE_PROFILE_DEFAULT
     try:
+        ec2_client = boto3.client('ec2')
         response = ec2_client.describe_key_pairs()
         key_pairs = [x['KeyName'] for x in response["KeyPairs"]]
         key_pair = key_pairs[0]
     except:
+        raise
         click.echo("Error in acquiring ec2 key pair, perhaps you don't have any setup?")
         return
 

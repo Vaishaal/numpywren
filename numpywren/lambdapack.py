@@ -653,7 +653,7 @@ class LambdaPackProgram(object):
         self.hash = str(int(time.time()))
         self.up = 'up' + self.hash
         self.set_up(0)
-        client = boto3.client('sqs', region_name='us-west-2')
+        client = boto3.client('sqs', region_name=self.control_plane.region)
         self.queue_urls = []
         for i in range(num_priorities):
           queue_url = client.create_queue(QueueName=self.hash + str(i))["QueueUrl"]
@@ -687,7 +687,7 @@ class LambdaPackProgram(object):
 
     def set_profiling_info(self, inst_block, expr_idx, var_values):
         byte_string = dill.dumps(inst_block)
-        client = boto3.client('s3', region_name='us-west-2')
+        client = boto3.client('s3', region_name=self.control_plane.region)
         client.put_object(Bucket=self.bucket, Key="lambdapack/{0}/{1}_{2}".format(self.hash, expr_idx, var_values), Body=byte_string)
 
     def post_op(self, expr_idx, var_values, ret_code, inst_block, tb=None):
@@ -744,7 +744,7 @@ class LambdaPackProgram(object):
           # we would run its highest priority child *locally* by adding the instructions to the local instruction queue
           # this has 2 key benefits, first we completely obliviete scheduling overhead between these two nodes but also because of the local LRU cache the first read of this node will be saved this will translate
 
-          client = boto3.client('sqs', region_name='us-west-2')
+          client = boto3.client('sqs', region_name=self.control_plane.region)
           assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
             # TODO: Re-add priorities here
