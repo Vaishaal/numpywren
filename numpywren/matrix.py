@@ -17,6 +17,7 @@ import cloudpickle
 import numpy as np
 import pywren.wrenconfig as wc
 import dill
+from collections import defaultdict
 
 from . import matrix_utils
 from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists_async
@@ -777,4 +778,94 @@ class BigMatrixView(BigMatrix):
         return rep
 
 
+class RowPivotedBigMatrix(BigMatrix):
+    def __init__(self, matrix, row_permutation_dict):
+        if (len(permutation_dict) >  4.0 * matrix.shard_sizes[0]):
+            logger.warning("Permutation seems to permute *too many* rows consider doing a full shuffle")
+        self.matrix = matrix
+        super().__init__(self, key=matrix.key, shape=matrix.shape, shard_sizes=matrix.shard_sizes, bucket=matrix.bucket, prefix=matrix.prefix, dtype=matrix.dtype, parent_fn=matrix.parent_fn, write_header=matrix_write_header, autosqueeze=matrix.autosqueeze, lambdav=matrix.lambdav, region=matrix.region)
+        self.permutation_dict = permutation_dict
+        self.block_permutation_dict = collections.defaultdict(list)
+        for in_row, out_row in self.permutation_dict.items():
+            bidx_in = in_row//self.shard_sizes[0]
+            self.block_permutation_dict[bidx_in].append(out_row)
+
+    async def __s3_key_to_row__(self, key, row_idx, loop=None):
+        MAGIC_LEN = 6
+        VERSION = 1
+        HEADER_LEN_SIZE = 2
+        HEADER_LEN_START = 8
+        HEADER_LEN_END = 9
+        HEADER_START = 10
+        row = None
+        if (loop == None):
+            loop = asyncio.get_event_loop()
+
+        session = aiobotocore.get_session(loop=loop)
+        async with session.create_client('s3', use_ssl=False, verify=False, region_name=self.region) as client:
+            n_tries = 0
+            max_n_tries = 5
+            bio = None
+            while bio is None and n_tries <= max_n_tries:
+                try:
+                    header_range_query = 'bytes={0}-{1}'.format(HEADER_LEN_START, HEADER_LEN_END)
+                    header_resp = await client.get_object(Bucket=self.bucket, Key=key, Range=header_range_query)["Body"]
+                    async with resp["Body"] as stream:
+                        header_len_bytes = await stream.read()
+                    header_size = struct.unpack("<H", header_len_bytes)[0]
+                    item_size = self.dtype.itemsize
+                    row_start = row_idx*(item_size * self.shape[1])
+                    row_end = (row_idx+1)*((item_size) * self.shape[1]) - 1
+                    query_start = HEADER_START + header_size + row_start
+                    query_end = HEADER_START + header_size + row_end
+                    row_range_query = 'bytes={0}-{1}'.format(query_start, query_end)
+                    resp = await client.get_object(Bucket=self.bucket, Key=key, Range=row_range_query)
+                    async with resp['Body'] as stream:
+                        matrix_bytes = await stream.read()
+                    row = np.frombuffer(matrix_bytes, dtype=self.dtype)
+                except Exception as e:
+                    raise
+                    n_tries += 1
+        if row is None:
+            raise Exception("S3 Read Failed")
+        return row
+
+        # convert rows in permutation dict to what block they belong to
+    async def get_block_async(self, loop, *block_idx):
+        # get block as usual
+        real_idxs = self.__block_idx_to_real_idx__(block_idx)
+        lambdav = self.matrix.lambdav
+        self.matrix.lambdav = 0.0
+        block_coro = self.matrix.get_block_async(loop, *block_idx)
+        block_task = asyncio.ensure_future(block_coro, loop=loop)
+        local_rep_dict = {}
+        if (block_idx[0] in block_permutation_dict):
+            rows_to_replace = block_permutation_dict[block[0]]
+            for (local_idx, global_idx_1), in rows_to_replace:
+                bidx = global_idx_1 // self.shard_sizes[0]
+                offset = globa_idx_1 % self.shard_sizes[0]
+                new_block_idx =  (bidx,) + block_idx[1:]
+                key = self.__shard_idx_to_key__(new_block_idx)
+                row_task = self.__s3_key_to_row__(self, key, offset, loop=loop)
+                row_task = asyncio.ensure_future(block, loop=loop)
+                local_rep_dict[local_idx] = row_task
+        block = await block_task
+        for local_idx, permute_row in local_rep_dict.items():
+            block[local_idx, :] = await local_rep_dict[local_idx]
+        self.matrix.lambdav = lambdav
+        if (len(set(block_idx)) == 1 and len(set(self.shape)) == 1):
+            idxs = np.diag_indices(block.shape[0])
+            print("adding lambdav")
+            block[idxs] += self.lambdav
+        return block
+
+    async def put_block_async(self, loop, data, *block_idx):
+        raise Exception("Cannot put_block to a pivoted matrix")
+
+    def put_block(self, data, *block_idx):
+        raise Exception("Cannot put_block to a pivoted matrix")
+
+    def __str__(self):
+        rep = "{0}({1})".format(self.__class__.__name__, self.key)
+        return rep
 
