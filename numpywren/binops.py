@@ -121,25 +121,38 @@ def decode_vector(Y, num_parity_blocks):
     return y_local
 
 def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
+    print(reduce_idxs)
+    print(block_pairs)
+    t1 = time.time()
     assert(len(Y.shape) == 1 or Y.shape[1] == 1)
     num_parity_blocks = kwargs['num_parity_blocks']
     breakdown = kwargs['breakdown']
+    print("1", time.time() - t1)
     if num_parity_blocks==0:
         shard_size = Y.shard_sizes[0]
         y_local = np.zeros(Y.shape)
-        if Y.block_idxs_not_exist!=[]:
-            print("ERROR, some blocks in bk missing")
-        block_idxs_exist = set([x[0] for x in Y.block_idxs_exist])
-        for r in block_idxs_exist:
+        # if Y.block_idxs_not_exist!=[]:
+        #     print("ERROR, some blocks in bk missing")
+        #     return
+        # block_idxs_exist = set([x[0] for x in Y.block_idxs_exist])
+        # for r in block_idxs_exist:
+        print("2", time.time() - t1)
+        for r in Y._block_idxs(0):
             y_local[r*shard_size:(r + 1)*shard_size] = Y.get_block(r, 0)
+            if r%50==0:
+                print("r, time", r, time.time() - t1)
     else:
         y_local = decode_vector(Y, num_parity_blocks)
-    print("y_local after decoding", y_local)
+    # print("y_local after decoding", y_local)
+    
+    t2 = time.time()
+    print ("phase 1 time", t2-t1)
     for bp in block_pairs:
         bidx_0, bidx_1 = bp
         XY_block = None
         X.dtype = dtype
         for r in reduce_idxs:
+            print ("At reduce id:", r)
             block1 = X.get_block(bidx_0, r)
             sidx,eidx = Y.blocks[r]
             sidx, eidx = sidx
@@ -152,7 +165,9 @@ def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
             else:
                 XY_block = XY_block + block1.dot(y_block)
         XY.put_block(XY_block, bidx_0, bidx_1)
-        return XY_block
+    print ("phase 2 time", time.time()-t2)
+    return 0
+
 
 def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
     print(reduce_idxs)
@@ -170,6 +185,8 @@ def _gemm_remote_0(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
                 XY_block = block1.dot(block2)
             else:
                 XY_block += block1.dot(block2)
+        # print("block1-block2 shape", block1.shape, block2.shape)
+        # print("output block shape", XY_block.shape)
         XY.put_block(XY_block, bidx_0, bidx_1)
 
 def _gemm_remote_1(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
@@ -298,22 +315,24 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         futures = pwex.map(pywren_run, chunked_blocks)
         e = time.time()
         print("Pwex Map Time {0}".format(e - s))
+        print("Number of futures:", len(futures))
     if (local):
         return XY
     while (True):
         fs_dones, fs_notdones = pywren.wait(futures, 3)
         result_count = len(fs_dones)
-        print(result_count)
+        print("workers done, time passed since mapping", result_count, time.time() - e)
         if (result_count >= straggler_thresh*len(futures)):
-            [f.result() for f in fs_dones]
-            # for f in fs_dones:
-            #     try:
-            #         f.result()
-            #     except Exception as e:
-            #         print(e)
-            #         pass
+            # [f.result() for f in fs_dones]
+            for f in fs_dones:
+                try:
+                    f.result()
+                except Exception as e:
+                    print(e)
+                    pass
             break
-        time.sleep(3)
+        time.sleep(2)
+        # print("Time passed since mapping", time.time() - e)
     return XY
 
 # matrix vector multiply
