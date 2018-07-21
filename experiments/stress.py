@@ -33,6 +33,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     # set up logging
     logger = logging.getLogger()
     region = wc.default()["account"]["aws_region"]
+    print("REGION", region)
     for key in logging.Logger.manager.loggerDict:
         logging.getLogger(key).setLevel(logging.CRITICAL)
     logger.setLevel(logging.DEBUG)
@@ -53,13 +54,13 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     if standalone:
         extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_ACCESS_KEY_ID"], "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
         config = wc.default()
-        config['runtime']['s3_bucket'] = 'numpywrenpublic'
+        config['runtime']['s3_bucket'] = 'numpywrenpublic-us-east-1'
         config['runtime']['s3_key'] = 'pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz'
         pwex = pywren.standalone_executor(config=config)
     else:
         extra_env = {"AWS_DEFAULT_REGION":region}
         config = wc.default()
-        config['runtime']['s3_bucket'] = 'numpywrenpublic'
+        config['runtime']['s3_bucket'] = 'numpywrenpublic-us-east-1'
         config['runtime']['s3_key'] = 'pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz'
         pwex = pywren.default_executor(config=config)
     if (warmup):

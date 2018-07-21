@@ -712,7 +712,6 @@ class LambdaPackProgram(object):
           ready_children = []
           for child in children:
               operator_expr = self.program.get_expr(child[0])
-              self.control_plane.client.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), "STILL IN POST OP")
               my_child_edge = self._edge_key(expr_idx, var_values, *child)
               child_edge_sum_key = self._node_edge_sum_key(*child)
               # redis transaction should be atomic
@@ -750,7 +749,6 @@ class LambdaPackProgram(object):
             # TODO: Re-add priorities here
             message_body = json.dumps([int(child[0]), {key.name: int(val) for key, val in child[1].items()}])
             resp = client.send_message(QueueUrl=self.queue_urls[0], MessageBody=message_body)
-            self.control_plane.client.set("{0}_sqs_meta".format(self._edge_key(expr_idx, var_values, *child)), str(resp))
 
           inst_block.end_time = time.time()
           inst_block.clear()

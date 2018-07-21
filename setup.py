@@ -21,7 +21,7 @@ setup(
     author_email='vaishaal@gmail.com',
     packages=find_packages(),
     install_requires=[
-        'Click', 'aiobotocore==0.6.0', 'aiohttp==3.1.1', 'boto3==1.6.17', 'PyYAML',
+        'Click', 'PyYAML',
         'enum34', 'flaky', 'glob2',
         'watchtower', 'tblib', 'pywren' # it's nuts that we need both botos
     ],
