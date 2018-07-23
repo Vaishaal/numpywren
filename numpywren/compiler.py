@@ -87,11 +87,8 @@ class Return(ast.AST):
 class FuncDef(ast.AST):
     _fields = ['name', 'args', 'body']
 
-class NumpywrenRead(ast.AST):
-    _fields = ['matrix_block']
-
-class NumpywrenWrite(ast.AST):
-    _fields = ['matrix_block']
+class AssignStmt(ast.AST):
+    _fields = ['target', 'value']
 
 class BigMatrixBlock(ast.AST):
     _fields = ['name', 'bigm', 'bidx']

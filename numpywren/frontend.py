@@ -86,7 +86,7 @@ class ConstIntType(LinearIntType, Const):
 class ConstFloatType(FloatType, Const):
     pass
 
-class IndexExpr(LambdaPackType):
+class IndexExprType(LambdaPackType):
     pass
 
 class BigMatrixType(LambdaPackType):
@@ -133,6 +133,8 @@ class If(ast.AST):
 class Attr(ast.AST):
     _fields = ['obj', 'attr_name']
 
+class Stargs(ast.AST):
+    _fields = ['args']
 
 class For(ast.AST):
     _fields = ['var', 'min', 'max', 'step', 'body']
@@ -147,16 +149,16 @@ class BigMatrixBlock(ast.AST):
     _fields = ['name', 'bigm', 'bidx', 'type']
 
 class RemoteCall(ast.AST):
-    _fields = ['compute', 'args', 'kwargs', 'type']
+    _fields = ['compute', 'output', 'args', 'kwargs', 'type']
 
 class Reduction(ast.AST):
-    _fields = ['var', 'start', 'end', 'expr', 'body', 'type']
+    _fields = ['var', 'min', 'max', 'expr', 'b_fac', 'remote_call', 'recursion']
 
 class IndexExpr(ast.AST):
     _fields = ['matrix_name', 'indices']
 
 class Slice(ast.AST):
-    _fields = ['low', 'high', 'step']
+    _fields = ['low', 'high', 'step', 'type']
 
 class Return(ast.AST):
     _fields = ['value', 'type']
@@ -167,8 +169,26 @@ class ReducerCall(ast.AST):
 
 
 
-
 REDUCTION_SPECIALS = ["level", "reduce_args", "reduce_next"]
+
+def unify(type_list):
+    if (len(type_list) == 1): return type_list[0]
+    if (len(type_list) < 3):
+        t0 = type_list[0]
+        t1 = type_list[0]
+        print(t0,t1)
+        if (issubclass(t0, t1)):
+            return t1
+        elif (issubclass(t1, t0)):
+            return t0
+        else:
+            raise exceptions.LambdaPackTypeException("Non unifiable types {0} vs {1}".format(type_list))
+    else:
+        t0,t1 = type_list[0], type_list[1]
+        t01 = unify([t0, t1])
+        return unify([t01] + type_list[2:])
+
+
 
 class LambdaPackParse(ast.NodeVisitor):
     """
@@ -177,6 +197,9 @@ class LambdaPackParse(ast.NodeVisitor):
     def __init__(self):
         self.in_if = False
         self.in_else = False
+        self.for_loops = 0
+        self.max_for_loop_id = -1
+        self.current_for_loop = -1
         self.decl_dict = {}
         self.return_node = None
         self.in_reduction = False
@@ -255,7 +278,6 @@ class LambdaPackParse(ast.NodeVisitor):
         assert node.attr in REDUCTION_SPECIALS, "Only a few special reduction special function calls are valid : {0}".format(REDUCTION_SPECIALS)
         return ReducerCall(name, node.attr, None, None)
 
-
     def visit_Call(self, node):
         func = self.visit(node.func)
         kwargs = {x.arg : self.visit(x.value) for x in node.keywords}
@@ -273,7 +295,8 @@ class LambdaPackParse(ast.NodeVisitor):
                     node_func_obj = eval(func.name)
                     if (callable(node_func_obj)):
                         args = [self.visit(x) for x in node.args]
-                        return RemoteCall(node_func_obj, args, None, None)
+                        print(node.args, args)
+                        return RemoteCall(node_func_obj, None, args, None, None)
                 except NameError:
                     pass
 
@@ -298,13 +321,8 @@ class LambdaPackParse(ast.NodeVisitor):
                 self.decl_dict[lhs.name] = rhs
             return assign
         elif isinstance(rhs, RemoteCall):
-            lhs = [self.visit(x) for x in node.targets]
-            return Assign(lhs, rhs)
-
-
-
-
-
+            lhs = self.visit(node.targets[0])
+            return RemoteCall(rhs.compute, lhs, rhs.args, rhs.kwargs, rhs.type)
         else:
             raise NotImplementedError("Only assignments of expressions and remote calls supported")
 
@@ -330,21 +348,31 @@ class LambdaPackParse(ast.NodeVisitor):
 
     def visit_FunctionDef(self, func):
         args = [x.arg for x in func.args.args]
-        annotations = [locate(x.annotation.id) for x in func.args.args]
+        annotations = [eval(x.annotation.id) for x in func.args.args]
         name = func.name
         assert isinstance(func.body, list)
         body = [self.visit(x) for x in func.body]
         #assert func.returns is not None, "LambdaPack functions must have explicit return type"
         if (func.returns is None):
             return_type = None
+        elif isinstance(func.returns, ast.Tuple):
+            return_type = tuple([eval(x.id) for x in func.returns.elts])
+        elif isinstance(func.returns, ast.Name):
+            return_type = eval(func.returns.id)
         else:
-            return_type = locate(func.returns.id)
+            raise exceptions.LambdaPackParsingException("unsupported return format")
 
         return FuncDef(func.name, args, body, annotations, return_type)
 
+    def visit_Starred(self, node):
+        print("STARGS")
+        return Stargs(self.visit(node.value))
 
     def visit_For(self, node):
         iter_node = node.iter
+        prev_for = self.current_for_loop
+        self.for_loops += 1
+        self.current_for_loop += 1
         is_call = isinstance(iter_node, ast.Call)
         if (is_call):
             is_range = iter_node.func.id == "range"
@@ -369,6 +397,9 @@ class LambdaPackParse(ast.NodeVisitor):
         body = [self.visit(x) for x in node.body]
         var = node.target.id
         self.decl_dict[var] = iter_node
+        self.current_for_loop = prev_for
+        self.for_loops -= 1
+        self.current_for_loop -= 1
         return For(var, start, end, step, body)
 
     def visit_Subscript(self, node):
@@ -419,18 +450,24 @@ class LambdaPackParse(ast.NodeVisitor):
             step = self.visit(node.step)
         else:
             step = None
-        return Slice(low, high, step)
+        return Slice(low, high, step, None)
 
-
+    def visit_Expr(self, node):
+        return self.visit(node.value)
 
 
     def visit_With(self, node):
+        #TODO: this is just a giant hack right now figure out whats the best way to express this with JRK later
+        reduction_err =\
         '''
         Malford reduction clause, reductions are of the form:
-            with reduction(<REDUCTION_EXPR>, var=<VAR>, start=<START_EXPR>, end=<END_EXPR>) as r:
-                <BLOCK>
-                <BLOCK>
+            with reduction(<REDUCTION_EXPR>, var=<VAR>, start=<START_EXPR>, end=<END_EXPR>, bfac=<BFAC>) as r:
+                <OUT_EXPR>, <OTHER_EXPR> = <REMOTE CALL>
+                r.reduce_next(<OUT_EXPR>)
         '''
+        if (self.in_reduction):
+            raise exceptions.LambdaPackParsingException("nested reduction not supported")
+
         if (len(node.items) != 1):
             raise exceptions.LambdaPackParsingException(reduction_err)
         with_item = node.items[0]
@@ -445,13 +482,20 @@ class LambdaPackParse(ast.NodeVisitor):
         self.current_reduction_object = self.visit(with_item.optional_vars)
         self.decl_dict[self.current_reduction_object.name] = self.current_reduction_object
         kwargs = {x.arg: self.visit(x.value) for x in with_item.context_expr.keywords}
-        if (set(kwargs.keys()) != set(["expr","start","end","var"])):
+        if (set(kwargs.keys()) != set(["expr","start","end","var","b_fac"])):
             raise exceptions.LambdaPackParsingException(reduction_err)
-        body = [self.visit(x) for x in node.body]
-        self.in_reduction = False
-        self.reduction_var = None
-        print(kwargs)
-        return Reduction(kwargs["var"], kwargs["start"], kwargs["end"], kwargs["expr"], body, None)
+
+        if (len(node.body) != 2):
+            raise exceptions.LambdaPackParsingException(reduction_err)
+
+        reduction_op = self.visit(node.body[0])
+        if (not isinstance(reduction_op, RemoteCall)):
+            raise exceptions.LambdaPackParsingException(reduction_err)
+        tail_recursive_call = self.visit(node.body[1])
+        print(node.body[1])
+        if (not isinstance(tail_recursive_call, ReducerCall)):
+            raise exceptions.LambdaPackParsingException(reduction_err)
+        return Reduction(kwargs["var"].name, kwargs["start"], kwargs["end"], kwargs["expr"], kwargs["b_fac"], reduction_op, tail_recursive_call)
 
 
 
@@ -460,7 +504,6 @@ class LambdaPackParse(ast.NodeVisitor):
 def python_type_to_lp_type(p_type, const=False):
     if (p_type is None):
         return NullType
-
     if (issubclass(p_type, int)):
         if (const):
             return ConstIntType
@@ -502,9 +545,13 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         annotations = [python_type_to_lp_type(x, const=True) for x in func.arg_types]
 
         args = [x for x in func.args]
-        self.return_type = python_type_to_lp_type(func.return_type)
+        if (isinstance(func.return_type, tuple)):
+            self.return_type = tuple([python_type_to_lp_type(x) for x in func.return_type])
+        else:
+            self.return_type = python_type_to_lp_type(func.return_type)
         for arg,anot in zip(args, annotations):
             self.decl_types[arg] = anot
+        print(self.decl_types)
         body = [self.visit(x) for x in func.body]
         if (self.return_node_type is None):
             self.return_node_type = NullType
@@ -519,14 +566,16 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
             raise LambdaPackTypeException("Refs must be typed")
         return Ref(node.name, decl_type)
 
+
     def visit_Assign(self, node):
         rhs = self.visit(node.rhs)
-        lhs = node.lhs
-        if (node.lhs.name in self.decl_types):
-            is_subclass = issubclass(rhs.type, self.decl_types[lhs.name])
-            is_superclass  = issubclass(self.decl_types[lhs.name], rhs.type)
-            if ((not is_subclass) and (not is_superclass)):
-                raise exceptions.LambdaPackTypeException("Variables must be of unifiable type, {0} is type {1} but was assigned {2}".format(lhs.name, self.decl_types[lhs.name], rhs.type))
+        lhs_all = node.lhs
+        for lhs in lhs_all:
+            if (lhs.name in self.decl_types):
+                is_subclass = issubclass(rhs.type, self.decl_types[lhs.name])
+                is_superclass  = issubclass(self.decl_types[lhs.name], rhs.type)
+                if ((not is_subclass) and (not is_superclass)):
+                    raise exceptions.LambdaPackTypeException("Variables must be of unifiable type, {0} is type {1} but was assigned {2}".format(lhs.name, self.decl_types[lhs.name], rhs.type))
         else:
             self.decl_types[lhs.name] = rhs.type
         lhs = self.visit(node.lhs)
@@ -539,6 +588,19 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         else_body = [self.visit(x) for x in node.elseBody]
         return If(cond, body, else_body)
 
+    def visit_ReducerCall(self, node):
+        if (node.args is not None):
+            args = [self.visit(x) for x in node.args]
+        else:
+            args = None
+        if (node.function == "reduce_args" or node.function == "level"):
+            out_type = LinearIntType
+        elif (node.function == "reduce_next"):
+            out_type = NullType
+        else:
+            raise exceptions.LambdaPackTypeException("unsupported reduction feature")
+
+        return ReducerCall(node.name, node.function, args, out_type)
 
     def visit_BinOp(self, node):
         right = self.visit(node.right)
@@ -620,9 +682,63 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         return BinOp(node.op, left, right, out_type)
 
     def visit_Return(self, node):
-        r_val = self.visit(node.value)
-        self.return_node_type = r_val.type
-        return Return(r_val, r_val.type)
+        r_vals = []
+        if (isinstance(node.value, list)):
+            for v in node.value:
+                r_vals.append(self.visit(v))
+        else:
+            r_vals.append(self.visit(node.value))
+        self.return_node_type = unify([x.type for x in r_vals])
+        return Return(r_vals, self.return_node_type)
+
+    def visit_IndexExpr(self, node):
+        idxs = [self.visit(x) for x in node.indices]
+        print(idxs)
+        out_type = unify([x.type for x in idxs])
+        if (not issubclass(out_type, LinearIntType)):
+            raise exceptions.LambdaPackTypeException("Indices in IndexExprs must all of type LinearIntType")
+        return IndexExpr(node.matrix_name, node.indices)
+
+
+    def visit_Stargs(self, node):
+       args = self.visit(node.args)
+       return Stargs(args)
+
+    def visit_Slice(self, node):
+        if (node.low is not None):
+            low = self.visit(node.low)
+            low_type = low.type
+        else:
+            low = None
+            low_type = LinearIntType
+        if (node.high is not None):
+            high = self.visit(node.high)
+            high_type = high.type
+        else:
+            high = None
+            high_type = LinearIntType
+        if (node.step is not None):
+            step = self.visit(node.step)
+            step_type = step.type
+        else:
+            step = None
+            step_type = LinearIntType
+        out_type = unify([low_type, high_type, step_type])
+        return Slice(low, high, step, out_type)
+
+    def visit_RemoteCall(self, node):
+        args = [self.visit(x) for x in node.args]
+        if (isinstance(node.output, list)):
+            outs = [self.visit(x) for x in node.output]
+        else:
+            outs = [self.visit(node.output)]
+
+        if (node.kwargs is not None):
+            kwargs = {k: self.visit(v) for (k,v) in node.kwargs.items()}
+        else:
+            kwargs = None
+
+        return RemoteCall(node.compute, outs, args, kwargs, type)
 
     def visit_Mfunc(self, node):
         vals = self.visit(node.e)
@@ -660,11 +776,17 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         step = self.visit(node.step)
         body = [self.visit(x) for x in node.body]
         return For(node.var, min_idx, max_idx, step, body)
-
-
-
-
-
+    def visit_Reduction(self, node):
+        self.decl_types[node.var] = LinearIntType
+        min_idx = self.visit(node.min)
+        max_idx = self.visit(node.max)
+        expr = self.visit(node.expr)
+        if (not isinstance(expr, IndexExpr)):
+            raise LambdaPackTypeExceptions("Reduction Expr must be of IndexExpr type")
+        b_fac = self.visit(node.b_fac)
+        remote_call = self.visit(node.remote_call)
+        recursion = self.visit(node.recursion)
+        return Reduction(node.var, min_idx, max_idx, expr, b_fac, remote_call, recursion)
 
 
 
@@ -686,26 +808,32 @@ def lpcompile(function):
 def qr(*blocks):
     return np.linalg.qr(np.hstack(blocks))
 
+def qr_trailing_update(A, B):
+    return 0
+
 #@lpcompile
-def TSQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int):
+def TSQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int) -> (BigMatrix, BigMatrix):
     for i in range(N):
         Qs[0,i], Rs[0,i] = qr(A[i, :])
-    with reducer(expr=Rs[i,j], var=i, start=0, end=N) as r:
-        Qs[r.level, i], Rs[r.level, i] = qr(*r.reduce_args(2))
+    with reducer(expr=Rs[i,j], var=j, start=0, end=N, b_fac=2) as r:
+        Qs[r.level, i], Rs[r.level, i] = qr(*r.reduce_args)
         r.reduce_next(R[r.level, i])
     return Qs, Rs
 
 lpcompile(TSQR)
 
 #@lpcompile
-def CAQR(A, Qs, Rs, N, M):
-    ''' CAQR of a an N x M matrix '''
-    Qs[i,:],Rs[i,:] = TSQR(A[:, 0])
+def CAQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int, M:int) -> (BigMatrix, BigMatrix):
+    Qs[0,:],Rs[0,:] = TSQR(A[:, 0])
     for j in range(N):
         for z in range(M):
-            S[0,z,j] = qr_trailing_update(A[j,z], Qs[i, 0])
+            S[0,z,j] = qr_trailing_update(A[j,z], Qs[j, 0])
+
     for i in range(N):
         Qs[i,:],Rs[i,:] = TSQR(A[:, i])
         for j in range(N):
             for z in range(M):
                 S[i+1,z,j] = qr_trailing_update(S[i,j,z], Qs[i, 0])
+    return Qs, Rs
+
+lpcompile(CAQR)
