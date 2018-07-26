@@ -325,12 +325,12 @@ def lpcompile(function, inputs, outputs):
     def func(*args, **kwargs):
         logger.warning("Source code : \n{}\n".format(inspect.getsource(function)))
         function_ast = ast.parse(inspect.getsource(function)).body[0]
-        print("Python AST:\n{}\n".format(astor.dump(function_ast)))
+        #print("Python AST:\n{}\n".format(astor.dump(function_ast)))
         parser = NumpywrenParse(args, kwargs, inputs, outputs)
         lp_ast = parser.visit(function_ast)
-        logger.warning("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
+        #logger.warning("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
         program = BackendGenerator.generate_program(lp_ast)
-        logger.warning("Program: {0}".format(program))
+        #logger.warning("Program: {0}".format(program))
         return program
     return func
 
@@ -1084,14 +1084,14 @@ def backward_sub(x:BigMatrix, L:BigMatrix, b:BigMatrix, S:BigMatrix, N:int):
 def cholesky(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
     # handle first loop differently
     O[0,0] = cholesky(I[0,0])
-    for j in range(1,N - truncate):
+    for j in range(1,N):
         O[j,0] = trsm(O[0,0], I[j,0])
         for k in range(1,j+1):
             S[1,j,k] = syrk(I[j,k], O[j,0], O[k,0])
 
     for i in range(1,N - truncate):
         O[i,i] = cholesky(S[i,i,i])
-        for j in range(i+1,N - truncate):
+        for j in range(i+1,N):
             O[j,i] = trsm(O[i,i], S[i,j,i])
             for k in range(i+1,j+1):
                 S[i+1,j,k] = syrk(S[i,j,k], O[j,i], O[k,i])
@@ -1109,23 +1109,24 @@ def _chol(X, out_bucket=None, truncate=0):
     O = BigMatrix("Cholesky({0})".format(X.key), shape=(X.shape[0], X.shape[0]), shard_sizes=(X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
     O.parent_fn = dill.dumps(constant_zeros)
     block_len = len(X._block_idxs(0))
+    print("N", int(np.ceil(X.shape[0]/X.shard_sizes[0])))
+    print("truncate", truncate)
     program = lpcompile(cholesky, inputs=["I"], outputs=["O"])(O=O,I=X,S=S,N=int(np.ceil(X.shape[0]/X.shard_sizes[0])), truncate=truncate)
+    print(program)
     logging.debug("Starters: " + str(program.find_starters()))
     starters = program.find_starters()
     logging.debug("Terminators: " + str(program.find_terminators()))
     operator_expr = program.get_expr(starters[0][0])
     inst_block = operator_expr.eval_operator(starters[0][1])
-
-    #print("program size", len(program.unroll_program()))
     instrs = inst_block.instrs
     program.starters = starters
     return program, S, O
 
 if __name__ == "__main__":
-    N = 65536*32
+    N = 65536*16*2
     print("Problem size", N)
     I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
-    program, S, O = _chol(I)
+    program, S, O = _chol(I, truncate=(767))
     print(program)
     s = time.time()
     c = program.get_children(0, {})
@@ -1139,6 +1140,7 @@ if __name__ == "__main__":
     e = time.time()
     print("2nd cholesky child time: {0}".format(e - s))
     print("2nd cholesky num children: {0}".format(len(c)))
+    #print("program size", len(program.unroll_program()))
     #print("2nd cholesky children: {0}".format(c))
 
     #L = BigMatrix("SolveInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)

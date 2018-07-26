@@ -22,7 +22,9 @@ runcmd:
   - make -C redis-stable
   - [ sudo, -Hu, ec2-user, sh, -c, "mkdir /etc/redis"]
   - [ sudo, -Hu, ec2-user, sh, -c, "mkdir /var/redis"]
-
+  - [ sudo, -Hu, ec2-user, sh, -c, 'sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"']
+  - [ sudo, -Hu, ec2-user, sh, -c, 'sudo sysctl -w net.ipv4.tcp_tw_reuse="1"']
+  - [ sudo, -Hu, ec2-user, sh, -c, 'sudo sysctl -w net.ipv4.tcp_tw_recycle="1"']
 
 
 write_files:

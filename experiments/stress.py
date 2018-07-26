@@ -21,6 +21,7 @@ import pywren.wrenconfig as wc
 from numpywren import compiler
 import numpywren as npw
 import dill
+import traceback
 
 
 
@@ -29,8 +30,9 @@ INFO_FREQ = 5
 
 ''' OSDI numpywren optimization effectiveness experiments '''
 
-def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify):
+def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify, matrix_exists):
     # set up logging
+    invoke_executor = fs.ThreadPoolExecutor(1)
     logger = logging.getLogger()
     region = wc.default()["account"]["aws_region"]
     print("REGION", region)
@@ -49,8 +51,6 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     logger.addHandler(fh)
     logger.addHandler(ch)
     logger.info("Logging to {0}".format(log_file))
-
-    X = np.random.randn(problem_size, 1)
     if standalone:
         extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_ACCESS_KEY_ID"], "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
         config = wc.default()
@@ -63,41 +63,71 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         config['runtime']['s3_bucket'] = 'numpywrenpublic-us-east-1'
         config['runtime']['s3_key'] = 'pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz'
         pwex = pywren.default_executor(config=config)
-    if (warmup):
-        def warmup_fn(x):
-            time.sleep(200)
-        futures = pwex.map(warmup_fn, range(max_cores))
-        pywren.wait(futures)
-    shard_sizes = [shard_size, 1]
-    X_sharded = BigMatrix("cholesky_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False)
-    shard_matrix(X_sharded, X)
-    print("Generating PSD matrix...")
-    t = time.time()
-    print(X_sharded.shape)
-    XXT_sharded = binops.gemm(pwex, X_sharded, X_sharded.T, overwrite=False)
-    e = time.time()
-    print("GEMM took {0}".format(e - t))
+
+    if (not matrix_exists):
+        X = np.random.randn(problem_size, 1)
+        shard_sizes = [shard_size, 1]
+        X_sharded = BigMatrix("cholesky_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False)
+        shard_matrix(X_sharded, X)
+        print("Generating PSD matrix...")
+        t = time.time()
+        print(X_sharded.shape)
+        XXT_sharded = binops.gemm(pwex, X_sharded, X_sharded.T, overwrite=False)
+        e = time.time()
+        print("GEMM took {0}".format(e - t))
+    else:
+        X_sharded = BigMatrix("cholesky_test_{0}_{1}".format(problem_size, shard_size), autosqueeze=False)
+        key_name = binops.generate_key_name_binop(X_sharded, X_sharded.T, "gemm")
+        XXT_sharded = BigMatrix(key_name)
     XXT_sharded.lambdav = problem_size*10
-    print(XXT_sharded.get_block(0,0))
     if (verify):
         A = XXT_sharded.numpy()
         print("Computing local cholesky")
         L = np.linalg.cholesky(A)
 
-    instructions, trailing, L_sharded = compiler._chol(XXT_sharded)
+    t = time.time()
+    instructions, trailing, L_sharded = compiler._chol(XXT_sharded, truncate=truncate)
     pipeline_width = args.pipeline
     if (priority):
-        num_priorities = 5
+        num_priorities = 3
     else:
         num_priorities = 1
     if (lru):
         cache_size = 5
     else:
         cache_size = 0
-
     pywren_config = pwex.config
     config = npw.config.default()
     program = lp.LambdaPackProgram(instructions, executor=pywren.lambda_executor, pywren_config=pywren_config, num_priorities=num_priorities, eager=eager, config=config)
+    warmup_start = time.time()
+    if (warmup):
+        warmup_sleep = 250
+        def warmup_fn(x):
+            program.incr_up(1)
+            time.sleep(warmup_sleep)
+            program.decr_up(1)
+        print("Warming up...")
+        futures = pwex.map(warmup_fn, range(max_cores))
+        last_spinup = time.time()
+        while(True):
+            if ((time.time() - last_spinup) > 0.75*warmup_sleep):
+                print("Calling pwex.map..")
+                futures = pwex.map(warmup_fn, range(max_cores))
+                last_spinup = time.time()
+            time.sleep(2)
+            if (program.get_up() is None):
+                up_workers = 0
+            else:
+                up_workers = int(program.get_up())
+            print("{0} workers alive".format(up_workers))
+            if (up_workers >= max_cores):
+                time.sleep(warmup_sleep)
+                break
+
+    warmup_end = time.time()
+    print("Warmup took {0} seconds".format(warmup_end - warmup_start))
+    e = time.time()
+    print("Program compile took {0} seconds".format(e - t))
     print("program.hash", program.hash)
     REDIS_CLIENT = program.control_plane.client
     done_counts = []
@@ -150,23 +180,27 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     program.start()
     t = time.time()
     logger.info("Starting with {0} cores".format(start_cores))
-    #job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout)
-    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=extra_env)
+    invoker = fs.ThreadPoolExecutor(1)
+    all_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=extra_env))
+    #print(all_future_futures.result())
+    all_futures = [all_future_futures]
     # print([f.result() for f in all_futures])
     start_time = time.time()
     last_run_time = start_time
+    print(program.program_status())
+    print("QUEUE URLS", len(program.queue_urls))
     try:
-
         while(program.program_status() == lp.PS.RUNNING):
+            times.append(int(time.time()))
+            time.sleep(log_granularity)
             curr_time = int(time.time() - start_time)
             p = program.get_progress()
             if (p is None):
-               continue
+                print("no progress...")
+                continue
             else:
                p = int(p)
             max_pc = p
-            times.append(int(time.time()))
-            time.sleep(log_granularity)
             waiting = 0
             running = 0
             for i, queue_url in enumerate(program.queue_urls):
@@ -220,28 +254,43 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             writes.append(current_gbytes_write)
 
             gflops_rate = flops[-1]/(times[-1] - times[0])
+            greads_rate = reads[-1]/(times[-1] - times[0])
+            gwrites_rate = writes[-1]/(times[-1] - times[0])
+            avg_workers = np.mean(up_workers_counts)
+            if (len(flops) > 120):
+                gflops_rate_5_min_window = (flops[-1] - flops[-100])/(times[-1] - times[-100])
+                gread_rate_5_min_window = (reads[-1] - reads[-100])/(times[-1] - times[-100])
+                gwrite_rate_5_min_window = (writes[-1] - writes[-100])/(times[-1] - times[-100])
+                workers_5_min_window = np.mean(up_workers_counts[-100:])
+            else:
+                gflops_rate_5_min_window =  "N/A"
+                gread_rate_5_min_window = "N/A"
+                gwrite_rate_5_min_window = "N/A"
+                workers_5_min_window = "N/A"
 
-            print("{0}: Total GFLOPS {1}, Total GBytes Read {2}, Total GBytes Write {3}, Gflops Rate {4}".format(curr_time, current_gflops, current_gbytes_read, current_gbytes_write, gflops_rate))
+            print("{0}: Total GFLOPS {1}, Total GBytes Read {2}, Total GBytes Write {3}".format(curr_time, current_gflops, current_gbytes_read, current_gbytes_write))
+            print("{0}: Average GFLOPS rate {1}, Average GBytes Read rate {2}, Average GBytes Write  rate {3}, Average Worker Count {4}".format(curr_time, gflops_rate, greads_rate, gwrites_rate, avg_workers))
+            print("{0}: 5 min GFLOPS rate {1}, 5 min GBytes Read rate {2}, 5 min GBytes Write  rate {3}, 5 min Worker Count {4}".format(curr_time, gflops_rate_5_min_window, gread_rate_5_min_window, gwrite_rate_5_min_window, workers_5_min_window))
 
             time_since_launch = time.time() - last_run_time
             if (autoscale_policy == "dynamic"):
                 if (time_since_launch > launch_granularity and up_workers < np.ceil(waiting*0.5/pipeline_width) and up_workers < max_cores):
                     cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
-                    new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=extra_env)
+                    new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=extra_env))
                     last_run_time = time.time()
                     # check if we OOM-erred
                    # [x.result() for x in all_futures]
-                    all_futures.extend(new_futures)
+                    all_futures.extend(new_future_futures)
             elif (autoscale_policy == "constant_timeout"):
-                if (time_since_launch > (0.99*timeout)):
+                if (time_since_launch > (0.8*timeout)):
                     cores_to_launch = max_cores
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
-                    new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=extra_env)
+                    new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=extra_env))
                     last_run_time = time.time()
                     # check if we OOM-erred
                    # [x.result() for x in all_futures]
-                    all_futures.extend(new_futures)
+                    all_futures.append(new_future_futures)
             else:
                 raise Exception("unknown autoscale policy")
             exp["time_steps"] += 1
@@ -251,6 +300,12 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     except KeyboardInterrupt:
         exp["failed"] = True
         program.stop()
+        pass
+    except Exception as e:
+        traceback.print_exc()
+        exp["failed"] = True
+        program.stop()
+        raise
         pass
     print(program.program_status())
     exp["all_futures"] = all_futures
@@ -281,7 +336,7 @@ if __name__ == "__main__":
     parser.add_argument('--max_cores', type=int, default=32)
     parser.add_argument('--start_cores', type=int, default=32)
     parser.add_argument('--pipeline', type=int, default=1)
-    parser.add_argument('--timeout', type=int, default=200)
+    parser.add_argument('--timeout', type=int, default=180)
     parser.add_argument('--autoscale_policy', type=str, default="constant_timeout")
     parser.add_argument('--log_granularity', type=int, default=1)
     parser.add_argument('--launch_granularity', type=int, default=60)
@@ -292,8 +347,9 @@ if __name__ == "__main__":
     parser.add_argument('--standalone', action='store_true')
     parser.add_argument('--warmup', action='store_true')
     parser.add_argument('--verify', action='store_true')
+    parser.add_argument('--matrix_exists', action='store_true')
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify, args.matrix_exists)
 
 
 

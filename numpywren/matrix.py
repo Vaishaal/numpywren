@@ -499,15 +499,11 @@ class BigMatrix(object):
             n_tries = 0
             max_n_tries = 5
             bio = None
-            while bio is None and n_tries <= max_n_tries:
-                try:
-                    resp = await client.get_object(Bucket=self.bucket, Key=key)
-                    async with resp['Body'] as stream:
-                        matrix_bytes = await stream.read()
-                    bio = io.BytesIO(matrix_bytes)
-                except Exception as e:
-                    raise
-                    n_tries += 1
+            backoff = 1
+            resp = await client.get_object(Bucket=self.bucket, Key=key)
+            async with resp['Body'] as stream:
+                matrix_bytes = await stream.read()
+            bio = io.BytesIO(matrix_bytes)
         if bio is None:
             raise Exception("S3 Read Failed")
         return bio

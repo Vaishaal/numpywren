@@ -8,7 +8,7 @@ s3:
     lifespan: 1
 
 runtime:
-    bucket: numpywrenpublic
+    bucket: numpywrenpublicz
     s3_key: pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz
 
 control_plane:

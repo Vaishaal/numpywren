@@ -235,7 +235,7 @@ class RemoteRead(RemoteInstruction):
         self.bidxs = bidxs
         self.result = None
         self.cache_hit = False
-        self.MAX_READ_TIME = 10
+        self.MAX_READ_TIME = 15
         self.read_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     #@profile
@@ -254,7 +254,7 @@ class RemoteRead(RemoteInstruction):
               e = time.time()
             else:
               t = time.time()
-              backoff = 0.2
+              backoff = 1
               while (True):
                 try:
                   self.result = await asyncio.wait_for(self.matrix.get_block_async(loop, *self.bidxs), self.MAX_READ_TIME)
@@ -287,7 +287,7 @@ class RemoteWrite(RemoteInstruction):
         self.bidxs = bidxs
         self.data_instr = data_instr
         self.result = None
-        self.MAX_WRITE_TIME = 10
+        self.MAX_WRITE_TIME = 15
         self.write_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     #@profile
@@ -301,7 +301,7 @@ class RemoteWrite(RemoteInstruction):
             if (self.cache != None):
               # write to the cache
               self.cache[cache_key] = self.data_instr.result
-            backoff = 0.2
+            backoff = 1
             while (True):
               try:
                 self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs), self.MAX_WRITE_TIME)
@@ -631,15 +631,16 @@ class LambdaPackProgram(object):
        Maintains global state information
     '''
     def __init__(self, program, config, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG,
-                 num_priorities=1, io_rate=3e7, flop_rate=20e9, eager=False,
+                 num_priorities=3, io_rate=3e7, flop_rate=20e9, eager=False,
                  num_program_shards=5000):
-        pwex = executor(config=pywren_config)
         self.config = config
         self.pywren_config = pywren_config
         self.config = config
         self.executor = executor
         self.bucket = pywren_config['s3']['bucket']
         self.program = program
+        #HARDCODE FOR top500
+        num_priorities = 3
         self.max_priority = num_priorities - 1
         self.io_rate = io_rate
         self.flop_rate = flop_rate
@@ -688,7 +689,15 @@ class LambdaPackProgram(object):
     def set_profiling_info(self, inst_block, expr_idx, var_values):
         byte_string = dill.dumps(inst_block)
         client = boto3.client('s3', region_name=self.control_plane.region)
-        client.put_object(Bucket=self.bucket, Key="lambdapack/{0}/{1}_{2}".format(self.hash, expr_idx, var_values), Body=byte_string)
+        backoff = 1
+        while(True):
+          try:
+            client.put_object(Bucket=self.bucket, Key="lambdapack/{0}/{1}_{2}".format(self.hash, expr_idx, var_values), Body=byte_string)
+            break
+          except:
+            time.sleep(backoff)
+            backoff *= 2
+
 
     def post_op(self, expr_idx, var_values, ret_code, inst_block, tb=None):
         # need clean post op logic to handle
@@ -710,6 +719,8 @@ class LambdaPackProgram(object):
           if (ret_code == PS.EXCEPTION and tb != None):
             self.handle_exception(" EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
           ready_children = []
+          priorities= []
+          clean_ps = []
           for child in children:
               operator_expr = self.program.get_expr(child[0])
               my_child_edge = self._edge_key(expr_idx, var_values, *child)
@@ -747,8 +758,15 @@ class LambdaPackProgram(object):
           assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
             # TODO: Re-add priorities here
+            expr = self.program.get_expr(child[0])
+            if (isinstance(expr.compute_expr, RemoteCholesky)):
+               pty = 2
+            elif (isinstance(expr.compute_expr, RemoteTRSM)):
+               pty = 1
+            else:
+               pty = 0
             message_body = json.dumps([int(child[0]), {key.name: int(val) for key, val in child[1].items()}])
-            resp = client.send_message(QueueUrl=self.queue_urls[0], MessageBody=message_body)
+            resp = client.send_message(QueueUrl=self.queue_urls[pty], MessageBody=message_body)
 
           inst_block.end_time = time.time()
           inst_block.clear()
@@ -762,6 +780,20 @@ class LambdaPackProgram(object):
             traceback.print_exc()
             print("Exception raised...")
             self.handle_exception("POST OP EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+
+    def calculate_priorities(self, expr_idx, var_values, num_priorities):
+        print("calculate priorities")
+        children = self.program.get_children(expr_idx, var_values)
+        child_count = len(children)
+        if (num_priorities > 1):
+          for (child_expr_idx, child_var_values) in children:
+            child_count += self.calculate_priorities(child_expr_idx, child_var_values, num_priorities - 1)
+        return child_count
+
+
+
+
+
 
     def start(self):
         put(self.control_plane.client, self.hash, PS.RUNNING.value)

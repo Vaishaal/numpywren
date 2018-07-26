@@ -185,7 +185,7 @@ async def check_failure(loop, program, failure_key):
       await asyncio.sleep(5)
 
 
-def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
+def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=230, idle_timeout=230, msg_vis_timeout_jitter=15):
     program.incr_up(1)
     lambda_start = time.time()
     loop = asyncio.new_event_loop()
@@ -217,7 +217,7 @@ def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"])}
 
-def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
+def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=200, msg_vis_timeout_jitter=15):
     program.incr_up(1)
     lambda_start = time.time()
     loop = asyncio.new_event_loop()
@@ -256,13 +256,15 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lock):
     assert(timeout > timeout_jitter)
-    while(lock[0] == 1):
+    chances = 3
+    while(lock[0] == 1 and chances > 0):
         try:
             receipt_handle = msg["ReceiptHandle"]
             operator_ref = tuple(json.loads(msg["Body"]))
             sqs_client = boto3.client('sqs')
             res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(45)
+            await asyncio.sleep(50)
+            chances -= 1
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(operator_ref) + str(e))
             await asyncio.sleep(10)
@@ -336,7 +338,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             shared_state["tot_messages"].append(operator_ref)
             operator_ref = (operator_ref[0], {sympy.Symbol(key): val for key, val in operator_ref[1].items()})
             redis_client.set(msg["MessageId"], str(time.time()))
-            #print("creating lock")
+            print("creating lock")
             lock = [1]
             coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, msg_vis_timeout_jitter, lock)
             loop.create_task(coro)
