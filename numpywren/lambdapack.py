@@ -36,6 +36,7 @@ from . import control_plane
 from . import utils
 
 
+
 try:
   DEFAULT_CONFIG = wc.default()
 except:
@@ -87,6 +88,7 @@ def put(client, key, value, s3=False, s3_bucket=""):
         break
       except redis.exceptions.TimeoutError:
         time.sleep(backoff)
+        incr_exceptions(client)
         backoff *= 2
     return val
 
@@ -110,8 +112,55 @@ def get(client, key, s3=False, s3_bucket=""):
           break
         except redis.exceptions.TimeoutError:
           time.sleep(backoff)
+          incr_exceptions(client)
           backoff *= 2
       return val
+
+def reset_timeouts(client):
+      client.set("redis.timeouts", 0)
+      client.set("s3.timeouts.write", 0)
+      client.set("s3.timeouts.read", 0)
+
+def incr_exceptions(client, amount=1):
+    backoff = 1
+    val = None
+    while(True):
+      try:
+        val = client.incr("redis.timeouts", amount=amount)
+        break
+      except redis.exceptions.TimeoutError:
+        time.sleep(backoff)
+        backoff *= 2
+        amount += 1
+    return val
+
+def incr_s3_timeouts_write(client, amount=1):
+    backoff = 1
+    val = None
+    while(True):
+      try:
+        val = client.incr("s3.timeouts.write", amount=amount)
+        break
+      except redis.exceptions.TimeoutError:
+        time.sleep(backoff)
+        incr_exceptions(client)
+        backoff *= 2
+    return val
+
+
+
+def incr_s3_timeouts_read(client, amount=1):
+    backoff = 1
+    val = None
+    while(True):
+      try:
+        val = client.incr("s3.timeouts.read", amount=amount)
+        break
+      except redis.exceptions.TimeoutError:
+        time.sleep(backoff)
+        incr_exceptions(client)
+        backoff *= 2
+    return val
 
 
 
@@ -132,6 +181,7 @@ def incr(client, key, amount=1, s3=False, s3_bucket=""):
           break
         except redis.exceptions.TimeoutError:
           time.sleep(backoff)
+          incr_exceptions(client)
           backoff *= 2
       return val
 
@@ -151,6 +201,7 @@ def decr(client, key, amount, s3=False, s3_bucket=""):
           break
         except redis.exceptions.TimeoutError:
           time.sleep(backoff)
+          incr_exceptions(client)
           backoff *= 2
       return val
 
@@ -197,6 +248,7 @@ def conditional_increment(client, key_to_incr, condition_key):
         break
     except redis.exceptions.TimeoutError:
         time.sleep(backoff)
+        incr_exceptions(client)
         backoff *= 2
   return res
 
@@ -239,7 +291,7 @@ class RemoteRead(RemoteInstruction):
         self.read_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     #@profile
-    async def __call__(self, prev=None):
+    async def __call__(self, prev=None, redis_client=None):
         if (prev != None):
           await prev
         loop = asyncio.get_event_loop()
@@ -261,6 +313,8 @@ class RemoteRead(RemoteInstruction):
                   break
                 except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError):
                   await asyncio.sleep(backoff)
+                  if (redis_client is not None):
+                    incr_s3_timeouts_read(redis_client)
                   backoff *= 2
                   pass
               self.size = sys.getsizeof(self.result)
@@ -291,7 +345,7 @@ class RemoteWrite(RemoteInstruction):
         self.write_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     #@profile
-    async def __call__(self, prev=None):
+    async def __call__(self, prev=None, redis_client=None):
         if (prev != None):
           await prev
         loop = asyncio.get_event_loop()
@@ -309,6 +363,8 @@ class RemoteWrite(RemoteInstruction):
               except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError) as e:
                   await asyncio.sleep(backoff)
                   backoff *= 2
+                  if (redis_client is not None):
+                    incr_s3_timeouts_write(redis_client)
                   pass
             self.size = sys.getsizeof(self.data_instr.result)
             self.ret_code = 0
@@ -572,13 +628,13 @@ class RemoteReturn(RemoteInstruction):
         self.i_code = OC.RET
         self.result = None
         self.return_loc = kwargs["hash"]
-    async def __call__(self, client, prev=None):
+    async def __call__(self, redis_client, prev=None):
       if (prev != None):
           await prev
       loop = asyncio.get_event_loop()
       self.start_time = time.time()
       if (self.result == None):
-        put(client, self.return_loc, PS.SUCCESS.value)
+        put(redis_client, self.return_loc, PS.SUCCESS.value)
         self.size = sys.getsizeof(PS.SUCCESS.value)
       self.end_time = time.time()
       return self.result
@@ -640,7 +696,6 @@ class LambdaPackProgram(object):
         self.bucket = pywren_config['s3']['bucket']
         self.program = program
         #HARDCODE FOR top500
-        num_priorities = 3
         self.max_priority = num_priorities - 1
         self.io_rate = io_rate
         self.flop_rate = flop_rate
@@ -649,9 +704,12 @@ class LambdaPackProgram(object):
         if (cpid is None):
           raise Exception("No active control planes")
         self.control_plane = control_plane.get_control_plane(config=config)
-        hashed = hashlib.sha1()
+        reset_timeouts(self.control_plane.client)
+        #hashed = hashlib.sha1()
         #HACK to have interpretable runs
         self.hash = str(int(time.time()))
+        current_run = self.hash
+
         self.up = 'up' + self.hash
         self.set_up(0)
         client = boto3.client('sqs', region_name=self.control_plane.region)
@@ -695,6 +753,7 @@ class LambdaPackProgram(object):
             client.put_object(Bucket=self.bucket, Key="lambdapack/{0}/{1}_{2}".format(self.hash, expr_idx, var_values), Body=byte_string)
             break
           except:
+            incr_s3_timeouts_write(self.control_plane.client)
             time.sleep(backoff)
             backoff *= 2
 
@@ -759,12 +818,9 @@ class LambdaPackProgram(object):
           for child in ready_children:
             # TODO: Re-add priorities here
             expr = self.program.get_expr(child[0])
-            if (isinstance(expr.compute_expr, RemoteCholesky)):
-               pty = 2
-            elif (isinstance(expr.compute_expr, RemoteTRSM)):
-               pty = 1
-            else:
-               pty = 0
+            inv_priority = self.program.calculate_inv_priority(child[1])
+            pty = max(self.max_priority - inv_priority, 0)
+
             message_body = json.dumps([int(child[0]), {key.name: int(val) for key, val in child[1].items()}])
             resp = client.send_message(QueueUrl=self.queue_urls[pty], MessageBody=message_body)
 
@@ -780,17 +836,6 @@ class LambdaPackProgram(object):
             traceback.print_exc()
             print("Exception raised...")
             self.handle_exception("POST OP EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-
-    def calculate_priorities(self, expr_idx, var_values, num_priorities):
-        print("calculate priorities")
-        children = self.program.get_children(expr_idx, var_values)
-        child_count = len(children)
-        if (num_priorities > 1):
-          for (child_expr_idx, child_var_values) in children:
-            child_count += self.calculate_priorities(child_expr_idx, child_var_values, num_priorities - 1)
-        return child_count
-
-
 
 
 

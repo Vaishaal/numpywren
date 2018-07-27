@@ -736,6 +736,7 @@ class Program(BlockStatement):
             for statement in body:
                 if isinstance(statement, OperatorExpr):
                     nodes.append((expr_id, var_values))
+                    #print((expr_id, var_values, self.calculate_inv_priority(var_values)))
                     expr_id += 1
                 if isinstance(statement, BackendFor):
                     symbols = tuple(self.symbols.keys())
@@ -803,6 +804,17 @@ class Program(BlockStatement):
 
         recurse_find_starters(self._body, expr_id, var_values)
         return starters
+
+    def calculate_inv_priority(self, var_values):
+
+        #TODO HARD CODED FOR CHOLESKY FIGURE OUT HOW TO GENERALIZE
+        var_values = {str(key): int(val) for key, val in var_values.items()}
+        i = var_values.get("i", 0)
+        j = var_values.get("j", i)
+        k = var_values.get("k", i)
+        return abs(j - i) + abs(k - i)
+
+
 
     def find_num_terminators(self):
         terminators = 0
@@ -1123,10 +1135,10 @@ def _chol(X, out_bucket=None, truncate=0):
     return program, S, O
 
 if __name__ == "__main__":
-    N = 65536*16*2
+    N = 65536
     print("Problem size", N)
     I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
-    program, S, O = _chol(I, truncate=(767))
+    program, S, O = _chol(I, truncate=(14))
     print(program)
     s = time.time()
     c = program.get_children(0, {})
@@ -1140,7 +1152,9 @@ if __name__ == "__main__":
     e = time.time()
     print("2nd cholesky child time: {0}".format(e - s))
     print("2nd cholesky num children: {0}".format(len(c)))
-    #print("program size", len(program.unroll_program()))
+    unrolled = program.unroll_program()
+    for p in unrolled:
+        print(p)
     #print("2nd cholesky children: {0}".format(c))
 
     #L = BigMatrix("SolveInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)

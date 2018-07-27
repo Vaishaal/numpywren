@@ -30,7 +30,7 @@ INFO_FREQ = 5
 
 ''' OSDI numpywren optimization effectiveness experiments '''
 
-def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify, matrix_exists):
+def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify, matrix_exists):
     # set up logging
     invoke_executor = fs.ThreadPoolExecutor(1)
     logger = logging.getLogger()
@@ -39,7 +39,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     for key in logging.Logger.manager.loggerDict:
         logging.getLogger(key).setLevel(logging.CRITICAL)
     logger.setLevel(logging.DEBUG)
-    arg_bytes = pickle.dumps((problem_size, shard_size, pipeline, priority, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy))
+    arg_bytes = pickle.dumps((problem_size, shard_size, pipeline, num_priorities, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy))
     arg_hash = hashlib.md5(arg_bytes).hexdigest()
     log_file = "{0}.log".format(arg_hash)
     fh = logging.FileHandler(log_file)
@@ -88,10 +88,6 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     t = time.time()
     instructions, trailing, L_sharded = compiler._chol(XXT_sharded, truncate=truncate)
     pipeline_width = args.pipeline
-    if (priority):
-        num_priorities = 3
-    else:
-        num_priorities = 1
     if (lru):
         cache_size = 5
     else:
@@ -101,7 +97,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     program = lp.LambdaPackProgram(instructions, executor=pywren.lambda_executor, pywren_config=pywren_config, num_priorities=num_priorities, eager=eager, config=config)
     warmup_start = time.time()
     if (warmup):
-        warmup_sleep = 250
+        warmup_sleep = 100
         def warmup_fn(x):
             program.incr_up(1)
             time.sleep(warmup_sleep)
@@ -110,7 +106,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
         futures = pwex.map(warmup_fn, range(max_cores))
         last_spinup = time.time()
         while(True):
-            if ((time.time() - last_spinup) > 0.75*warmup_sleep):
+            if ((time.time() - last_spinup) > 0.95*warmup_sleep):
                 print("Calling pwex.map..")
                 futures = pwex.map(warmup_fn, range(max_cores))
                 last_spinup = time.time()
@@ -139,6 +135,8 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     sqs_vis_counts = []
     up_workers_counts = []
     busy_workers_counts = []
+    read_objects = []
+    write_objects = []
     times = [time.time()]
     flops = [0]
     reads = [0]
@@ -157,7 +155,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["up_workers"] = up_workers_counts
     exp["times"] = times
     exp["lru"] = lru
-    exp["priority"] = priority
+    exp["priority"] = num_priorities 
     exp["eager"] = eager
     exp["truncate"] = truncate
     exp["max_cores"] = max_cores
@@ -167,6 +165,8 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     exp["flops"] = flops
     exp["reads"] = reads
     exp["writes"] = writes
+    exp["read_objects"] = read_objects
+    exp["write_objects"] = write_objects
     exp["trial"] = trial
     exp["launch_granularity"] = launch_granularity
     exp["log_granularity"] = log_granularity
@@ -191,7 +191,6 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
     print("QUEUE URLS", len(program.queue_urls))
     try:
         while(program.program_status() == lp.PS.RUNNING):
-            times.append(int(time.time()))
             time.sleep(log_granularity)
             curr_time = int(time.time() - start_time)
             p = program.get_progress()
@@ -200,6 +199,7 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
                 continue
             else:
                p = int(p)
+            times.append(int(time.time()))
             max_pc = p
             waiting = 0
             running = 0
@@ -256,21 +256,48 @@ def run_experiment(problem_size, shard_size, pipeline, priority, lru, eager, tru
             gflops_rate = flops[-1]/(times[-1] - times[0])
             greads_rate = reads[-1]/(times[-1] - times[0])
             gwrites_rate = writes[-1]/(times[-1] - times[0])
+            b = XXT_sharded.shard_sizes[0]
+            print(b*b*8)
+            current_objects_read = (current_gbytes_read*1e9)/(b*b*8)
+            current_objects_write = (current_gbytes_write*1e9)/(b*b*8)
+            read_objects.append(current_objects_read)
+            write_objects.append(current_objects_write)
+            read_rate = read_objects[-1]/(times[-1] - times[0])
+            write_rate = write_objects[-1]/(times[-1] - times[0])
+
             avg_workers = np.mean(up_workers_counts)
-            if (len(flops) > 120):
-                gflops_rate_5_min_window = (flops[-1] - flops[-100])/(times[-1] - times[-100])
-                gread_rate_5_min_window = (reads[-1] - reads[-100])/(times[-1] - times[-100])
-                gwrite_rate_5_min_window = (writes[-1] - writes[-100])/(times[-1] - times[-100])
-                workers_5_min_window = np.mean(up_workers_counts[-100:])
+            smooth_len = 10
+            if (len(flops) > smooth_len + 5):
+                gflops_rate_5_min_window = (flops[-1] - flops[-smooth_len])/(times[-1] - times[-smooth_len])
+                gread_rate_5_min_window = (reads[-1] - reads[-smooth_len])/(times[-1] - times[-smooth_len])
+                gwrite_rate_5_min_window = (writes[-1] - writes[-smooth_len])/(times[-1] - times[-smooth_len])
+                read_rate_5_min_window = (read_objects[-1] - read_objects[-smooth_len])/(times[-1] - times[-smooth_len])
+                write_rate_5_min_window = (write_objects[-1] - write_objects[-smooth_len])/(times[-1] - times[-smooth_len])
+                workers_5_min_window = np.mean(up_workers_counts[-smooth_len:])
             else:
                 gflops_rate_5_min_window =  "N/A"
                 gread_rate_5_min_window = "N/A"
                 gwrite_rate_5_min_window = "N/A"
                 workers_5_min_window = "N/A"
+                read_rate_5_min_window = "N/A"
+                write_rate_5_min_window = "N/A"
 
+
+            read_timeouts = int(REDIS_CLIENT.get("s3.timeouts.read"))
+            write_timeouts = int(REDIS_CLIENT.get("s3.timeouts.write"))
+            redis_timeouts = int(REDIS_CLIENT.get("redis.timeouts"))
+            read_timeouts_fraction = read_timeouts/current_objects_read
+            write_timeouts_fraction = read_timeouts/current_objects_write
+            print("=======================================")
+            print("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
             print("{0}: Total GFLOPS {1}, Total GBytes Read {2}, Total GBytes Write {3}".format(curr_time, current_gflops, current_gbytes_read, current_gbytes_write))
             print("{0}: Average GFLOPS rate {1}, Average GBytes Read rate {2}, Average GBytes Write  rate {3}, Average Worker Count {4}".format(curr_time, gflops_rate, greads_rate, gwrites_rate, avg_workers))
-            print("{0}: 5 min GFLOPS rate {1}, 5 min GBytes Read rate {2}, 5 min GBytes Write  rate {3}, 5 min Worker Count {4}".format(curr_time, gflops_rate_5_min_window, gread_rate_5_min_window, gwrite_rate_5_min_window, workers_5_min_window))
+            print("{0}: Average read txns/s {1}, Average write txns/s {2}".format(curr_time, read_rate, write_rate))
+            print("{0}: smoothed GFLOPS rate {1}, smoothed GBytes Read rate {2}, smoothed GBytes Write  rate {3}, smoothed Worker Count {4}".format(curr_time, gflops_rate_5_min_window, gread_rate_5_min_window, gwrite_rate_5_min_window, workers_5_min_window))
+            print("{0}: smoothed read txns/s {1}, smoothed write txns/s {2}".format(curr_time, read_rate_5_min_window, write_rate_5_min_window))
+            print("{0}: Read timeouts: {1}, Write timeouts: {2}, Redis timeouts: {3}  ".format(curr_time, read_timeouts, write_timeouts, redis_timeouts))
+            print("{0}: Read timeouts fraction: {1}, Write timeouts fraction: {2}".format(curr_time, read_timeouts_fraction, write_timeouts_fraction))
+            print("=======================================")
 
             time_since_launch = time.time() - last_run_time
             if (autoscale_policy == "dynamic"):
@@ -338,10 +365,10 @@ if __name__ == "__main__":
     parser.add_argument('--pipeline', type=int, default=1)
     parser.add_argument('--timeout', type=int, default=180)
     parser.add_argument('--autoscale_policy', type=str, default="constant_timeout")
-    parser.add_argument('--log_granularity', type=int, default=1)
+    parser.add_argument('--log_granularity', type=int, default=5)
     parser.add_argument('--launch_granularity', type=int, default=60)
     parser.add_argument('--trial', type=int, default=0)
-    parser.add_argument('--priority', action='store_true')
+    parser.add_argument('--num_priorities', type=int, default=1) 
     parser.add_argument('--lru', action='store_true')
     parser.add_argument('--eager', action='store_true')
     parser.add_argument('--standalone', action='store_true')
@@ -349,7 +376,7 @@ if __name__ == "__main__":
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--matrix_exists', action='store_true')
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.priority, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify, args.matrix_exists)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.num_priorities, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify, args.matrix_exists)
 
 
 

@@ -101,8 +101,8 @@ class LambdaPackExecutor(object):
                                      " REF: {0}, time: {1}, pid: {2}".format((expr_idx, var_values), time.time(), os.getpid()))
                             raise Exception(e_str)
                         instr.start_time = time.time()
-                        if (isinstance(instr, lp.RemoteReturn)):
-                           res = await instr(self.program.control_plane.client)
+                        if (isinstance(instr, lp.RemoteReturn) or isinstance(instr, lp.RemoteRead) or isinstance(instr, lp.RemoteWrite)):
+                           res = await instr(redis_client=self.program.control_plane.client)
                         else:
                            res = await instr()
                         instr.end_time = time.time()
