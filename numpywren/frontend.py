@@ -23,7 +23,7 @@ simple_expr ::= mul_expr (‘**’ mul_expr)*
 comparison: expr (comp_op expr)*
 mfunc_expr = mfunc(expr)
 expr ::= simple_expr | m_func_expr | comparison
-m_func ::=  ceiling | floor | log | log2
+m_func ::=  ceiling | floor | log
 index_expr ::= NAME ‘[‘ expr (, expr)* ‘]’
 op := NAME
 _arg := (index_expr | expr)
@@ -37,7 +37,8 @@ if_stmt: 'if' expr ':' block  ['else' ':' block]
 stmt ::= for_stmt | with_stmt | assign_stmt | expr
 '''
 
-M_FUNCS = ['ceiling', 'floor', 'log', 'log2']
+KEY_WORDS = ["ceiling", "floor", "log", "REDUCTION_LEVEL"]
+M_FUNCS = ['ceiling', 'floor', 'log']
 M_FUNC_OUT_TYPES = {}
 M_FUNC_OUT_TYPES['ceiling'] = int
 M_FUNC_OUT_TYPES['floor'] = int
@@ -259,6 +260,8 @@ class LambdaPackParse(ast.NodeVisitor):
 
 
     def visit_Name(self, node):
+        if (node.id in KEYWORDS):
+            raise exceptions.LambdaPackParsingException("Illegal keyword usage, {0} is reserved".format(node.id))
         return Ref(node.id, None)
 
     def visit_NameConstant(self, node):
@@ -273,7 +276,6 @@ class LambdaPackParse(ast.NodeVisitor):
     def visit_Attribute(self, node):
         assert self.in_reduction, "Only Valid Attribute calls are to reducers"
         name = node.value.id
-        print(self.current_reduction_object)
         assert self.decl_dict[name] == self.current_reduction_object, "Incorrect use of reduction features"
         assert node.attr in REDUCTION_SPECIALS, "Only a few special reduction special function calls are valid : {0}".format(REDUCTION_SPECIALS)
         return ReducerCall(name, node.attr, None, None)
@@ -348,6 +350,8 @@ class LambdaPackParse(ast.NodeVisitor):
 
     def visit_FunctionDef(self, func):
         args = [x.arg for x in func.args.args]
+        if (len(set(args)) != len(args)):
+            raise exceptions.LambdaPackParsingException("No repeat arguments allowed")
         annotations = [eval(x.annotation.id) for x in func.args.args]
         name = func.name
         assert isinstance(func.body, list)
@@ -401,16 +405,6 @@ class LambdaPackParse(ast.NodeVisitor):
         self.for_loops -= 1
         self.current_for_loop -= 1
         return For(var, start, end, step, body)
-
-    def visit_Subscript(self, node):
-        if (isinstance(node.slice.value, ast.Tuple)):
-            if (node.value.id not in self.symbols):
-                raise exceptions.LambdaPackParsingException("Unknown BigMatrix references")
-            return BigMatrixBlock(node.value.id, self.symbols[node.value.id], [self.visit(x) for x in node.slice.value.elts])
-        else:
-            val = self.visit(node.slice.value)
-            assert(isinstance(val, IntConst) or isinstance(val, Ref))
-            return BigMatrixBlock(node.value.id, self.symbols[node.value.id], [val], None)
 
     def visit_Return(self, node):
         ret_node = Return(self.visit(node.value), None)
@@ -569,13 +563,13 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
 
     def visit_Assign(self, node):
         rhs = self.visit(node.rhs)
-        lhs_all = node.lhs
-        for lhs in lhs_all:
-            if (lhs.name in self.decl_types):
-                is_subclass = issubclass(rhs.type, self.decl_types[lhs.name])
-                is_superclass  = issubclass(self.decl_types[lhs.name], rhs.type)
-                if ((not is_subclass) and (not is_superclass)):
-                    raise exceptions.LambdaPackTypeException("Variables must be of unifiable type, {0} is type {1} but was assigned {2}".format(lhs.name, self.decl_types[lhs.name], rhs.type))
+        lhs = node.lhs
+        print("LHS", astor.dump_tree(node.lhs))
+        if (lhs.name in self.decl_types):
+            is_subclass = issubclass(rhs.type, self.decl_types[lhs.name])
+            is_superclass  = issubclass(self.decl_types[lhs.name], rhs.type)
+            if ((not is_subclass) and (not is_superclass)):
+                raise exceptions.LambdaPackTypeException("Variables must be of unifiable type, {0} is type {1} but was assigned {2}".format(lhs.name, self.decl_types[lhs.name], rhs.type))
         else:
             self.decl_types[lhs.name] = rhs.type
         lhs = self.visit(node.lhs)
@@ -589,14 +583,23 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         return If(cond, body, else_body)
 
     def visit_ReducerCall(self, node):
-        if (node.args is not None):
-            args = [self.visit(x) for x in node.args]
-        else:
-            args = None
         if (node.function == "reduce_args" or node.function == "level"):
             out_type = LinearIntType
+            if (node.args is not None):
+                raise exceptions.LambdaPackTypeException("r.reduce_args and r.level are reducer attributes")
+            args = None
         elif (node.function == "reduce_next"):
             out_type = NullType
+            if (len(node.args) != 1):
+                raise exceptions.LambdaPackTypeException("r.reduce_next take a single expr argument (this could be a set of exprs of the form (expr, expr, expr))")
+            arg = node.args[0]
+            arg_out = []
+            if (isinstance(arg, list)):
+                for a in arg:
+                    arg_out.append(self.visit(a))
+            else:
+                arg_out.append(self.visit(arg))
+            args = arg_out
         else:
             raise exceptions.LambdaPackTypeException("unsupported reduction feature")
 
@@ -692,12 +695,14 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         return Return(r_vals, self.return_node_type)
 
     def visit_IndexExpr(self, node):
-        idxs = [self.visit(x) for x in node.indices]
-        print(idxs)
+        if (isinstance(node.indices, list)):
+            idxs = [self.visit(x) for x in node.indices]
+        else:
+            idxs = [self.visit(node.indices)]
         out_type = unify([x.type for x in idxs])
         if (not issubclass(out_type, LinearIntType)):
             raise exceptions.LambdaPackTypeException("Indices in IndexExprs must all of type LinearIntType")
-        return IndexExpr(node.matrix_name, node.indices)
+        return IndexExpr(node.matrix_name, idxs)
 
 
     def visit_Stargs(self, node):
@@ -780,13 +785,146 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         self.decl_types[node.var] = LinearIntType
         min_idx = self.visit(node.min)
         max_idx = self.visit(node.max)
-        expr = self.visit(node.expr)
-        if (not isinstance(expr, IndexExpr)):
-            raise LambdaPackTypeExceptions("Reduction Expr must be of IndexExpr type")
+        if (isinstance(node.expr, list)):
+            expr = [self.visit(x) for x in node.expr]
+        else:
+            expr = [self.visit(node.expr)]
+        for expr_i in expr:
+            if (not isinstance(expr_i, IndexExpr)):
+                raise LambdaPackTypeExceptions("Reduction Exprs must be of IndexExpr type")
         b_fac = self.visit(node.b_fac)
         remote_call = self.visit(node.remote_call)
         recursion = self.visit(node.recursion)
         return Reduction(node.var, min_idx, max_idx, expr, b_fac, remote_call, recursion)
+
+class LambdaMacroExpand(ast.NodeVisitor):
+    '''
+    Macro expand function calls
+    '''
+    pass
+
+class BackendGenerate(ast.NodeVisitor):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.global_symbol_table = {}
+        self.current_symbol_table = self.global_symbol_table
+        self.count = 0
+        self.arg_values = args
+        self.kwargs = kwargs
+
+    def visit_FuncDef(self, node):
+        for i, (arg, arg_value, arg_type)  in enumerate(zip(node.args, self.arg_values, self.annotations)):
+            p_type = python_type_to_lp_type(type(arg), const=True)
+            if (not issubclass(p_type, arg_type)):
+                raise LambdaPackBackendGenerationException("arg {0} wrong type expected {1} got {2}".format(i, arg_type, p_type))
+            self.global_symbol_table[arg] = arg_value
+        body = [self.visit(x) for x in node.body]
+        return_expr = compiler.OperatorExpr(self.count, RemoteReturn, [], [], [], [])
+        body.append(return_expr)
+        assert(len(node.args) == len(self.arg_values))
+        self.program = Program(node.name, body, symbols=self.global_symbol_table)
+        self.program.return_expr = return_expr
+        return self.program
+
+    def visit_RemoteCall(self):
+        reads = [self.visit(x) for x in node.args]
+        writes = [self.visit(x) for x in node.output]
+        compute = self.compute
+        #TODO pass these in later
+        opexpr = OperatorExpr(self.count, compute  reads, write, is_input=False, is_output=False, **kwargs)
+        self.count += 1
+        return opexpr
+
+
+
+    def visit_IndexExpr(self, indices):
+        if (self.matrix_name not in self.symbols):
+            raise LambdaPackBackendGenerationException("Unknown BigMatrix ref {0}".format(self.matrix_name))
+        matrix = self.symbols[self.matrix_name]
+        indices = [self.visit(x) for x in node.indices]
+        return (matrix, indices)
+
+    def visit_Mfunc(self, node):
+        arg = self.visit(node.e)
+        if (node.op == "ceiling"):
+            return sympy.ceiling(arg)
+        elif (node.op == "floor"):
+            return sympy.floor(arg)
+        else (node.op == "log"):
+            return sympy.log(arg)
+
+    def visit_BinOp(self, node):
+        lhs = self.visit(node.left)
+        rhs = self.visit(node.right)
+        if node.op == "Add":
+            return sympy.Add(lhs,rhs)
+        elif node.op =="Sub":
+            return sympy.Add(lhs,-1*rhs)
+        elif node.op =="Mul":
+            return sympy.Mul(lhs,rhs)
+        elif node.op == "Div":
+            return sympy.Mul(lhs,sympy.Pow(rhs, -1))
+
+    def visit_Assign(self, node):
+        lhs = self.visit(node.left)
+        rhs = self.visit(node.right)
+        assert isinstance(lhs, sympy.Symbol)
+        if (str(lhs) in self.current_symbol_table):
+            raise LambdaPackBackendGenerationException("Variables are immutable in a given scope")
+        self.current_symbol_table[str(lhs)] = rhs
+
+    def visit_For(self, node):
+        loop_var = sympy.Symbol(node.var)
+        prev_symbol_table = self.current_symbol_table
+        for_loop_symbol_table = {"__parent__": prev_symbol_table}
+        self.current_symbol_table = for_loop_symbol_table
+        min_idx = self.visit(node.min)
+        max_idx = self.visit(node.max)
+        body = [self.visit(x) for x in node.body]
+        self.current_symbol_table = prev_symbol_table
+        return BackendFor(var=loop_var, limits=[min_idx, max_idx], body=body, symbol_table=for_loop_symbol_table)
+
+    def visit_Reduction(self, node):
+        r_call= node.remote_call
+        loop_var = sympy.Symbol(node.var)
+        prev_symbol_table = self.current_symbol_table
+        reduction_loop_symbol_table = {"__parent__": prev_symbol_table}
+
+        min_idx = self.visit(node.min)
+        max_idx = self.visit(node.max)
+        index_expr = self.visit(node.expr)
+        b_fac = self.visit(node.b_fac)
+        recursion = self.visit(node.recursion.args)
+
+    def visit_Ref(self, node):
+        s = sympy.Symbol(node.name)
+        return s
+
+    def visit_UnOp(self, node):
+        val = self.visit(node.e)
+        if (node.op == "Neg"):
+            return sympy.Mul(-1, val)
+
+    def visit_IntConst(self, node):
+        return sympy.Integer(node.val)
+
+    def visit_FloatConst(self, node):
+        return sympy.Float(node.val)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -836,4 +974,27 @@ def CAQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int, M:int) -> (BigMatrix, B
                 S[i+1,z,j] = qr_trailing_update(S[i,j,z], Qs[i, 0])
     return Qs, Rs
 
-lpcompile(CAQR)
+#lpcompile(CAQR)
+def trsm_pivot(*args):
+    pass
+
+def tslu_reduction(*args):
+    pass
+
+def lu_no_pivot(*args):
+    pass
+
+def tslu_reduction_leaf(*args):
+    pass
+
+@lpcompile
+def TSLU(A:BigMatrix, P:BigMatrix, S:BigMatrix, L:BigMatrix, U:BigMatrix, N:int) -> (BigMatrix, BigMatrix):
+    P[0], S[0]  = tslu_reduction_leaf(A[0], N, 0)
+    with reducer(expr=(S[j],P[j]), var=j, start=0, end=N, b_fac=2) as r:
+        P[r.level,j], S[r.level, j] =  tslu_reduction(r.level,*r.reduce_args)
+        r.reduce_next((S[r.level, j], P[r.level, j]))
+    max_level = ceiling(log(N))
+    L[0], U[0] = lu_no_pivot(S[max_level])
+    for i in range(1, N):
+        L[i] = trsm_pivot(A[i], U[i], P[max_level])
+    return L,U
