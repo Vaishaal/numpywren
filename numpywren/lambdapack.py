@@ -54,7 +54,9 @@ class RemoteInstructionOpCodes(Enum):
     INVRS = 8
     RET = 9
     BARRIER = 10
-    EXIT = 11
+    GENERIC = 11
+    EXIT = 12
+
 
 
 class NodeStatus(Enum):
@@ -239,9 +241,7 @@ class RemoteRead(RemoteInstruction):
         self.read_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     #@profile
-    async def __call__(self, prev=None):
-        if (prev != None):
-          await prev
+    async def __call__(self):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result is None):
@@ -280,12 +280,12 @@ class RemoteRead(RemoteInstruction):
         return "{0} = S3_LOAD {1} {2} {3}".format(self.id, self.matrix, len(self.bidxs), bidxs_str.strip())
 
 class RemoteWrite(RemoteInstruction):
-    def __init__(self, i_id, matrix, data_instr, *bidxs):
+    def __init__(self, i_id, matrix, data , *bidxs):
         super().__init__(i_id)
         self.i_code = OC.S3_WRITE
         self.matrix = matrix
         self.bidxs = bidxs
-        self.data_instr = data_instr
+        self.data = data
         self.result = None
         self.MAX_WRITE_TIME = 10
         self.write_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
@@ -300,17 +300,17 @@ class RemoteWrite(RemoteInstruction):
             cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
             if (self.cache != None):
               # write to the cache
-              self.cache[cache_key] = self.data_instr.result
+              self.cache[cache_key] = self.data
             backoff = 0.2
             while (True):
               try:
-                self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs), self.MAX_WRITE_TIME)
+                self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data, loop, *self.bidxs), self.MAX_WRITE_TIME)
                 break
               except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError) as e:
                   await asyncio.sleep(backoff)
                   backoff *= 2
                   pass
-            self.size = sys.getsizeof(self.data_instr.result)
+            self.size = sys.getsizeof(self.data)
             self.ret_code = 0
         self.end_time = time.time()
         return self.result
@@ -376,6 +376,44 @@ class RemoteSYRK(RemoteInstruction):
 
     def __str__(self):
         return "{0} = SYRK {1} {2} {3}".format(self.id, self.argv[0].id,  self.argv[1].id,  self.argv[2].id)
+
+class RemoteCall(RemoteInstruction):
+    def __init__(self, i_id, compute, argv_instr, num_outputs, **kwargs):
+        super().__init__(i_id)
+        self.i_code = OC.GENERIC
+        self.results = [None for x in range(num_outputs)]
+        self.kwargs = kwargs
+    #@profile
+    async def __call__(self, prev=None):
+        if (prev != None):
+          await prev
+        loop = asyncio.get_event_loop()
+        #@profile
+        def compute():
+          self.start_time = time.time()
+          if (self.result is None):
+            # TODO: we shouldn't need to squeeze here.
+            self.result = self.compute(*argv_instr, **self.kwargs)
+          else:
+            raise Exception("Same Machine Replay instruction... ")
+          self.ret_code = 0
+          self.end_time = time.time()
+          return self.result
+        return await loop.run_in_executor(self.executor, compute)
+
+    def get_flops(self):
+      if self.compute.flops is not None:
+        return self.compute.flops(*argv_instr)
+      else:
+        return 0
+
+    def __str__(self):
+        out_str = []
+        for i,z in enumerate(results):
+          out_str.append("O{0}".format(i))
+        return "{1} = {0}(*args, **kwargs)".format(self.compute, out_str)
+
+
 
 class RemoteAdd(RemoteInstruction):
     def __init__(self, i_id, argv_instr):
