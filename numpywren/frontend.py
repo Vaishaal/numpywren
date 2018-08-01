@@ -6,10 +6,13 @@ import dill
 import logging
 import abc
 from numpywren.matrix import BigMatrix
+from numpywren.matrix_init import shard_matrix
 from numpywren import exceptions
 from pydoc import locate
 import sympy
 import compiler
+import numpy as np
+import asyncio
 
 ''' front end parser + typechecker for lambdapack
 
@@ -790,8 +793,7 @@ class BackendGenerate(ast.NodeVisitor):
                 raise LambdaPackBackendGenerationException("arg {0} wrong type expected {1} got {2}".format(i, arg_type, p_type))
             self.global_symbol_table[arg] = arg_value
         body = [self.visit(x) for x in node.body]
-        return_expr = compiler.OperatorExpr(self.count, compiler.RemoteReturn, [], [], [], [])
-        print("return expr ", return_expr)
+        return_expr = compiler.OperatorExpr(self.count, compiler.RemoteReturn, args=[], outputs=[], scope={})
         body.append(return_expr)
         assert(len(node.args) == len(self.arg_values))
         self.program = compiler.Program(node.name, body, symbols=self.global_symbol_table)
@@ -808,7 +810,7 @@ class BackendGenerate(ast.NodeVisitor):
             kwargs = {}
         else:
             kwargs = node.kwargs
-        opexpr = compiler.OperatorExpr(self.count, compute, reads, writes, is_input=False, is_output=False, **kwargs)
+        opexpr = compiler.OperatorExpr(self.count, compute=compute, args=reads, outputs=writes, scope=self.current_symbol_table, is_input=True, is_output=True, **kwargs)
         self.count += 1
         return opexpr
 
@@ -821,7 +823,7 @@ class BackendGenerate(ast.NodeVisitor):
             raise exceptions.LambdaPackBackendGenerationException("Unknown BigMatrix ref {0}".format(node.matrix_name))
         matrix = self.global_symbol_table[node.matrix_name]
         indices = [self.visit(x) for x in node.indices]
-        return (matrix, indices)
+        return compiler.BigMatrixBlock(node.matrix_name, matrix, indices)
 
     def visit_Mfunc(self, node):
         arg = self.visit(node.e)
@@ -927,11 +929,8 @@ def lpcompile(function):
 
 
 def qr(*blocks):
-    return np.linalg.qr(np.hstack(blocks))
-
-def qr_trailing_update(A, B):
-    return 0
-
+    print("IN QR", blocks)
+    return np.linalg.qr(np.vstack(blocks))
 #@lpcompile
 def TSQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int):
     for i in range(N):
@@ -954,17 +953,6 @@ def CAQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int, M:int) -> (BigMatrix, B
                 S[i+1,z,j] = qr_trailing_update(S[i,j,z], Qs[i, 0])
 
 #lpcompile(CAQR)
-def trsm_pivot(*args):
-    pass
-
-def tslu_reduction(*args):
-    pass
-
-def lu_no_pivot(*args):
-    pass
-
-def tslu_reduction_leaf(*args):
-    pass
 
 #@lpcompile
 def TSLU(A:BigMatrix, P:BigMatrix, S:BigMatrix, L:BigMatrix, U:BigMatrix, N:int) -> (BigMatrix, BigMatrix):
@@ -979,10 +967,24 @@ def TSLU(A:BigMatrix, P:BigMatrix, S:BigMatrix, L:BigMatrix, U:BigMatrix, N:int)
     return L,U
 
 if __name__ == "__main__":
-    N = 16384
-    I = BigMatrix("TSQR_input", shape=(int(N),int(N)), shard_sizes=(4096, 4096))
-    Q = BigMatrix("TSQR_output_Q", shape=(int(N),int(N)), shard_sizes=(4096, 4096))
-    R = BigMatrix("TSQR_output_R", shape=(int(N),int(N)), shard_sizes=(4096, 4096))
-    print(lpcompile(TSQR)(I, Q, R, N))
+    N = 32
+    nb = 16
+    X = np.random.randn(N,N)
+    I = BigMatrix("TSQR_input", shape=(int(N),int(N)), shard_sizes=(nb, nb))
+    shard_matrix(I, X)
+    Q = BigMatrix("TSQR_output_Q", shape=(int(N),int(N)), shard_sizes=(nb, nb))
+    R = BigMatrix("TSQR_output_R", shape=(int(N),int(N)), shard_sizes=(nb, nb))
+    program = lpcompile(TSQR)(I, Q, R, int(np.ceil(N/nb)))
+    print(program)
+    starters = program.starters
+    operator_expr = program.get_expr(starters[0][0])
+    inst_block = operator_expr.eval_operator(starters[0][1])
+    print(inst_block)
+    coros = inst_block()
+    tasks = []
+    for coro in coros:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(loop.create_task(coro))
+
 
 

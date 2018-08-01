@@ -4,7 +4,7 @@ import astor
 import sympy
 from numpywren.matrix import BigMatrix
 from numpywren import exceptions, utils
-from numpywren.lambdapack import RemoteCholesky, RemoteTRSM, RemoteSYRK, RemoteRead, RemoteWrite, InstructionBlock, RemoteReturn, RemoteIdentity, RemoteGEMM, RemoteSUM
+from numpywren.lambdapack import RemoteCholesky, RemoteTRSM, RemoteSYRK, RemoteRead, RemoteWrite, InstructionBlock, RemoteReturn, RemoteIdentity, RemoteGEMM, RemoteSUM, RemoteCall
 from numpywren.matrix_utils import constant_zeros
 import numpy as np
 import time
@@ -90,8 +90,6 @@ class FuncDef(ast.AST):
 class AssignStmt(ast.AST):
     _fields = ['target', 'value']
 
-class BigMatrixBlock(ast.AST):
-    _fields = ['name', 'bigm', 'bidx']
 
 class Lambdapack(ast.AST):
     _fields = ['compute', 'reads', 'writes', 'options', 'is_input', 'is_output']
@@ -101,6 +99,22 @@ class Reduce(ast.AST):
 
 class BackendStargs(ast.AST):
     _fields = ['args']
+
+class BigMatrixBlock(object):
+    def __init__(self, name, bigm, indices):
+        self.name = name
+        self.matrix = bigm
+        self.indices = indices
+
+    def __str__(self):
+        read_str = ""
+        read_str += self.matrix.key
+        read_str += str(self.indices)
+        return read_str
+
+
+
+
 
 
 class NumpywrenParse(ast.NodeVisitor):
@@ -341,20 +355,23 @@ class Statement():
 def scope_sub(expr, scope):
     expr = expr.subs(scope)
     if "__parent__" in scope:
-        return scope_lookup(expr, scope["__parent__"])
+        return scope_sub(expr, scope["__parent__"])
     else:
         return expr
 
 
 class OperatorExpr(Statement):
-    def __init__(self, opid, compute_expr, read_exprs, write_expr, is_input=False, is_output=False, **options):
+    def __init__(self, opid, compute, args, outputs, scope, is_input=False, is_output=False, **options):
         ''' compute_expr is a subclass RemoteInstruction (not an instance)
              read_exprs, and write_exprs
             are of lists of type (BigMatrix, [sympy_expr, sympy_expr...])
         '''
-        self._read_exprs = read_exprs
-        self._write_expr = write_expr
-        self.compute_expr = compute_expr
+        self.args  = args
+        self.outputs = outputs
+        self.compute = compute
+        self.scope = scope
+        self._read_exprs = [x for x in self.args if isinstance(x, BigMatrixBlock)]
+        self._write_exprs = [x for x in self.outputs if isinstance(x, BigMatrixBlock)]
         self.opid = opid
         self.num_exprs = 1
         self.options = options
@@ -366,18 +383,65 @@ class OperatorExpr(Statement):
         assert index == 0
         return self
 
-    def eval_operator(self, var_values, **kwargs):
-        read_instrs = self.eval_read_instrs(var_values)
-        compute_instr = self._eval_compute_instr(read_instrs, **kwargs)
-        if (self._write_expr != []):
-            write_instr = [self.eval_write_instr(compute_instr, var_values)]
-        else:
-            write_instr = []
-        return InstructionBlock(read_instrs + [compute_instr] + write_instr, priority=0)
+    def eval_big_matrix_block(self, bigm_block, var_values):
+        idx_evaluated = ()
+        for idx in bigm_block.indices:
+            print(idx)
+            print(var_values)
+            idx_subbed = scope_sub(idx, var_values)
+            idx = scope_sub(idx_subbed, self.scope)
+            if (idx.is_integer is None):
+                raise Exception("Big matrix indices must evaluated to be integers, got {0} for {1}, var_values is {2}".format(idx, bigm_block, var_values))
+            idx = int(idx)
+            idx_evaluated += (idx,)
+        return bigm_block.matrix, idx_evaluated
 
-    def _eval_compute_instr(self, read_instrs, **kwargs):
-        options = dict(list(self.options.items()) + list(kwargs.items()))
-        return self.compute_expr(self.opid, read_instrs, **options)
+    def eval_outputs(self, data_loc, var_values, num_args):
+        outputs_evaluated = []
+        for i, output in enumerate(self.outputs):
+            print(output)
+            if (isinstance(output, BigMatrixBlock)):
+                matrix, idxs = self.eval_big_matrix_block(output, var_values)
+                outputs_evaluated.append(RemoteWrite(i + num_args, matrix, data_loc, i, *idxs))
+            else:
+                #TODO this is easily fixable
+                raise Exception("Only BigMatrices can be outputs of RemoteCalls")
+        return outputs_evaluated
+
+    def eval_operator(self, var_values, **kwargs):
+        args_evaluated = self.eval_args(var_values)
+        pyarg_list = []
+        pyarg_symbols = []
+        for i, arg in enumerate(args_evaluated):
+            pyarg_symbols.append(str(i))
+            if (isinstance(arg, RemoteRead)):
+                pyarg_list.append(arg.result)
+            elif (isinstance(arg, float)):
+                pyarg_list.append(arg)
+        num_outputs = len(self.outputs)
+        compute_instr  = RemoteCall(0, self.compute, pyarg_list, num_outputs, pyarg_symbols,**kwargs)
+        num_args = len(pyarg_list)
+        write_instrs = self.eval_outputs(compute_instr.results, var_values, num_args)
+        read_instrs =  [x for x in args_evaluated if isinstance(x, RemoteRead)]
+        return InstructionBlock(read_instrs + [compute_instr] + write_instrs, priority=0)
+
+    def eval_args(self, var_values):
+        args_evaluated = []
+        for i,arg in enumerate(self.args):
+            if (isinstance(arg, BigMatrixBlock)):
+                matrix, idxs = self.eval_big_matrix_block(arg, var_values)
+                args_evaluated.append(RemoteRead(i, matrix, *idxs))
+            elif (isinstance(arg, sympy.Basic)):
+                val_subbed = scope_sub(arg, var_values)
+                val = scope_sub(val, self.scope)
+                if (not val.is_constant()):
+                    raise Exception("All values must be constant at eval time")
+                args_evaluated.append(float(val))
+            elif (arg == "__REDUCE_ARGS__"):
+                reduction_args = self.eval_reduction_args(self, var_values)
+                for matrix, idxs in reduction_args:
+                    args_evaluated.append(RemoteRead(0, matrix, *idxs))
+        return args_evaluated
 
     def find_reader_var_values(self, write_ref, var_names, var_limits):
         results = []
@@ -395,16 +459,18 @@ class OperatorExpr(Statement):
         return utils.remove_duplicates(results)
 
     def find_writer_var_values(self, read_ref, var_names, var_limits):
-        if (len(self._write_expr)) == 0:
+        if (len(self._write_exprs)) == 0:
             return []
-        if read_ref[0] != self._write_expr[0]:
-            return []
-        if not var_names:
-            if tuple(read_ref[1]) == tuple(self._write_expr[1]):
-                return [{}]
-        assert len(read_ref[1]) == len(self._write_expr[1])
-        results = self._enumerate_possibilities(read_ref[1], self._write_expr[1],
-                                                var_names, var_limits)
+        results = []
+        for write_expr in self.write_exprs:
+            if read_ref[0] != self._write_expr[0]:
+                return []
+            if not var_names:
+                if tuple(read_ref[1]) == tuple(self._write_expr[1]):
+                    return [{}]
+            assert len(read_ref[1]) == len(self._write_expr[1])
+            results += self._enumerate_possibilities(read_ref[1], self._write_expr[1],
+                                                    var_names, var_limits)
         return utils.remove_duplicates(results)
 
     def eval_read_instrs(self, var_values):
@@ -419,7 +485,7 @@ class OperatorExpr(Statement):
         return [self._eval_block_ref(block_expr, var_values) for block_expr in self._read_exprs]
 
     def eval_write_ref(self, var_values):
-        return self._eval_block_ref(self._write_expr, var_values)
+        return self._eval_block_ref(self._write_exprs, var_values)
 
     def _eval_block_ref(self, block_expr, var_values):
         return (block_expr[0], tuple([idx.subs(var_values) for idx in block_expr[1]]))
@@ -523,15 +589,14 @@ class OperatorExpr(Statement):
     def __str__(self):
         read_str = ""
         print("READ_EXPR", self._read_exprs)
-        print("COMPUTE_EXPR", self.compute_expr.__name__)
-        for read_expr in self._read_exprs:
-            if (isinstance(read_expr, BackendStargs)):
+        for arg in self.args:
+            if (isinstance(arg, BackendStargs)):
                 read_str += "*"
-                read_str += str(read_expr.args)
+                read_str += str(arg.args)
                 read_str += ","
-            elif (isinstance(read_expr, tuple)):
-                read_str += read_expr[0].key
-                read_str += str(read_expr[1])
+            elif (isinstance(arg, BigMatrixBlock)):
+                read_str += arg.matrix.key
+                read_str += str(arg.indices)
                 read_str += ","
             elif (isinstance(arg, sympy.Basic)):
                 read_str += arg
@@ -539,16 +604,15 @@ class OperatorExpr(Statement):
             else:
                 raise Exception("Unknown argument")
         read_str = read_str[:-1]
-        print("WRITE EXPR", self._write_expr)
-        if (len(self._write_expr) > 0):
+        if (len(self._write_exprs) > 0):
             write_str = ""
-            for wexpr in self._write_expr:
-                write_str += wexpr[0].key
-                write_str += str(wexpr[1])
+            for wexpr in self._write_exprs:
+                write_str += wexpr.matrix.key
+                write_str += str(wexpr.indices)
                 write_str += ","
-            str_expr = "{2} = {0}({1})".format(self.compute_expr.__name__, read_str, write_str)
+            str_expr = "{2} = {0}({1})".format(self.compute.__name__, read_str, write_str)
         else:
-            str_expr = "{0}({1})".format(self.compute_expr.__name__, read_str)
+            str_expr = "{0}({1})".format(self.compute.__name__, read_str)
 
         if (self._is_input):
             str_expr = "__INPUT__ " + str_expr
@@ -574,30 +638,8 @@ class ReductionOperatorExpr(OperatorExpr):
 
     def __str__(self):
         str_repr = "Reduction(base_case={base_case}, recursion={recursion}, branch={branch}, var={var}, limits={limits}, op={remote_call})"\
-        .format(base_case=self.base_case, recursion=self.recursion, limits=self.limits, branch=self.branch, remote_call=self.remote_call, var=self.var)
+        .format(base_case=",".join([str(x) for x in self.base_case]), recursion=",".join([str(x) for x in self.recursion]), limits=self.limits, branch=self.branch, remote_call=self.remote_call, var=self.var)
         return str_repr
-
-    def get_expr(self, index):
-        assert index == 0
-        return self
-
-    def eval_args(self, var_values):
-        args_evaluated = []
-        for arg in self.args:
-            if (isinstance(arg, BigMatrixBlock)):
-                matrix, idxs = eval_big_matrix_block(self, arg, var_values)
-                args_evaluated.append(RemoteRead(0, matrix, *idxs))
-            elif (isinstance(arg, sympy.Basic)):
-                val_subbed = scope_sub(arg, var_values)
-                val = scope_sub(val, self.scope)
-                if (not val.is_constant()):
-                    raise Exception("All values must be constant at eval time")
-                args_evaluated.append(float(val))
-            elif (arg == "__REDUCE_ARGS__"):
-                reduction_args = self.eval_reduction_args(self, var_values)
-                for matrix, idxs in reduction_args:
-                    args_evaluated.append(RemoteRead(0, matrix, *idxs))
-        return args_evaluated
 
     def eval_reduction_args(self, var_values):
         reduction_level = var_values["REDUCTION_LEVEL"]
@@ -638,43 +680,6 @@ class ReductionOperatorExpr(OperatorExpr):
             reduction_args.append(self.eval_big_matrix_block(reduction_expr, var_values_reduce))
         return reduction_args
 
-    def eval_big_matrix_block(self, bigm_block, var_values):
-        idxs_evaluted = []
-        for idx in bigm_block.idxs:
-            idx_evaluated = ()
-            for elem in idx:
-                idx_subbed = scope_sub(idx, var_values)
-                idx = scope_sub(idx, self.scope)
-                if (idx.is_integer is None):
-                    raise Exception("Big matrix indices must evaluated to be integers")
-                idx = int(idx)
-                idx_evaluated += (idx,)
-            idxs_evaluated.append(idx_evaluated)
-        return bigm_block.matrix, idxs_evaluated
-
-    def eval_outputs(self, data_loc, var_values):
-        outputs_evaluated = []
-        for i, output in enumerate(self.outputs):
-            if (isinstance(arg, BigMatrixBlock)):
-                matrix, idxs = eval_big_matrix_block(self, arg, var_values)
-                outputs_evaluated.append(RemoteWrite(0, matrix, data_loc[i], *idxs))
-            else:
-                #TODO this is easily fixable
-                raise Exception("Only BigMatrices can be outputs of RemoteCalls")
-
-    def eval_operator(self, var_values, **kwargs):
-        args_evaluated = self.eval_args(var_values)
-        pyarg_list = []
-        for arg in args_evaluted:
-            if (isinstance(arg, RemoteRead)):
-                pyarg_list.append(arg.result)
-            elif (isinstance(arg, float)):
-                pyarg_list.append(arg)
-        num_outputs = len(self.outputs)
-        compute_instr  = lp.RemoteCall(0, self.compute, pyarg_list, num_outputs, **kwargs)
-        write_instrs = eval_outputs(compute_instr,results, var_values)
-        read_instrs =  [x for x in args_evaluated if isinstance(x, RemoteRead)]
-        return InstructionBlock(read_instrs + [compute_instr] + write_instr, priority=0)
 
     def find_writer_var_values(self, read_ref, var_names, var_limits):
         if (current_reduction_level == -1):
@@ -704,14 +709,14 @@ class ReductionOperatorExpr(OperatorExpr):
 
         for arg in self.args:
             if (isinstance(arg, BigMatrixBlock)):
-                if write_ref[0] != arg[0]:
+                if write_ref.matrix != arg.matrix:
                     continue
                 if not var_names:
-                    if tuple(write_ref[1]) == tuple(read_expr[1]):
+                    if tuple(write_ref.indices) == tuple(read_expr.indices):
                         results.append({})
                     continue
-                assert len(write_ref[1]) == len(read_expr[1])
-                possibs = self._enumerate_possibilities(write_ref[1], read_expr[1],
+                assert len(write_ref.indices) == len(read_expr.indices)
+                possibs = self._enumerate_possibilities(write_ref.indices, read_expr[1],
                                                      var_names, var_limits)
                 results += possibs
             elif (isinstance(arg, sympy.Basic)):
@@ -727,7 +732,6 @@ class ReductionOperatorExpr(OperatorExpr):
                 possibs = self._enumerate_possibilities(write_ref[1], reduction_expr[1], var_names, var_limits)
                 results += possibs
         return utils.remove_duplicates(results)
-        
 
 
 
@@ -781,8 +785,6 @@ class BlockStatement(Statement):
             str_repr += str(stmt)
             str_repr += "\n"
         return str_repr
-
-
 
 
 class Program(BlockStatement):
