@@ -10,8 +10,8 @@ import sys
 import time
 import traceback
 import tracemalloc
-
 import aiobotocore
+import botocore
 import boto3
 import json
 import numpy as np
@@ -20,6 +20,7 @@ import pywren
 from pywren.serialize import serialize
 import redis
 import sympy
+import hashlib
 
 
 REDIS_CLIENT = None
@@ -75,7 +76,9 @@ class LambdaPackExecutor(object):
     async def run(self, expr_idx, var_values, computer=None, profile=True):
         operator_refs = [(expr_idx, var_values)]
         operator_refs_to_ret = []
+        profile_bytes_to_ret = []
         for expr_idx, var_values in operator_refs:
+            print("RUNNING, {0}, {1}".format(expr_idx, var_values))
             expr = self.program.program.get_expr(expr_idx)
             logger.debug("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
             t = time.time()
@@ -101,6 +104,10 @@ class LambdaPackExecutor(object):
                                      " REF: {0}, time: {1}, pid: {2}".format((expr_idx, var_values), time.time(), os.getpid()))
                             raise Exception(e_str)
                         instr.start_time = time.time()
+                        if (isinstance(instr, lp.RemoteRead)):
+                              await self.program.begin_read()
+                        if (isinstance(instr, lp.RemoteWrite)):
+                              await self.program.begin_write()
                         if (isinstance(instr, lp.RemoteReturn) or isinstance(instr, lp.RemoteRead) or isinstance(instr, lp.RemoteWrite)):
                            res = await instr(redis_client=self.program.control_plane.client)
                         else:
@@ -121,11 +128,13 @@ class LambdaPackExecutor(object):
                         instr.run = False
                         instr.result = None
 
-                    next_operator = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    profile_bytes_to_ret.append(log_bytes)
                 elif (node_status == lp.NS.POST_OP):
                     operator_refs_to_ret.append((expr_idx, var_values))
                     logger.warning("node: {0}:{1} finished work skipping to post_op...".format(expr_idx, var_values))
-                    next_operator = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    profile_bytes_to_ret.append(log_bytes)
                 elif (node_status == lp.NS.NOT_READY):
                    logger.warning("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
 
@@ -138,22 +147,22 @@ class LambdaPackExecutor(object):
                 if next_operator is not None:
                     operator_refs.append(next_operator)
             except fs._base.TimeoutError as e:
-                self.program.decr_up(1)
+                #self.program.decr_up(1)
                 raise
             except RuntimeError as e:
-                self.program.decr_up(1)
+                #self.program.decr_up(1)
                 raise
             except Exception as e:
                 instr.run = True
                 instr.cache = None
                 instr.executor = None
-                self.program.decr_up(1)
+                #self.program.decr_up(1)
                 traceback.print_exc()
                 tb = traceback.format_exc()
                 self.program.post_op(expr_idx, var_values, lp.PS.EXCEPTION, inst_block, tb=tb)
                 raise
         e = time.time()
-        return operator_refs_to_ret
+        return list(zip(operator_refs_to_ret, profile_bytes_to_ret))
 
 
 def calculate_busy_time(rtimes):
@@ -229,10 +238,14 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
         cache = LRUCache(max_items=cache_size)
     else:
         cache = None
+    m = hashlib.md5()
+    profiles = {}
     shared_state = {}
     shared_state["busy_workers"] = 0
     shared_state["done_workers"] = 0
     shared_state["pipeline_width"] = pipeline_width
+    shared_state["all_operator_refs"] = []
+    shared_state["profiles"] = profiles
     shared_state["running_times"] = []
     shared_state["last_busy_time"] = time.time()
     shared_state["tot_messages"]  = []
@@ -248,11 +261,28 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     print("loop end")
     loop.close()
     lambda_stop = time.time()
+    profile_bytes = pickle.dumps(profiles)
+    m.update(profile_bytes)
+    p_key = m.hexdigest()
+    p_key = "{0}/{1}/{2}".format("lambdapack", program.hash, p_key)
+    client = boto3.client('s3', region_name=program.control_plane.region)
+    backoff = 1
+    while(True):
+       try:
+         new_loop = asyncio.new_event_loop()
+         res = new_loop.run_until_complete(asyncio.ensure_future(program.begin_write(), loop=new_loop))
+         client.put_object(Bucket=program.bucket, Key=p_key, Body=profile_bytes)
+         break
+       except botocore.exceptions.ClientError:
+         time.sleep(backoff)
+         backoff *= 2
+         pass
     program.decr_up(1)
     print(program.program_status())
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"]),
-            "executed_messages": shared_state["tot_messages"]}
+            "executed_messages": shared_state["tot_messages"],
+            "operator_refs": shared_state["all_operator_refs"]}
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lock):
     assert(timeout > timeout_jitter)
@@ -342,14 +372,18 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             lock = [1]
             coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, msg_vis_timeout_jitter, lock)
             loop.create_task(coro)
+            all_operator_refs = shared_state["all_operator_refs"]
             operator_refs = await lmpk_executor.run(*operator_ref, computer=computer)
-
-            for operator_ref in operator_refs:
+            profiles = shared_state["profiles"]
+            for operator_ref, p_info in operator_refs:
                 logger.debug("Marking {0} as done".format(operator_ref))
                 program.set_node_status(*operator_ref, lp.NS.FINISHED)
+                all_operator_refs.append(operator_ref)
+                profiles[str(operator_ref)] = p_info
             async with session.create_client('sqs', use_ssl=False,  region_name=program.control_plane.region) as sqs_client:
                 lock[0] = 0
                 await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+
             end_processing_time = time.time()
             running_times.append((start_processing_time, end_processing_time))
             shared_state["busy_workers"] -= 1

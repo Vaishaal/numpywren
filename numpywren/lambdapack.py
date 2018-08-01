@@ -206,6 +206,26 @@ def decr(client, key, amount, s3=False, s3_bucket=""):
       return val
 
 
+async def rate_limit(loop, client, key_base, limit, sleep_time=0.5, expire_time=10, log_fn=None):
+  while(True):
+    t = int(sleep_time)
+    key_name = "{0}_{1}".format(key_base, t)
+    current_value = get(client, key_name)
+    if current_value != None and int(current_value) > limit:
+      if "write" in key_base:
+        incr_s3_timeouts_write(client)
+      elif "read" in key_base:
+        incr_s3_timeouts_read(client)
+      await asyncio.sleep(sleep_time)
+    else:
+      with client.pipeline() as pipe:
+        pipe.multi()
+        pipe.incr(key_name)
+        pipe.expire(key_name, expire_time)
+        pipe.execute()
+        break
+  return 0
+
 
 def conditional_increment(client, key_to_incr, condition_key):
   ''' Crucial atomic operation needed to insure DAG correctness
@@ -688,9 +708,11 @@ class LambdaPackProgram(object):
     '''
     def __init__(self, program, config, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG,
                  num_priorities=3, io_rate=3e7, flop_rate=20e9, eager=False,
-                 num_program_shards=5000):
+                 num_program_shards=5000, write_limit=1e6, read_limit=1e6):
         self.config = config
         self.pywren_config = pywren_config
+        self.write_limit = write_limit
+        self.read_limit = read_limit
         self.config = config
         self.executor = executor
         self.bucket = pywren_config['s3']['bucket']
@@ -740,23 +762,28 @@ class LambdaPackProgram(object):
         s = 0
       return NS(int(s))
 
+
     def set_node_status(self, expr_id, var_values, status):
       put(self.control_plane.client, self._node_key(expr_id, var_values), status.value)
       return status
 
-    def set_profiling_info(self, inst_block, expr_idx, var_values):
+    def dump_profiling_info(self, inst_block, expr_idx, var_values):
         byte_string = dill.dumps(inst_block)
-        client = boto3.client('s3', region_name=self.control_plane.region)
-        backoff = 1
-        while(True):
-          try:
-            client.put_object(Bucket=self.bucket, Key="lambdapack/{0}/{1}_{2}".format(self.hash, expr_idx, var_values), Body=byte_string)
-            break
-          except:
-            incr_s3_timeouts_write(self.control_plane.client)
-            time.sleep(backoff)
-            backoff *= 2
+        return byte_string
 
+    async def begin_write(self, loop=None):
+      if (loop == None):
+        loop = asyncio.get_event_loop()
+      key = "{0}.write".format(self.hash)
+      if (self.write_limit) > 0:
+        await rate_limit(loop, self.control_plane.client, key, self.write_limit)
+
+    async def begin_read(self, loop=None):
+      if (loop == None):
+        loop = asyncio.get_event_loop()
+      key = "{0}.read".format(self.hash)
+      if (self.read_limit) > 0:
+        await rate_limit(loop, self.control_plane.client, key, self.read_limit)
 
     def post_op(self, expr_idx, var_values, ret_code, inst_block, tb=None):
         # need clean post op logic to handle
@@ -829,8 +856,8 @@ class LambdaPackProgram(object):
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
           self.incr_progress()
-          self.set_profiling_info(inst_block, expr_idx, var_values)
-          return next_operator
+          profiling_info = self.dump_profiling_info(inst_block, expr_idx, var_values)
+          return next_operator, profiling_info
         except Exception as e:
             tb = traceback.format_exc()
             traceback.print_exc()
@@ -935,10 +962,7 @@ class LambdaPackProgram(object):
         return [self.get_profiling_info(i) for i in range(self.num_inst_blocks) if i is not None]
 
     def get_profiling_info(self, expr_idx, var_values):
-        try:
           client = boto3.client('s3')
           byte_string = client.get_object(Bucket=self.bucket, Key="lambdapack/{0}/{1}_{2}".format(self.hash, expr_idx, var_values))["Body"].read()
           return dill.loads(byte_string)
-        except:
-          raise
 
