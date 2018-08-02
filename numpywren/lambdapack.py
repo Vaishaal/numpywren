@@ -258,7 +258,6 @@ class RemoteRead(RemoteInstruction):
               while (True):
                 try:
                   self.result = await asyncio.wait_for(self.matrix.get_block_async(loop, *self.bidxs), self.MAX_READ_TIME)
-                  print("Remote read", self.result)
                   break
                 except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError):
                   await asyncio.sleep(backoff)
@@ -298,7 +297,6 @@ class RemoteWrite(RemoteInstruction):
         if (prev != None):
           await prev
         loop = asyncio.get_event_loop()
-        print(self.data_loc)
         self.start_time = time.time()
         if (self.result is None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
@@ -399,12 +397,18 @@ class RemoteCall(RemoteInstruction):
         def compute():
           self.start_time = time.time()
           # TODO: we shouldn't need to squeeze here.
-          results = self.compute(*self.argv_instr, **self.kwargs)
+          pyarg_list = []
+          for arg in self.argv_instr:
+            if (isinstance(arg, RemoteRead)):
+              pyarg_list.append(arg.result)
+            elif (isinstance(arg, float)):
+              pyarg_list.append(arg)
+
+          results = self.compute(*pyarg_list, **self.kwargs)
           if (len(results) != len(self.results)):
             raise Exception("Expected {0} results, got {1}".format(len(self.results), len(results)))
           for i,r in enumerate(results):
             self.results[i] = results[i]
-          print("POST_COMPUTE", self.results)
           self.ret_code = 0
           self.end_time = time.time()
           return self.results

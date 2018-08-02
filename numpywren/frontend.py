@@ -929,15 +929,14 @@ def lpcompile(function):
 
 
 def qr(*blocks):
-    print("IN QR", blocks)
     return np.linalg.qr(np.vstack(blocks))
 #@lpcompile
 def TSQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int):
     for i in range(N):
         Qs[0,i], Rs[0,i] = qr(A[i, 0])
-    with reducer(expr=Rs[i,j], var=j, start=0, end=N, b_fac=2) as r:
-        Qs[r.level, i], Rs[r.level, i] = qr(*r.reduce_args)
-        r.reduce_next(Rs[r.level, i])
+    with reducer(expr=Rs[0,j], var=j, start=0, end=N, b_fac=2) as r:
+        Qs[r.level + 1, j], Rs[r.level + 1, j] = qr(*r.reduce_args)
+        r.reduce_next(Rs[r.level, j])
 
 #@lpcompile
 def CAQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int, M:int) -> (BigMatrix, BigMatrix):
@@ -968,7 +967,7 @@ def TSLU(A:BigMatrix, P:BigMatrix, S:BigMatrix, L:BigMatrix, U:BigMatrix, N:int)
 
 if __name__ == "__main__":
     N = 32
-    nb = 16
+    nb = 8
     X = np.random.randn(N,N)
     I = BigMatrix("TSQR_input", shape=(int(N),int(N)), shard_sizes=(nb, nb))
     shard_matrix(I, X)
@@ -977,14 +976,19 @@ if __name__ == "__main__":
     program = lpcompile(TSQR)(I, Q, R, int(np.ceil(N/nb)))
     print(program)
     starters = program.starters
-    operator_expr = program.get_expr(starters[0][0])
-    inst_block = operator_expr.eval_operator(starters[0][1])
+    print("STARTER", starters[1])
+    c = program.get_children(*starters[1])
+    print("starter children", c)
+    c2 = program.get_children(*c[0])
+    print("starter children 2", c2)
+
+
+    operator_expr = program.get_expr(c[0][0])
+    inst_block = operator_expr.eval_operator(c[0][1])
+
+    operator_expr = program.get_expr(c2[0][0])
+    inst_block = operator_expr.eval_operator(c2[0][1])
     print(inst_block)
-    coros = inst_block()
-    tasks = []
-    for coro in coros:
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(loop.create_task(coro))
 
 
 

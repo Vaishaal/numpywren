@@ -38,3 +38,13 @@ def remove_duplicates(l):
         if elt not in new_list:
             new_list.append(elt)
     return new_list 
+
+def merge_dictionaries(*args):
+    res = []
+    keys = []
+    for arg in args:
+        res += list(arg.items())
+        keys += list(arg.keys())
+    if (len(keys) != len(set(keys))):
+        raise Exception("can only merge dictionaries with unique keys")
+    return dict(res)
