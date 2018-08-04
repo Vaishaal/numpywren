@@ -73,6 +73,8 @@ class LambdaPackExecutor(object):
 
     #@profile
     async def run(self, expr_idx, var_values, computer=None, profile=True):
+        print("RUNNING...")
+        print(var_values)
         operator_refs = [(expr_idx, var_values)]
         operator_refs_to_ret = []
         for expr_idx, var_values in operator_refs:
@@ -102,7 +104,7 @@ class LambdaPackExecutor(object):
                             raise Exception(e_str)
                         instr.start_time = time.time()
                         if (isinstance(instr, lp.RemoteReturn)):
-                           res = await instr(self.program.control_plane.client)
+                           res = await instr(self.program.control_plane.client, self.program.hash)
                         else:
                            res = await instr()
                         instr.end_time = time.time()
@@ -245,11 +247,9 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     #results = loop.run_until_complete(asyncio.gather(*tasks))
     #return results
     loop.run_forever()
-    print("loop end")
     loop.close()
     lambda_stop = time.time()
     program.decr_up(1)
-    print(program.program_status())
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"]),
             "executed_messages": shared_state["tot_messages"]}
@@ -267,7 +267,6 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lo
             print("PC: {0} Exception in reset msg vis ".format(operator_ref) + str(e))
             await asyncio.sleep(10)
     operator_ref = tuple(json.loads(msg["Body"]))
-    print("Exiting msg visibility for {0}".format(operator_ref))
     return 0
 
 async def check_program_state(program, loop, shared_state, timeout, idle_timeout):
@@ -284,7 +283,7 @@ async def check_program_state(program, loop, shared_state, timeout, idle_timeout
         if(s != lp.PS.RUNNING):
            print("program status is ", s)
            break
-        await asyncio.sleep(30)
+        await asyncio.sleep(idle_timeout)
     print("Closing loop from program")
     loop.stop()
 
@@ -334,7 +333,6 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             #res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             operator_ref = json.loads(msg["Body"])
             shared_state["tot_messages"].append(operator_ref)
-            operator_ref = (operator_ref[0], {sympy.Symbol(key): val for key, val in operator_ref[1].items()})
             redis_client.set(msg["MessageId"], str(time.time()))
             #print("creating lock")
             lock = [1]

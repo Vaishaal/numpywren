@@ -7,12 +7,12 @@ import logging
 import abc
 from numpywren.matrix import BigMatrix
 from numpywren.matrix_init import shard_matrix
-from numpywren import exceptions
+from numpywren import exceptions, compiler
 from pydoc import locate
 import sympy
-import compiler
 import numpy as np
 import asyncio
+from numpywren.kernels import *
 
 ''' front end parser + typechecker for lambdapack
 
@@ -782,10 +782,6 @@ class BackendGenerate(ast.NodeVisitor):
         self.kwargs = kwargs
 
     def visit_FuncDef(self, node):
-        print("args")
-        print(node.args)
-        print(self.arg_values)
-        print(node.arg_types)
         assert len(node.args) == len(self.arg_values), "function {0} expected {1} args got {2}".format(node.name, len(node.args), len(self.arg_values))
         for i, (arg, arg_value, arg_type)  in enumerate(zip(node.args, self.arg_values, node.arg_types)):
             p_type = python_type_to_lp_type(type(arg_value), const=True)
@@ -793,11 +789,11 @@ class BackendGenerate(ast.NodeVisitor):
                 raise LambdaPackBackendGenerationException("arg {0} wrong type expected {1} got {2}".format(i, arg_type, p_type))
             self.global_symbol_table[arg] = arg_value
         body = [self.visit(x) for x in node.body]
-        return_expr = compiler.OperatorExpr(self.count, compiler.RemoteReturn, args=[], outputs=[], scope={})
+        return_expr = compiler.OperatorExpr(self.count, compiler.RemoteReturn(len(body)), args=[], outputs=[], scope={})
         body.append(return_expr)
         assert(len(node.args) == len(self.arg_values))
-        self.program = compiler.Program(node.name, body, symbols=self.global_symbol_table)
-        self.program.return_expr = return_expr
+        self.program = compiler.Program(node.name, body, return_expr=return_expr, symbols=self.global_symbol_table)
+        print("RETURN EXPR",self.program.return_expr)
         return self.program
 
     def visit_RemoteCall(self, node):
@@ -930,13 +926,14 @@ def lpcompile(function):
 
 def qr(*blocks):
     return np.linalg.qr(np.vstack(blocks))
+
 #@lpcompile
 def TSQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int):
     for i in range(N):
         Qs[0,i], Rs[0,i] = qr(A[i, 0])
     with reducer(expr=Rs[0,j], var=j, start=0, end=N, b_fac=2) as r:
         Qs[r.level + 1, j], Rs[r.level + 1, j] = qr(*r.reduce_args)
-        r.reduce_next(Rs[r.level, j])
+        r.reduce_next(Rs[r.level + 1, j])
 
 #@lpcompile
 def CAQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int, M:int) -> (BigMatrix, BigMatrix):
@@ -977,6 +974,7 @@ if __name__ == "__main__":
     print(program)
     starters = program.starters
     print("STARTER", starters[1])
+    print("TERMINATORS", program.find_terminators())
     c = program.get_children(*starters[1])
     print("starter children", c)
     c2 = program.get_children(*c[0])

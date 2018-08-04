@@ -29,10 +29,9 @@ import redis
 import scipy.linalg
 import dill
 import redis.exceptions
-
 from .matrix import BigMatrix
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
-from . import control_plane
+from . import control_plane, matrix
 from . import utils
 
 
@@ -302,10 +301,11 @@ class RemoteWrite(RemoteInstruction):
             cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
             if (self.cache != None):
               # write to the cache
-              self.cache[cache_key] = self.data
+              self.cache[cache_key] = self.data_loc[self.data_idx]
             backoff = 0.2
             while (True):
               try:
+                print("writing to {0} at {1}".format(self.matrix, self.bidxs))
                 self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_loc[self.data_idx], loop, *self.bidxs), self.MAX_WRITE_TIME)
                 break
               except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError) as e:
@@ -403,19 +403,22 @@ class RemoteCall(RemoteInstruction):
               pyarg_list.append(arg.result)
             elif (isinstance(arg, float)):
               pyarg_list.append(arg)
-
+          print("COMPUTE", self.compute)
           results = self.compute(*pyarg_list, **self.kwargs)
-          if (len(results) != len(self.results)):
+          if (isinstance(results, tuple) and len(results) != len(self.results)):
             raise Exception("Expected {0} results, got {1}".format(len(self.results), len(results)))
-          for i,r in enumerate(results):
-            self.results[i] = results[i]
+          elif (isinstance(results, tuple)):
+            for i,r in enumerate(results):
+              self.results[i] = results[i]
+          else:
+            self.results[0] = results
           self.ret_code = 0
           self.end_time = time.time()
           return self.results
         return await loop.run_in_executor(self.executor, compute)
 
     def get_flops(self):
-      if self.compute.flops is not None:
+      if getattr(self.compute, "flops", None) is not None:
         return self.compute.flops(*argv_instr)
       else:
         return 0
@@ -619,18 +622,15 @@ class RemoteCholesky(RemoteInstruction):
 
 
 class RemoteReturn(RemoteInstruction):
-    def __init__(self, i_id, *args, **kwargs):
+    def __init__(self, i_id):
         super().__init__(i_id)
         self.i_code = OC.RET
         self.result = None
-        self.return_loc = kwargs["hash"]
-    async def __call__(self, client, prev=None):
-      if (prev != None):
-          await prev
+    async def __call__(self, client, return_hash):
       loop = asyncio.get_event_loop()
       self.start_time = time.time()
       if (self.result == None):
-        put(client, self.return_loc, PS.SUCCESS.value)
+        put(client, return_hash, PS.SUCCESS.value)
         self.size = sys.getsizeof(PS.SUCCESS.value)
       self.end_time = time.time()
       return self.result
@@ -638,8 +638,11 @@ class RemoteReturn(RemoteInstruction):
     def clear(self):
         self.result = None
 
+    def __name__(self):
+      return "RemoteReturn"
+
     def __str__(self):
-        return "{0} = RET {1}".format(self.id, self.return_loc)
+        return "RET"
 
 class InstructionBlock(object):
     block_count = 0
@@ -682,19 +685,12 @@ class LambdaPackProgram(object):
        on stateless computing substrates
        Maintains global state information
     '''
-    def __init__(self, program, config, executor=pywren.default_executor, pywren_config=DEFAULT_CONFIG,
-                 num_priorities=1, io_rate=3e7, flop_rate=20e9, eager=False,
-                 num_program_shards=5000):
-        pwex = executor(config=pywren_config)
+    def __init__(self, program, config, num_priorities=1, eager=False):
         self.config = config
-        self.pywren_config = pywren_config
         self.config = config
-        self.executor = executor
-        self.bucket = pywren_config['s3']['bucket']
+        self.bucket = matrix.DEFAULT_BUCKET
         self.program = program
         self.max_priority = num_priorities - 1
-        self.io_rate = io_rate
-        self.flop_rate = flop_rate
         self.eager = eager
         cpid = control_plane.get_control_plane_id(config=config)
         if (cpid is None):
@@ -766,6 +762,7 @@ class LambdaPackProgram(object):
               operator_expr = self.program.get_expr(child[0])
               my_child_edge = self._edge_key(expr_idx, var_values, *child)
               child_edge_sum_key = self._node_edge_sum_key(*child)
+              print("child edge sum key ", child_edge_sum_key)
               # redis transaction should be atomic
               tp = fs.ThreadPoolExecutor(1)
               val_future = tp.submit(conditional_increment, self.control_plane.client, child_edge_sum_key, my_child_edge)
@@ -777,6 +774,8 @@ class LambdaPackProgram(object):
                 num_child_parents = self.program.num_terminators
               else:
                 num_child_parents = len(self.program.get_parents(child[0], child[1]))
+                print("CHILD PARENTS ", self.program.get_parents(child[0], child[1]))
+                print("Val ", val)
 
               if ((val == num_child_parents) and self.get_node_status(*child) != NS.FINISHED):
                 self.set_node_status(*child, NS.READY)
@@ -794,12 +793,12 @@ class LambdaPackProgram(object):
           # the idea is that if we do something like a local cholesky decomposition
           # we would run its highest priority child *locally* by adding the instructions to the local instruction queue
           # this has 2 key benefits, first we completely obliviete scheduling overhead between these two nodes but also because of the local LRU cache the first read of this node will be saved this will translate
-
+          print("Children {0} Ready Children {1}".format(children, ready_children))
           client = boto3.client('sqs', region_name=self.control_plane.region)
           assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
             # TODO: Re-add priorities here
-            message_body = json.dumps([int(child[0]), {key.name: int(val) for key, val in child[1].items()}])
+            message_body = json.dumps([int(child[0]), {str(key): int(val) for key, val in child[1].items()}])
             resp = client.send_message(QueueUrl=self.queue_urls[0], MessageBody=message_body)
 
           inst_block.end_time = time.time()
@@ -822,7 +821,7 @@ class LambdaPackProgram(object):
           self.set_node_status(*starter, NS.READY)
           # TODO readd priorities here
           queue = sqs.Queue(self.queue_urls[0])
-          queue.send_message(MessageBody=json.dumps([starter[0], {key.name: val for key, val in starter[1].items()}]))
+          queue.send_message(MessageBody=json.dumps([starter[0], {str(key): val for key, val in starter[1].items()}]))
         return 0
 
     def stop(self):
@@ -897,9 +896,10 @@ class LambdaPackProgram(object):
     def wait(self, sleep_time=1):
         status = self.program_status()
         # TODO reinstate status change
-        # while (status == PS.RUNNING):
-        #     time.sleep(sleep_time)
-        #     status = self.program_status()
+        while (status == PS.RUNNING):
+              print(status)
+              time.sleep(sleep_time)
+              status = self.program_status()
 
     def free(self):
         for queue_url in self.queue_urls:

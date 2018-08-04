@@ -39,7 +39,7 @@ def remove_duplicates(l):
             new_list.append(elt)
     return new_list 
 
-def merge_dictionaries(*args):
+def merge_dicts(*args):
     res = []
     keys = []
     for arg in args:
@@ -48,3 +48,9 @@ def merge_dictionaries(*args):
     if (len(keys) != len(set(keys))):
         raise Exception("can only merge dictionaries with unique keys")
     return dict(res)
+
+def chunk(l, n):
+    """Yield successive n-sized chunks from l."""
+    if n == 0: return []
+    for i in range(0, len(l), n):
+        yield l[i:i + n]

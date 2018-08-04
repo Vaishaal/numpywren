@@ -283,7 +283,7 @@ class BigMatrix(object):
         """
         if (loop == None):
             loop = asyncio.get_event_loop()
-
+        print("Calling get block for ", block_idx)
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
         key = self.__shard_idx_to_key__(block_idx)
@@ -351,6 +351,7 @@ class BigMatrix(object):
                 block = block.reshape(current_shape)
 
         if (block.shape != current_shape):
+            print("BLOCK IDX IS ", block_idx)
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
 
         #block = block.astype(self.dtype)

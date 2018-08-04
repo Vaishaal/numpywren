@@ -215,7 +215,6 @@ class NumpywrenParse(ast.NodeVisitor):
                 return Reduce(**kwargs)
 
             assert(isinstance(node.targets[0], ast.Subscript))
-            print(node.value.func.id)
             assert(node.value.func.id in VALID_CALLS)
             reads = []
             for arg in node.value.args:
@@ -338,12 +337,9 @@ def lpcompile(function, inputs, outputs):
     def func(*args, **kwargs):
         logger.warning("Source code : \n{}\n".format(inspect.getsource(function)))
         function_ast = ast.parse(inspect.getsource(function)).body[0]
-        print("Python AST:\n{}\n".format(astor.dump(function_ast)))
         parser = NumpywrenParse(args, kwargs, inputs, outputs)
         lp_ast = parser.visit(function_ast)
-        logger.warning("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
         program = BackendGenerator.generate_program(lp_ast)
-        logger.warning("Program: {0}".format(program))
         return program
     return func
 
@@ -386,8 +382,6 @@ class OperatorExpr(Statement):
     def eval_big_matrix_block(self, bigm_block, var_values):
         idx_evaluated = ()
         for idx in bigm_block.indices:
-            print(idx)
-            print(var_values)
             idx_subbed = scope_sub(idx, var_values)
             idx = scope_sub(idx_subbed, self.scope)
             if (idx.is_integer is None):
@@ -408,6 +402,8 @@ class OperatorExpr(Statement):
         return outputs_evaluated
 
     def eval_operator(self, var_values, **kwargs):
+        if (isinstance(self.compute, RemoteReturn)):
+            return InstructionBlock([self.compute])
         args_evaluated = self.eval_args(var_values)
         pyarg_list = []
         pyarg_symbols = []
@@ -419,13 +415,10 @@ class OperatorExpr(Statement):
             elif (isinstance(arg, float)):
                 pyarg_list.append(arg)
         num_outputs = len(self.outputs)
-        print(pyarg_list)
-        compute_instr  = RemoteCall(0, self.compute, args_evaluated, num_outputs, pyarg_symbols,**kwargs)
+        compute_instr  = RemoteCall(0, self.compute, args_evaluated, num_outputs, pyarg_symbols, **kwargs)
         num_args = len(pyarg_list)
         write_instrs = self.eval_outputs(compute_instr.results, var_values, num_args)
         read_instrs =  [x for x in args_evaluated if isinstance(x, RemoteRead)]
-        print(self.args)
-        print("READ INSTRS", read_instrs)
         return InstructionBlock(read_instrs + [compute_instr] + write_instrs, priority=0)
 
     def eval_args(self, var_values):
@@ -446,15 +439,12 @@ class OperatorExpr(Statement):
                     for r in r_arg:
                         args_evaluated.append(RemoteRead(0, r.matrix, *r.indices))
             else:
-                print(arg)
                 raise Exception("forbidden")
         return args_evaluated
 
     def find_reader_var_values(self, write_ref, var_names, var_limits, current_reduction_level=-1):
         results = []
         for read_expr in self._read_exprs:
-            print(write_ref)
-            print(read_expr)
             if write_ref.matrix != read_expr.matrix:
                 continue
             if not var_names:
@@ -470,19 +460,18 @@ class OperatorExpr(Statement):
         if (len(self._write_exprs)) == 0:
             return []
         results = []
-        for write_expr in self.write_exprs:
-            if read_ref[0] != self._write_expr[0]:
+        for write_expr in self._write_exprs:
+            if read_ref.matrix != write_expr.matrix:
                 return []
             if not var_names:
-                if tuple(read_ref[1]) == tuple(self._write_expr[1]):
+                if tuple(read_ref.indices) == tuple(write_expr.indices):
                     return [{}]
-            assert len(read_ref[1]) == len(self._write_expr[1])
-            results += self._enumerate_possibilities(read_ref[1], self._write_expr[1],
+            assert len(read_ref.indices) == len(write_expr.indices)
+            results += self._enumerate_possibilities(read_ref.indices, write_expr.indices,
                                                     var_names, var_limits)
         return utils.remove_duplicates(results)
 
     def eval_read_refs(self, var_values):
-        read_refs = []
         for i,arg in enumerate(self.args):
             if (isinstance(arg, BigMatrixBlock)):
                 read_refs.append(self._eval_block_ref(arg, var_values))
@@ -497,7 +486,6 @@ class OperatorExpr(Statement):
     def eval_write_ref(self, var_values):
         write_refs = []
         for i, output in enumerate(self.outputs):
-            print(output)
             if (isinstance(output, BigMatrixBlock)):
                 write_refs.append(self._eval_block_ref(output, var_values))
             else:
@@ -512,11 +500,18 @@ class OperatorExpr(Statement):
 
     def _enumerate_possibilities(self, in_ref, out_expr, var_names, var_limits):
         s = time.time()
+        for i,c in enumerate(var_limits):
+            if(len(var_limits[i]) < 3):
+                var_limits[i] += (1,)
+            else:
+                pass
+
+        print("VAR_LIMITS", var_limits)
         def brute_force_limits(sol, var_values, var_names, var_limits):
             simple_var = None
             simple_var_idx = None
-            var_limits = [(scope_sub(low, self.scope).subs(var_values), scope_sub(high, self.scope).subs(var_values)) for (low, high) in var_limits]
-            for (i,(var_name, (low,high))) in enumerate(zip(var_names, var_limits)):
+            var_limits = [(scope_sub(low, self.scope).subs(var_values), scope_sub(high, self.scope).subs(var_values), scope_sub(step, self.scope).subs(var_values)) for (low, high, step) in var_limits]
+            for (i,(var_name, (low,high,step))) in enumerate(zip(var_names, var_limits)):
                 low = low.subs(var_values)
                 high = low.subs(var_values)
                 if (not low.is_Symbol) and (not high.is_Symbol):
@@ -525,17 +520,16 @@ class OperatorExpr(Statement):
                     break
             if (simple_var is None):
                 raise Exception("NO simple var in loop")
-            print(var_limits)
             limits = var_limits[simple_var_idx]
             solutions = []
             if ((not sol[0].is_Symbol) and (sol[0] < limits[0] or sol[0] >= limits[1])):
                     return []
             simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
-            for val in range(limits[0], limits[1]):
+            for val in range(limits[0], limits[1], limits[2]):
                 var_values = var_values.copy()
 
-                var_values[simple_var] = int(simple_var_func(val))
-                if(var_values[simple_var] != val):
+                var_values[str(simple_var)] = int(simple_var_func(val))
+                if(var_values[str(simple_var)] != val):
                     continue
                 limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
                 if (len(limits_left) > 0):
@@ -552,13 +546,14 @@ class OperatorExpr(Statement):
         solve_vars  = []
         simple_var = None
         simple_var_idx = None
-        for (i,(var_name, (low,high))) in enumerate(zip(var_names, var_limits)):
+        var_limits = [(scope_sub(x, self.scope), scope_sub(y, self.scope), scope_sub(z, self.scope)) for (x,y,z) in var_limits]
+        for (i,(var_name, (low,high,step))) in enumerate(zip(var_names, var_limits)):
             if (low.is_constant()) and (high.is_constant()):
                 simple_var = var_name
                 simple_var_idx = i
                 break
 
-        print("simple_var is ", simple_var)
+
         if (simple_var is None):
             raise Exception("NO simple var in loop: limits={0}, inref={1}, outref={2}".format(list(zip(var_names, var_limits)), in_ref, out_expr))
         solve_vars = [simple_var] + [x for x in var_names if x != simple_var]
@@ -573,17 +568,17 @@ class OperatorExpr(Statement):
             sol = sols[0]
             if (np.all([x.is_Symbol == False for x in sol]) and
                     np.all([x.is_Integer == True for x in sol])):
-                solutions = [dict(zip(solve_vars, sol))]
+                solutions = [dict(zip([str(x) for x in solve_vars], sol))]
             else:
                 limits = var_limits[simple_var_idx]
                 solutions = []
                 simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
                 if ((not sol[0].is_Symbol) and (sol[0] < limits[0] or sol[0] >= limits[1])):
                     return []
-                for val in range(limits[0], limits[1]):
+                for val in range(limits[0], limits[1], limits[2]):
                     var_values = {}
-                    var_values[simple_var] = int(simple_var_func(val))
-                    if(var_values[simple_var] != val):
+                    var_values[str(simple_var)] = int(simple_var_func(val))
+                    if(var_values[str(simple_var)] != val):
                         continue
                     limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
                     if (len(limits_left) > 0):
@@ -597,24 +592,19 @@ class OperatorExpr(Statement):
         ret_solutions = []
         for sol in solutions:
             bad_sol = False
-            for (var_name, (low,high)) in zip(var_names, var_limits):
+            for (var_name, (low,high,step)) in zip(var_names, var_limits):
                 low = low.subs(sol)
                 high = high.subs(sol)
-                print(sol[var_name])
-                print(low)
-                print(high)
-                if sol[var_name] < low or sol[var_name] >= high:
+                if sol[str(var_name)] < low or sol[str(var_name)] >= high:
                     bad_sol = True
             if (not bad_sol):
                 ret_solutions.append(sol)
         e = time.time()
         ret = utils.remove_duplicates(ret_solutions)
-        #print("Enumerate possibilities called for in_ref: {0}, out_expr: {1}, var_names: {2}, var_limits {3} and took {4} seconds, sols: {5}, simple_var_idx: {6}".format(in_ref, out_expr, var_names, var_limits, e - s, sols, simple_var_idx))
         return ret
 
     def __str__(self):
         read_str = ""
-        print("READ_EXPR", self._read_exprs)
         for arg in self.args:
             if (isinstance(arg, BackendStargs)):
                 read_str += "*"
@@ -666,8 +656,9 @@ class ReductionOperatorExpr(OperatorExpr):
         self.outputs = remote_call.outputs
         self.args = remote_call.args
         self.compute = remote_call.compute
+        self._is_input = remote_call._is_input
+        self._is_output = remote_call._is_output
 
-        print("REDUCTION REMOTE CALL, ", remote_call)
 
     def __str__(self):
         str_repr = "Reduction(base_case={base_case}, recursion={recursion}, branch={branch}, var={var}, limits={limits}, op={remote_call})"\
@@ -675,9 +666,8 @@ class ReductionOperatorExpr(OperatorExpr):
         return str_repr
 
     def eval_reduction_args(self, var_values):
-        reduction_level = var_values["__LEVEL__"]
-        print("REDUCTION_LEVEL IS {0}".format(reduction_level))
-        reduction_var = var_values[self.var]
+        reduction_level = var_values.get("__LEVEL__", 0)
+        reduction_var = var_values[str(self.var)]
         reduction_branch = scope_sub(self.branch, var_values)
         reduction_branch = scope_sub(self.branch, self.scope)
         if (not reduction_branch.is_constant()):
@@ -695,27 +685,36 @@ class ReductionOperatorExpr(OperatorExpr):
             raise Exception("Reduction end must be constant at eval time")
 
         end = int(end)
-        if (reduction_level > 0):
-            end = np.ceil(end/(reduction_branch**reduction_level))
-
         if (reduction_var > end):
             raise Exception("Reduction var greater than reduction bound")
 
         if (reduction_var < 0):
             raise Exception("Reduction var must be non-negative")
 
-        reduction_start = reduction_var - (reduction_var % reduction_branch)
-        reduction_end = min(reduction_start + reduction_branch, end)
+        reduction_range = list(range(int(start), int(end), int(reduction_branch**reduction_level)))
+        reduction_chunks = list(utils.chunk(reduction_range, reduction_branch))
+        winning_chunk = None
+        for i, chunk in enumerate(reduction_chunks):
+            if (chunk[0] == reduction_var):
+                winning_chunk = chunk
+                break
+        if (winning_chunk is None):
+            print(reduction_var)
+            print(reduction_chunks)
+            print(var_values)
+            print("reduction level", reduction_level)
+            raise Exception("Invalid reduction variable value")
+        reduction_start = winning_chunk[0]
+        reduction_end = winning_chunk[-1]
         if (reduction_level == 0):
             reduction_expr = self.base_case
         else:
             reduction_expr = self.recursion
         reduction_args = []
-        for r_var in range(reduction_start, reduction_end):
+        for r_var in winning_chunk:
             var_values_reduce = var_values.copy()
             var_values_reduce[str(self.var)] = r_var
-            print("VAR_VALUES_REDUCE", var_values_reduce)
-            print("R_VAR", r_var)
+            var_values_reduce["__LEVEL__"] -= 1
             r_arg = ()
             for r_expr in reduction_expr:
                 r_arg += (self.eval_big_matrix_block(r_expr, var_values_reduce),)
@@ -723,38 +722,76 @@ class ReductionOperatorExpr(OperatorExpr):
         return reduction_args
 
     def eval_read_refs(self, var_values):
-        return self.remote_call.eval_read_refs(var_values)
+        read_refs = []
+        for i,arg in enumerate(self.args):
+            if (isinstance(arg, BigMatrixBlock)):
+                read_refs.append(self._eval_block_ref(arg, var_values))
+            elif (isinstance(arg, sympy.Basic)):
+                continue
+            elif (isinstance(arg, BackendStargs) and arg.args.name == "__REDUCE_ARGS__"):
+                reduction_args = self.eval_reduction_args(var_values)
+                print("reduction args are ", [x[0].indices for x in reduction_args])
+                for bigm_block_set in reduction_args:
+                    for bigm_block in bigm_block_set:
+                        read_refs.append(BigMatrixBlock("REDUCTION_ARG", bigm_block.matrix, bigm_block.indices))
+        return read_refs
 
     def eval_write_ref(self, var_values):
-        return self.remote_call.eval_write_ref(var_values)
+        write_refs = []
+        for i, output in enumerate(self.outputs):
+            if (isinstance(output, BigMatrixBlock)):
+                write_refs.append(self._eval_block_ref(output, var_values))
+            else:
+                #TODO this is easily fixable
+                raise Exception("Only BigMatrices can be outputs of RemoteCalls")
+        return write_refs
 
-    def find_writer_var_values(self, read_ref, var_names, var_limits):
+
+
+    def find_writer_var_values(self, read_ref, var_names, var_limits, current_reduction_level=-1):
+        current_reduction_level -= 1
         if (current_reduction_level == -1):
             reduction_expr = self.base_case
         else:
             reduction_expr = self.recursion
-        var_names.append(self.reduction_var)
-        var_limits.append((self.reduction_start, sympy.ceiling(self.reduction_end/(self.branch**(current_reduction_level+1)))))
+
+        self.scope["__LEVEL__"] = current_reduction_level
+        var_names.append(self.var)
+        low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
+        branch = scope_sub(self.branch, self.scope)
+        var_limits.append((low, high, branch))
+        results = []
         for output in self.outputs:
-            if (output[0] != read_ref[0]):
+            if (output.matrix != read_ref.matrix):
                 continue
             if not var_names:
-                if tuple(read_ref[1]) == tuple(output[1]):
+                if tuple(read_ref.indices) == tuple(output.indices):
                     return [{}]
-            assert len(read_ref[1]) == len(output[1])
-            results = self._enumerate_possibilities(read_ref[1], self._write_expr[1], var_names, var_limits)
+            assert len(read_ref.indices) == len(output.indices)
+            idxs = [scope_sub(x, self.scope) for x in output.indices]
+            results = self._enumerate_possibilities(read_ref.indices, idxs, var_names, var_limits)
+        for r in results:
+            r["__LEVEL__"] = current_reduction_level
+            print(r)
         return utils.remove_duplicates(results)
 
 
     def find_reader_var_values(self, write_ref, var_names, var_limits, current_reduction_level=-1):
+        print("Calling find reader var values on {0}".format(write_ref))
         if (current_reduction_level == -1):
             reduction_expr = self.base_case
         else:
             reduction_expr = self.recursion
         var_names.append(self.var)
-        var_limits.append((scope_sub(self.limits[0], self.scope), sympy.ceiling(scope_sub(self.limits[1], self.scope)/(self.branch**(current_reduction_level+1)))))
-        print("LIMITS ARE ", var_limits)
-        self.scope["__LEVEL__"] = current_reduction_level + 1
+        low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
+        branch = scope_sub(self.branch, self.scope)
+        var_limits.append((low, high, branch))
+        self.scope["__LEVEL__"] = current_reduction_level
+        print("HIGH", high)
+        print("TREE LEVEL ", np.ceil(np.log(int(high))/np.log(int(branch))))
+        if ((current_reduction_level + 1) >= np.ceil(np.log(int(high))/np.log(int(branch)))):
+            return []
+
         results = []
         for arg in self.remote_call.args:
             if (isinstance(arg, BigMatrixBlock)):
@@ -765,7 +802,7 @@ class ReductionOperatorExpr(OperatorExpr):
                         results.append({})
                     continue
                 assert len(write_ref.indices) == len(read_expr.indices)
-                possibs = self._enumerate_possibilities(write_ref.indices, read_expr[1],
+                possibs = self._enumerate_possibilities(write_ref.indices, read_expr.indices,
                                                      var_names, var_limits)
                 results += possibs
             elif (isinstance(arg, sympy.Basic)):
@@ -780,30 +817,35 @@ class ReductionOperatorExpr(OperatorExpr):
                             results.append({})
                         continue
                     assert len(write_ref.indices) == len(reduction.indices)
-                    print("CALLING ENUM POSSIBLS")
+                    print("Calling enum possibs on {0} for {1}".format(idxs_subbed, write_ref.indices))
                     possibs = self._enumerate_possibilities(write_ref.indices, idxs_subbed, var_names, var_limits)
-                    print("POSSIBS ARE ", possibs)
                     results += possibs
         results = utils.remove_duplicates(results)
+        branch = scope_sub(self.branch, self.scope)
         for r in results:
             r["__LEVEL__"] = (current_reduction_level + 1)
-        del self.scope["__LEVEL__"]
+            r_var = r[str(self.var)]
+            r_start = var_limits[-1][0]
+            r_end = var_limits[-1][1]
+            chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(current_reduction_level+1))), branch))
+            print("CHUNKED LST", list(chunked_lst))
+            out_var = None
+            for i,c in enumerate(chunked_lst):
+                if (r_var in c):
+                    out_var = i
+
+
+            if (out_var == None):
+                raise Exception("Invalid Reduction")
+            r_var = chunked_lst[out_var][0]
+            r[str(self.var)] = r_var
         return results
-
-
-
-
-
-
-
-
 
 class BlockStatement(Statement):
     def __init__(self, body=[]):
         self._body = body
         self.num_stmts = 0
         self.num_exprs = 0
-        print(self._body)
         for statement in self._body:
             self.num_exprs += statement.num_exprs
             self.num_stmts += 1
@@ -848,8 +890,9 @@ class BlockStatement(Statement):
 
 
 class Program(BlockStatement):
-    def __init__(self, name, body, symbols={}):
+    def __init__(self, name, body, return_expr, symbols={}):
         self.name = name
+        self.return_expr = return_expr
         self.symbols = symbols
         super().__init__(body)
         self.starters = self.find_starters()
@@ -860,11 +903,9 @@ class Program(BlockStatement):
         reduction_level = -1
         if isinstance(operator_expr, ReductionOperatorExpr):
             reduction_level = var_values["__LEVEL__"]
-            print("REDUCTION OPERATOR_EXPR, reduction level: {0}".format(reduction_level))
         if (operator_expr == self.return_expr):
             return []
         write_refs = operator_expr.eval_write_ref(var_values)
-        print("WRITE_REFS", write_refs)
         children = []
         for write_ref in write_refs:
             children += self.eval_read_operators(write_ref, current_reduction_level=reduction_level)
@@ -880,8 +921,13 @@ class Program(BlockStatement):
         parents = []
         operator_expr = self.get_expr(expr_idx)
         read_refs = operator_expr.eval_read_refs(var_values)
+
+        if (isinstance(operator_expr, ReductionOperatorExpr)):
+            current_reduction_level = var_values.get("__LEVEL__", -1)
+        else:
+            current_reduction_level = var_values["__LEVEL__"]
         for read_ref in read_refs:
-            local_parents = self.eval_write_operators(read_ref)
+            local_parents = self.eval_write_operators(read_ref, current_reduction_level=current_reduction_level)
             parents += local_parents
         parents = utils.remove_duplicates(parents)
         return parents
@@ -893,10 +939,41 @@ class Program(BlockStatement):
         cached_sub_funcs = {}
         def recurse_find_terminators(body, expr_id, var_values):
             for statement in body:
-                if isinstance(statement, OperatorExpr):
+                if isinstance(statement, ReductionOperatorExpr):
                     if (not statement._is_output):
                         continue
                     else:
+                        var = statement.var
+                        symbols = tuple(self.symbols.keys())
+                        sub_dict = self.symbols
+                        for k,v in var_values.items():
+                            sub_dict[str(k)] = v
+                        if (statement in cached_sub_funcs):
+                            min_idx_lambda, max_idx_lambda, branch_lambda = cached_sub_funcs[statement]
+                        else:
+                            min_idx_lambda = sympy.lambdify(symbols, statement.limits[0], 'numpy', dummify=False)
+                            branch_lambda = sympy.lambdify(symbols, statement.branch, 'numpy', dummify=False)
+                            max_idx_lambda = sympy.lambdify(symbols, statement.limits[1], 'numpy', dummify=False)
+                            cached_sub_funcs[statement] = (min_idx_lambda, max_idx_lambda, branch_lambda)
+
+                        start_val = min_idx_lambda(**sub_dict)
+                        branch_val = branch_lambda(**sub_dict)
+                        end_val = int(max_idx_lambda(**sub_dict))
+                        num_reductions = int(np.ceil(np.log((end_val - start_val))/np.log(branch_val)))
+
+
+                        for i in range(num_reductions):
+                            for j in range(start_val, end_val, branch_val**(i+1)):
+                                var_values_recurse = var_values.copy()
+                                var_values_recurse[str(var)] = j
+                                var_values_recurse["__LEVEL__"] = i
+                                terminators.append((expr_id, var_values_recurse))
+                        expr_id += 1
+                elif isinstance(statement, OperatorExpr):
+                    if (not statement._is_output):
+                        continue
+                    else:
+                        children =  self.get_children(expr_id, var_values)
                         terminators.append((expr_id, var_values))
                     expr_id += 1
                 elif isinstance(statement, BackendFor):
@@ -914,7 +991,6 @@ class Program(BlockStatement):
                     start_val = min_idx_lambda(**sub_dict)
                     end_val = max_idx_lambda(**sub_dict)
 
-                    #print("STARTING FOR LOOP FROM {0} to {1}".format(start_val, end_val))
                     var = statement._var
                     outputs = False
                     # if there are no outputs in this for loop SKIP
@@ -923,12 +999,12 @@ class Program(BlockStatement):
                     if (outputs):
                         for z in range(start_val, end_val):
                             var_values_recurse = var_values.copy()
-                            var_values_recurse[var] = z
+                            var_values_recurse[str(var)] = z
                             recurse_find_terminators(statement._body, expr_id, var_values_recurse)
                     expr_id += statement.num_exprs
 
         recurse_find_terminators(self._body, expr_id, var_values)
-        return terminators
+        return utils.remove_duplicates(terminators)
 
     def unroll_program(self):
         ''' Warning: this is very expensive! only use on small matrics and/or large block size, primarily for debugging purposes '''
@@ -973,11 +1049,38 @@ class Program(BlockStatement):
         cached_sub_funcs = {}
         def recurse_find_starters(body, expr_id, var_values):
             for statement in body:
-                if isinstance(statement, OperatorExpr):
+                if isinstance(statement, ReductionOperatorExpr):
                     if (not statement._is_input):
                         continue
                     else:
+                        var = statement.var
+                        symbols = tuple(self.symbols.keys())
+                        sub_dict = self.symbols
+                        for k,v in var_values.items():
+                            sub_dict[str(k)] = v
+                        if (statement in cached_sub_funcs):
+                            min_idx_lambda, max_idx_lambda, branch_lambda = cached_sub_funcs[statement]
+                        else:
+                            min_idx_lambda = sympy.lambdify(symbols, statement.limits[0], 'numpy', dummify=False)
+                            branch_lambda = sympy.lambdify(symbols, statement.branch, 'numpy', dummify=False)
+                            max_idx_lambda = sympy.lambdify(symbols, statement.limits[1], 'numpy', dummify=False)
+                            cached_sub_funcs[statement] = (min_idx_lambda, max_idx_lambda, branch_lambda)
+                        start_val = min_idx_lambda(**sub_dict)
+                        branch_val = branch_lambda(**sub_dict)
+                        end_val = int(np.ceil(max_idx_lambda(**sub_dict)))
+                        for j in range(start_val, end_val, branch_val):
+                            var_values_recurse = var_values.copy()
+                            var_values_recurse[str(var)] = j
+                            var_values_recurse["__LEVEL__"] = 0
+                            if (len(self.get_parents(expr_id, var_values_recurse)) == 0):
+                                starters.append((expr_id, var_values_recurse))
+                elif isinstance(statement, OperatorExpr):
+                    if (not statement._is_input):
+                        continue
+                    elif (len(self.get_parents(expr_id, var_values)) == 0):
                         starters.append((expr_id, var_values))
+                    else:
+                        continue
                     expr_id += 1
                 if isinstance(statement, BackendFor):
                     symbols = tuple(self.symbols.keys())
@@ -1001,7 +1104,7 @@ class Program(BlockStatement):
                     if (inputs):
                         for j in range(start_val, end_val):
                             var_values_recurse = var_values.copy()
-                            var_values_recurse[var] = j
+                            var_values_recurse[str(var)] = j
                             recurse_find_starters(statement._body, expr_id, var_values_recurse)
                     expr_id += statement.num_exprs
 
@@ -1029,7 +1132,7 @@ class Program(BlockStatement):
                         # TODO we can probably be smarter here
                         for i in range(start_val, end_val):
                             values = var_values.copy()
-                            values[loop_var] = i
+                            values[str(loop_var)] = i
                             sub_end_val = int(statement._limits[1].subs(values))
                             sub_start_val = int(statement._limits[0].subs(values))
                             local_loop_length = max(sub_end_val - sub_start_val, 0)
@@ -1051,7 +1154,7 @@ class Program(BlockStatement):
                 elif isinstance(statement, BackendFor):
                     read_ops += recurse_eval_read_ops(statement._body,
                                                       expr_counter,
-                                                      var_names + [statement._var],
+                                                      var_names + [str(statement._var)], 
                                                       var_limits + [statement._limits])
                 else:
                     raise NotImplementedError
@@ -1107,7 +1210,7 @@ class BackendGenerator(ast.NodeVisitor):
     def visit_FuncDef(self, node):
         [self.visit(x) for x in node.body]
         body = [self.visit(x) for x in node.body]
-        return_expr = OperatorExpr(self.count, RemoteReturn, [], [], [], [])
+        return_expr = OperatorExpr(self.count, RemoteReturn(len(body)), [], [], [], [])
         body.append(return_expr)
         self.program = Program(node.name, body, symbols=self.symbols)
         self.program.return_expr = return_expr
@@ -1224,15 +1327,6 @@ class BackendIf(BlockStatement):
             str_repr += "\n".join(["\t" + x for x in str(stmt).split("\n")])
         return str_repr
 
-class BackendReduction(OperatorExpr):
-    def __init__(self, var, limits, op, b_fac, recursive_arg):
-        self._var = var
-        self._limits = limits
-        self.b_fac = b_fac
-        self._op = op
-        self._recursive_arg = recursive_arg
-
-
 
 
 
@@ -1256,7 +1350,6 @@ class BackendFor(BlockStatement):
 def make_3d_input_parent_fn(I):
     async def parent_fn_async(self, loop, *bidxs):
         if bidxs[0] == 0:
-            #print("CALLING PARENT FN")
             return (await I.get_block_async(loop, *bidxs[1:]))[np.newaxis]
         else:
             exist = self.block_idxs_exist
@@ -1307,8 +1400,6 @@ def _forward_solve(L,b,out_bucket=None, truncate=0):
     S = BigMatrix("Fsolve.Intermediate({0})".format(L.key), shape=(L.shape[0], L.shape[0]), shard_sizes=(L.shard_sizes[0], L.shard_sizes[0]), write_header=True)
     X = BigMatrix("FSolve({0}, {1})".format(L.key, b.key), shape=(L.shape[0],1), shard_sizes=(L.shard_sizes[0],1), write_header=True)
     program = lpcompile(forward_sub, inputs=["L", "b"], outputs=["x"])(x=X,S=S,b=b,L=L, N=int(np.ceil(X.shape[0]/X.shard_sizes[0])))
-    print(program.starters)
-    print(program.unroll_program())
 
 def _chol(X, out_bucket=None, truncate=0):
     S = BigMatrix("Cholesky.Intermediate({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
@@ -1322,31 +1413,9 @@ def _chol(X, out_bucket=None, truncate=0):
     operator_expr = program.get_expr(starters[0][0])
     inst_block = operator_expr.eval_operator(starters[0][1])
 
-    #print("program size", len(program.unroll_program()))
     instrs = inst_block.instrs
     program.starters = starters
     return program, S, O
 
 if __name__ == "__main__":
-    N = 65536*32
-    print("Problem size", N)
-    I = BigMatrix("CholeskyInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
-    program, S, O = _chol(I)
-    print(program)
-    s = time.time()
-    c = program.get_children(0, {})
-    e = time.time()
-    print("1st cholesky child time: {0}".format(e - s))
-    print("1st cholesky num children: {0}".format(len(c)))
-    #print("1st cholesky children: {0}".format(c))
-
-    s = time.time()
-    c = program.get_children(3, {"i":1})
-    e = time.time()
-    print("2nd cholesky child time: {0}".format(e - s))
-    print("2nd cholesky num children: {0}".format(len(c)))
-    #print("2nd cholesky children: {0}".format(c))
-
-    #L = BigMatrix("SolveInput", shape=(int(N),int(N)), shard_sizes=(4096, 4096), write_header=True)
-    #b = BigMatrix("SolveRHS", shape=(int(N),), shard_sizes=(4096,), write_header=True)
-    #_forward_solve(L, b)
+    pass
