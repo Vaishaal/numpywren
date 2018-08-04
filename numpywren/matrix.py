@@ -17,6 +17,7 @@ import cloudpickle
 import numpy as np
 import pywren.wrenconfig as wc
 import dill
+import hashlib
 from collections import defaultdict
 
 from . import matrix_utils
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 try:
     DEFAULT_BUCKET = wc.default()['s3']['bucket']
+    DEFAULT_BUCKET = "numpywrentop500testdata"
     DEFAULT_REGION = wc.default()['account']['aws_region']
 except Exception as e:
     DEFAULT_BUCKET = ""
@@ -84,7 +86,8 @@ class BigMatrix(object):
                  write_header=False,
                  autosqueeze=True,
                  lambdav=0.0,
-                 region=DEFAULT_REGION):
+                 region=DEFAULT_REGION,
+                 hash_keys=True):
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
             if bucket is None:
@@ -100,6 +103,7 @@ class BigMatrix(object):
         self.autosqueeze = autosqueeze
         self.lambdav = lambdav
         self.region = region
+        self.hash_keys = hash_keys
         if (shape == None or shard_sizes == None):
             header = self.__read_header__()
         else:
@@ -488,7 +492,12 @@ class BigMatrix(object):
 
         real_idxs = self.__block_idx_to_real_idx__(block_idx)
         key = self.__get_matrix_shard_key__(real_idxs)
-        return key
+        if (self.hash_keys):
+            sha1 = hashlib.sha1()
+            sha1.update(key.encode())
+            return sha1.hexdigest()
+        else:
+            return key
 
     async def __s3_key_to_byte_io__(self, key, loop=None):
         if (loop == None):
