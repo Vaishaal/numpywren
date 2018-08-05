@@ -84,13 +84,15 @@ class BigMatrix(object):
                  write_header=False,
                  autosqueeze=True,
                  lambdav=0.0,
-                 region=DEFAULT_REGION):
+                 region=DEFAULT_REGION,
+                 safe=True):
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
             if bucket is None:
                 raise Exception("Bucket not provided and environment variable " +
                                 "PYWREN_LINALG_BUCKET not provided.")
         self.bucket = bucket
+        self.safe = safe
         self.prefix = prefix
         self.key = key
         self.key_base = os.path.join(prefix, self.key)
@@ -283,7 +285,6 @@ class BigMatrix(object):
         """
         if (loop == None):
             loop = asyncio.get_event_loop()
-        print("Calling get block for ", block_idx)
         if (len(block_idx) != len(self.shape)):
             raise Exception("Get block query does not match shape")
         key = self.__shard_idx_to_key__(block_idx)
@@ -302,7 +303,6 @@ class BigMatrix(object):
             X_block = np.squeeze(X_block)
         if (len(set(block_idx)) == 1 and len(set(self.shape)) == 1):
             idxs = np.diag_indices(X_block.shape[0])
-            print("adding lambdav")
             X_block[idxs] += self.lambdav
         return X_block
 
@@ -350,9 +350,9 @@ class BigMatrix(object):
             if (list(block.shape) == [x for x in current_shape if x != 1]):
                 block = block.reshape(current_shape)
 
-        if (block.shape != current_shape):
+        if (self.safe and block.shape != current_shape):
             print("BLOCK IDX IS ", block_idx)
-            raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
+            raise Exception("{2} Incompatible block size: {0} vs {1}".format(block.shape, current_shape, self))
 
         #block = block.astype(self.dtype)
         return await self.__save_matrix_to_s3__(block, key, loop)
@@ -856,7 +856,6 @@ class RowPivotedBigMatrix(BigMatrix):
         self.matrix.lambdav = lambdav
         if (len(set(block_idx)) == 1 and len(set(self.shape)) == 1):
             idxs = np.diag_indices(block.shape[0])
-            print("adding lambdav")
             block[idxs] += self.lambdav
         return block
 

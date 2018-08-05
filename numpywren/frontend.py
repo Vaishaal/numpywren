@@ -182,7 +182,6 @@ def unify(type_list):
     if (len(type_list) < 3):
         t0 = type_list[0]
         t1 = type_list[0]
-        print(t0,t1)
         if (issubclass(t0, t1)):
             return t1
         elif (issubclass(t1, t0)):
@@ -300,7 +299,6 @@ class LambdaPackParse(ast.NodeVisitor):
                     node_func_obj = eval(func.name)
                     if (callable(node_func_obj)):
                         args = [self.visit(x) for x in node.args]
-                        print(node.args, args)
                         return RemoteCall(node_func_obj, None, args, None, None)
                 except NameError:
                     pass
@@ -363,7 +361,6 @@ class LambdaPackParse(ast.NodeVisitor):
         return FuncDef(func.name, args, body, annotations)
 
     def visit_Starred(self, node):
-        print("STARGS")
         return Stargs(self.visit(node.value))
 
     def visit_For(self, node):
@@ -544,7 +541,6 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
     def visit_Assign(self, node):
         rhs = self.visit(node.rhs)
         lhs = node.lhs
-        print("LHS", astor.dump_tree(node.lhs))
         if (lhs.name in self.decl_types):
             is_subclass = issubclass(rhs.type, self.decl_types[lhs.name])
             is_superclass  = issubclass(self.decl_types[lhs.name], rhs.type)
@@ -793,7 +789,6 @@ class BackendGenerate(ast.NodeVisitor):
         body.append(return_expr)
         assert(len(node.args) == len(self.arg_values))
         self.program = compiler.Program(node.name, body, return_expr=return_expr, symbols=self.global_symbol_table)
-        print("RETURN EXPR",self.program.return_expr)
         return self.program
 
     def visit_RemoteCall(self, node):
@@ -814,7 +809,6 @@ class BackendGenerate(ast.NodeVisitor):
         return compiler.BackendStargs(self.visit(node.args))
 
     def visit_IndexExpr(self, node):
-        print(self.global_symbol_table)
         if (node.matrix_name not in self.global_symbol_table):
             raise exceptions.LambdaPackBackendGenerationException("Unknown BigMatrix ref {0}".format(node.matrix_name))
         matrix = self.global_symbol_table[node.matrix_name]
@@ -909,13 +903,13 @@ class BackendGenerate(ast.NodeVisitor):
 
 def lpcompile(function):
     function_ast = ast.parse(inspect.getsource(function)).body[0]
-    print("Python AST:\n{}\n".format(astor.dump(function_ast)))
+    #print("Python AST:\n{}\n".format(astor.dump(function_ast)))
     parser = LambdaPackParse()
     type_checker = LambdaPackTypeCheck()
     lp_ast = parser.visit(function_ast)
-    print("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
+    #print("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
     lp_ast_type_checked = type_checker.visit(lp_ast)
-    print("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
+    #print("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
     def f(*args, **kwargs):
         backend_generator = BackendGenerate(*args, **kwargs)
         backend_generator.visit(lp_ast_type_checked)

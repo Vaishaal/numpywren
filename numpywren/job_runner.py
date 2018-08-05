@@ -73,8 +73,6 @@ class LambdaPackExecutor(object):
 
     #@profile
     async def run(self, expr_idx, var_values, computer=None, profile=True):
-        print("RUNNING...")
-        print(var_values)
         operator_refs = [(expr_idx, var_values)]
         operator_refs_to_ret = []
         for expr_idx, var_values in operator_refs:
@@ -82,7 +80,6 @@ class LambdaPackExecutor(object):
             logger.debug("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
             t = time.time()
             node_status = self.program.get_node_status(expr_idx, var_values)
-            #print(node_status)
             operator_expr = self.program.program.get_expr(expr_idx)
             inst_block = operator_expr.eval_operator(var_values, hash=self.program.hash)
             inst_block.start_time = time.time()
@@ -97,7 +94,6 @@ class LambdaPackExecutor(object):
                     for instr in instrs:
                         instr.executor = computer
                         instr.cache = self.cache
-                        #print("START: {0},  PC: {1}, time: {2}, pid: {3}".format(instr, pc, time.time(), os.getpid()))
                         if (instr.run):
                             e_str = ("EXCEPTION: Same machine replay instruction: " + str(instr) +
                                      " REF: {0}, time: {1}, pid: {2}".format((expr_idx, var_values), time.time(), os.getpid()))
@@ -284,15 +280,13 @@ async def check_program_state(program, loop, shared_state, timeout, idle_timeout
            print("program status is ", s)
            break
         await asyncio.sleep(idle_timeout)
-    print("Closing loop from program")
+    #print("Closing loop from program")
     loop.stop()
 
 
 #@profile
 async def lambdapack_run_async(loop, program, computer, cache, shared_state, pipeline_width=1, msg_vis_timeout=60, timeout=200, msg_vis_timeout_jitter=15):
     global REDIS_CLIENT
-    print("timeout is ", timeout)
-    #print("LAMBDAPACK_RUN_ASYNC")
     session = aiobotocore.get_session(loop=loop)
     lmpk_executor = LambdaPackExecutor(program, loop, cache)
     start_time = time.time()

@@ -305,7 +305,6 @@ class RemoteWrite(RemoteInstruction):
             backoff = 0.2
             while (True):
               try:
-                print("writing to {0} at {1}".format(self.matrix, self.bidxs))
                 self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_loc[self.data_idx], loop, *self.bidxs), self.MAX_WRITE_TIME)
                 break
               except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError) as e:
@@ -403,7 +402,6 @@ class RemoteCall(RemoteInstruction):
               pyarg_list.append(arg.result)
             elif (isinstance(arg, float)):
               pyarg_list.append(arg)
-          print("COMPUTE", self.compute)
           results = self.compute(*pyarg_list, **self.kwargs)
           if (isinstance(results, tuple) and len(results) != len(self.results)):
             raise Exception("Expected {0} results, got {1}".format(len(self.results), len(results)))
@@ -762,7 +760,6 @@ class LambdaPackProgram(object):
               operator_expr = self.program.get_expr(child[0])
               my_child_edge = self._edge_key(expr_idx, var_values, *child)
               child_edge_sum_key = self._node_edge_sum_key(*child)
-              print("child edge sum key ", child_edge_sum_key)
               # redis transaction should be atomic
               tp = fs.ThreadPoolExecutor(1)
               val_future = tp.submit(conditional_increment, self.control_plane.client, child_edge_sum_key, my_child_edge)
@@ -774,8 +771,6 @@ class LambdaPackProgram(object):
                 num_child_parents = self.program.num_terminators
               else:
                 num_child_parents = len(self.program.get_parents(child[0], child[1]))
-                print("CHILD PARENTS ", self.program.get_parents(child[0], child[1]))
-                print("Val ", val)
 
               if ((val == num_child_parents) and self.get_node_status(*child) != NS.FINISHED):
                 self.set_node_status(*child, NS.READY)
@@ -793,7 +788,6 @@ class LambdaPackProgram(object):
           # the idea is that if we do something like a local cholesky decomposition
           # we would run its highest priority child *locally* by adding the instructions to the local instruction queue
           # this has 2 key benefits, first we completely obliviete scheduling overhead between these two nodes but also because of the local LRU cache the first read of this node will be saved this will translate
-          print("Children {0} Ready Children {1}".format(children, ready_children))
           client = boto3.client('sqs', region_name=self.control_plane.region)
           assert (expr_idx, var_values) not in ready_children
           for child in ready_children:
@@ -811,7 +805,6 @@ class LambdaPackProgram(object):
         except Exception as e:
             tb = traceback.format_exc()
             traceback.print_exc()
-            print("Exception raised...")
             self.handle_exception("POST OP EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
 
     def start(self):
@@ -826,7 +819,6 @@ class LambdaPackProgram(object):
 
     def stop(self):
         client = boto3.client('s3')
-        print("Stopping program")
         client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTION.DRIVER.CANCELLED", Bucket=self.bucket, Body="cancelled by driver")
         e = PS.EXCEPTION.value
         put(self.control_plane.client, self.hash, e)
@@ -897,7 +889,6 @@ class LambdaPackProgram(object):
         status = self.program_status()
         # TODO reinstate status change
         while (status == PS.RUNNING):
-              print(status)
               time.sleep(sleep_time)
               status = self.program_status()
 

@@ -506,7 +506,6 @@ class OperatorExpr(Statement):
             else:
                 pass
 
-        print("VAR_LIMITS", var_limits)
         def brute_force_limits(sol, var_values, var_names, var_limits):
             simple_var = None
             simple_var_idx = None
@@ -699,10 +698,6 @@ class ReductionOperatorExpr(OperatorExpr):
                 winning_chunk = chunk
                 break
         if (winning_chunk is None):
-            print(reduction_var)
-            print(reduction_chunks)
-            print(var_values)
-            print("reduction level", reduction_level)
             raise Exception("Invalid reduction variable value")
         reduction_start = winning_chunk[0]
         reduction_end = winning_chunk[-1]
@@ -730,7 +725,6 @@ class ReductionOperatorExpr(OperatorExpr):
                 continue
             elif (isinstance(arg, BackendStargs) and arg.args.name == "__REDUCE_ARGS__"):
                 reduction_args = self.eval_reduction_args(var_values)
-                print("reduction args are ", [x[0].indices for x in reduction_args])
                 for bigm_block_set in reduction_args:
                     for bigm_block in bigm_block_set:
                         read_refs.append(BigMatrixBlock("REDUCTION_ARG", bigm_block.matrix, bigm_block.indices))
@@ -772,12 +766,10 @@ class ReductionOperatorExpr(OperatorExpr):
             results = self._enumerate_possibilities(read_ref.indices, idxs, var_names, var_limits)
         for r in results:
             r["__LEVEL__"] = current_reduction_level
-            print(r)
         return utils.remove_duplicates(results)
 
 
     def find_reader_var_values(self, write_ref, var_names, var_limits, current_reduction_level=-1):
-        print("Calling find reader var values on {0}".format(write_ref))
         if (current_reduction_level == -1):
             reduction_expr = self.base_case
         else:
@@ -787,8 +779,6 @@ class ReductionOperatorExpr(OperatorExpr):
         branch = scope_sub(self.branch, self.scope)
         var_limits.append((low, high, branch))
         self.scope["__LEVEL__"] = current_reduction_level
-        print("HIGH", high)
-        print("TREE LEVEL ", np.ceil(np.log(int(high))/np.log(int(branch))))
         if ((current_reduction_level + 1) >= np.ceil(np.log(int(high))/np.log(int(branch)))):
             return []
 
@@ -817,7 +807,6 @@ class ReductionOperatorExpr(OperatorExpr):
                             results.append({})
                         continue
                     assert len(write_ref.indices) == len(reduction.indices)
-                    print("Calling enum possibs on {0} for {1}".format(idxs_subbed, write_ref.indices))
                     possibs = self._enumerate_possibilities(write_ref.indices, idxs_subbed, var_names, var_limits)
                     results += possibs
         results = utils.remove_duplicates(results)
@@ -828,7 +817,6 @@ class ReductionOperatorExpr(OperatorExpr):
             r_start = var_limits[-1][0]
             r_end = var_limits[-1][1]
             chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(current_reduction_level+1))), branch))
-            print("CHUNKED LST", list(chunked_lst))
             out_var = None
             for i,c in enumerate(chunked_lst):
                 if (r_var in c):
@@ -959,8 +947,7 @@ class Program(BlockStatement):
                         start_val = min_idx_lambda(**sub_dict)
                         branch_val = branch_lambda(**sub_dict)
                         end_val = int(max_idx_lambda(**sub_dict))
-                        num_reductions = int(np.ceil(np.log((end_val - start_val))/np.log(branch_val)))
-
+                        num_reductions = max(int(np.ceil(np.log((end_val - start_val))/np.log(branch_val))), 1)
 
                         for i in range(num_reductions):
                             for j in range(start_val, end_val, branch_val**(i+1)):
