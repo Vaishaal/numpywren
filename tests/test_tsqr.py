@@ -71,10 +71,19 @@ class TSQRTest(unittest.TestCase):
         program_executable.free()
         R_remote = R_sharded.get_block(num_tree_levels - 1, 0)
         print("R_LOCAL\n", R)
-        print("R_remote\n", R_remote)
+        sign_matrix_local = np.eye(R.shape[0])
+        sign_matrix_remote = np.eye(R.shape[0])
+        sign_matrix_local[np.where(np.diag(R) <= 0)]  *= -1
+        sign_matrix_remote[np.where(np.diag(R_remote) <= 0)]  *= -1
+
+        # make the signs match
+        R_remote *= sign_matrix_remote
+        R  *= sign_matrix_local
+
         print("DIFF\n", np.max(np.abs(R - R_remote)))
+        print("DIFF IDX \n", np.argmax(np.abs(R - R_remote)))
         print("DIFF\n", np.max(np.abs(np.abs(R) - np.abs(R_remote))))
-        assert(np.allclose(np.abs(R), np.abs(R_remote)))
+        assert(np.allclose(R, R_remote))
         #assert(np.all(np.sign(R) == np.sign(R_remote)) or np.all((np.sign(R) == np.sign(-1*R_remote))))
 
         return
