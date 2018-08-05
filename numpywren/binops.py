@@ -103,7 +103,7 @@ def gemm_with_prefetch(X, Y, bidx0, bidx1, block_chunk_size=16):
     return result
 
 
-def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.float64, overwrite=True, gemm_impl=0, gemm_chunk_size=16):
+def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=5, local=False, dtype=np.float64, overwrite=True, gemm_impl=0, gemm_chunk_size=16):
 
     '''
         Compute XY return

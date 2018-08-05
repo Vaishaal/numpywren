@@ -129,12 +129,15 @@ class LambdaPackExecutor(object):
                         instr.result = None
 
                     next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    if (next_operator is not None):
+                     profile_bytes_to_ret.append(log_bytes)
                     profile_bytes_to_ret.append(log_bytes)
                 elif (node_status == lp.NS.POST_OP):
                     operator_refs_to_ret.append((expr_idx, var_values))
                     logger.warning("node: {0}:{1} finished work skipping to post_op...".format(expr_idx, var_values))
                     next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
-                    profile_bytes_to_ret.append(log_bytes)
+                    if (next_operator is not None):
+                     profile_bytes_to_ret.append(log_bytes)
                 elif (node_status == lp.NS.NOT_READY):
                    logger.warning("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
 
@@ -363,7 +366,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             msg = messages["Messages"][0]
             receipt_handle = msg["ReceiptHandle"]
             # if we don't finish in 75s count as a failure
-            #res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            #res = sqs_client.change_message_visibility(VisibilityTimeout=100, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             operator_ref = json.loads(msg["Body"])
             shared_state["tot_messages"].append(operator_ref)
             operator_ref = (operator_ref[0], {sympy.Symbol(key): val for key, val in operator_ref[1].items()})

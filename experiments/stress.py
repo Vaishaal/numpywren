@@ -76,9 +76,9 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         e = time.time()
         print("GEMM took {0}".format(e - t))
     else:
-        X_sharded = BigMatrix("cholesky_test_{0}_{1}".format(problem_size, shard_size), autosqueeze=False)
+        X_sharded = BigMatrix("cholesky_test_{0}_{1}".format(problem_size, shard_size), autosqueeze=False, hash_keys=False, bucket="numpywrentop500test")
         key_name = binops.generate_key_name_binop(X_sharded, X_sharded.T, "gemm")
-        XXT_sharded = BigMatrix(key_name)
+        XXT_sharded = BigMatrix(key_name, hash_keys=False, bucket="numpywrentop500test")
     XXT_sharded.lambdav = problem_size*10
     if (verify):
         A = XXT_sharded.numpy()
@@ -97,7 +97,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     program = lp.LambdaPackProgram(instructions, executor=pywren.lambda_executor, pywren_config=pywren_config, num_priorities=num_priorities, eager=eager, config=config, write_limit=write_limit, read_limit=read_limit)
     warmup_start = time.time()
     if (warmup):
-        warmup_sleep = 100
+        warmup_sleep = 170
         def warmup_fn(x):
             program.incr_up(1)
             time.sleep(warmup_sleep)
@@ -106,7 +106,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         futures = pwex.map(warmup_fn, range(max_cores))
         last_spinup = time.time()
         while(True):
-            if ((time.time() - last_spinup) > 0.95*warmup_sleep):
+            if ((time.time() - last_spinup) > 0.75*warmup_sleep):
                 print("Calling pwex.map..")
                 futures = pwex.map(warmup_fn, range(max_cores))
                 last_spinup = time.time()
@@ -137,6 +137,9 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     busy_workers_counts = []
     read_objects = []
     write_objects = []
+    all_read_timeouts = []
+    all_write_timeouts = []
+    all_redis_timeouts = []
     times = [time.time()]
     flops = [0]
     reads = [0]
@@ -167,6 +170,9 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     exp["writes"] = writes
     exp["read_objects"] = read_objects
     exp["write_objects"] = write_objects
+    exp["read_timeouts"] = all_read_timeouts
+    exp["write_timeouts"] = all_write_timeouts 
+    exp["redis_timeouts"] = all_redis_timeouts 
     exp["trial"] = trial
     exp["launch_granularity"] = launch_granularity
     exp["log_granularity"] = log_granularity
@@ -225,7 +231,6 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
             up_workers_counts.append(up_workers)
             busy_workers_counts.append(busy_workers)
 
-            logger.debug("Waiting: {0}, Currently Processing: {1}".format(waiting, running))
             logger.debug("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
             if ((curr_time % INFO_FREQ) == 0):
                 logger.info("Waiting: {0}, Currently Processing: {1}".format(waiting, running))
@@ -284,10 +289,14 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
             read_timeouts = int(REDIS_CLIENT.get("s3.timeouts.read"))
             write_timeouts = int(REDIS_CLIENT.get("s3.timeouts.write"))
             redis_timeouts = int(REDIS_CLIENT.get("redis.timeouts"))
+            all_read_timeouts.append(read_timeouts)
+            all_write_timeouts.append(write_timeouts)
+            all_redis_timeouts.append(redis_timeouts)
             read_timeouts_fraction = read_timeouts/current_objects_read
             write_timeouts_fraction = write_timeouts/current_objects_write
             print("=======================================")
             print("Max PC is {0}".format(max_pc))
+            print("Waiting: {0}, Currently Processing: {1}".format(waiting, running))
             print("{2}: Up Workers: {0}, Busy Workers: {1}".format(up_workers, busy_workers, curr_time))
             print("{0}: Total GFLOPS {1}, Total GBytes Read {2}, Total GBytes Write {3}".format(curr_time, current_gflops, current_gbytes_read, current_gbytes_write))
             print("{0}: Average GFLOPS rate {1}, Average GBytes Read rate {2}, Average GBytes Write  rate {3}, Average Worker Count {4}".format(curr_time, gflops_rate, greads_rate, gwrites_rate, avg_workers))
@@ -309,7 +318,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
                    # [x.result() for x in all_futures]
                     all_futures.extend(new_future_futures)
             elif (autoscale_policy == "constant_timeout"):
-                if (time_since_launch > (0.8*timeout)):
+                if (time_since_launch > (0.7*timeout)):
                     cores_to_launch = max_cores
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
                     new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=extra_env))

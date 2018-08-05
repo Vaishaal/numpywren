@@ -799,8 +799,8 @@ class LambdaPackProgram(object):
           node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
-          if (node_status == NS.FINISHED):
-            return
+          #if (node_status == NS.FINISHED):
+            #return 
           self.set_node_status(expr_idx, var_values, NS.POST_OP)
           if (ret_code == PS.EXCEPTION and tb != None):
             self.handle_exception(" EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
@@ -863,6 +863,7 @@ class LambdaPackProgram(object):
             traceback.print_exc()
             print("Exception raised...")
             self.handle_exception("POST OP EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+            raise
 
 
 

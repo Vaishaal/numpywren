@@ -28,9 +28,9 @@ runcmd:
   - sudo mkdir /var/redis
   - sudo update-rc.d redis_init defaults
   - sudo /etc/init.d/redis_init start
-  - sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
-  - sudo sysctl -w net.ipv4.tcp_tw_reuse="1"
-  - sudo sysctl -w net.ipv4.tcp_tw_recycle="1"
+  #- sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+  #- sudo sysctl -w net.ipv4.tcp_tw_reuse="1"
+  #- sudo sysctl -w net.ipv4.tcp_tw_recycle="1"
 
 
 write_files:
