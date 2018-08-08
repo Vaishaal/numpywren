@@ -24,7 +24,7 @@ from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, k
 from . import utils
 
 cpu_count = multiprocessing.cpu_count()
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('numpywren')
 
 try:
     DEFAULT_BUCKET = wc.default()['s3']['bucket']
@@ -286,7 +286,7 @@ class BigMatrix(object):
         if (loop == None):
             loop = asyncio.get_event_loop()
         if (len(block_idx) != len(self.shape)):
-            raise Exception("Get block query does not match shape")
+            raise Exception("Get block query does not match shape {0} vs {1}".format(block_idx, self.shape))
         key = self.__shard_idx_to_key__(block_idx)
         exists = await key_exists_async(self.bucket, key, loop)
         if (not exists and dill.loads(self.parent_fn) == None):
@@ -301,7 +301,7 @@ class BigMatrix(object):
             X_block = np.load(bio)
         if (self.autosqueeze):
             X_block = np.squeeze(X_block)
-        if (len(set(block_idx)) == 1 and len(set(self.shape)) == 1):
+        if (len(set(block_idx)) == 1 and len(set(self.shape)) == 1 and len(self.shape) != 1):
             idxs = np.diag_indices(X_block.shape[0])
             X_block[idxs] += self.lambdav
         return X_block
@@ -351,7 +351,6 @@ class BigMatrix(object):
                 block = block.reshape(current_shape)
 
         if (self.safe and block.shape != current_shape):
-            print("BLOCK IDX IS ", block_idx)
             raise Exception("{2} Incompatible block size: {0} vs {1}".format(block.shape, current_shape, self))
 
         #block = block.astype(self.dtype)

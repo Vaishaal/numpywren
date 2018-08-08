@@ -1,9 +1,11 @@
 from numpywren.matrix import BigMatrix
 from numpywren import matrix_utils, uops
 from numpywren import lambdapack as lp
-from numpywren import job_runner
+from numpywren import job_runner, frontend
 from numpywren import compiler
+from numpywren.matrix_utils import constant_zeros
 from numpywren.matrix_init import shard_matrix
+import dill
 import numpywren as npw
 
 import pytest
@@ -16,161 +18,90 @@ import time
 import os
 import boto3
 
+def cholesky(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
+    # handle first loop differently
+    O[0,0] = chol(I[0,0])
+    for j in range(1,N - truncate):
+        O[j,0] = trsm(O[0,0], I[j,0])
+        for k in range(1,j+1):
+            S[1,j,k] = syrk(I[j,k], O[j,0], O[k,0])
+
+    for i in range(1,N - truncate):
+        O[i,i] = chol(S[i,i,i])
+        for j in range(i+1,N - truncate):
+            O[j,i] = trsm(O[i,i], S[i,j,i])
+            for k in range(i+1,j+1):
+                S[i+1,j,k] = syrk(S[i,j,k], O[j,i], O[k,i])
+
+def _chol(X, out_bucket=None, truncate=0):
+    S = BigMatrix("Cholesky.Intermediate({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
+    O = BigMatrix("Cholesky({0})".format(X.key), shape=(X.shape[0], X.shape[0]), shard_sizes=(X.shard_sizes[0], X.shard_sizes[0]), write_header=True)
+    O.parent_fn = dill.dumps(constant_zeros)
+    block_len = len(X._block_idxs(0))
+    print("Truncate is ", truncate)
+    program = frontend.lpcompile(cholesky)(O,X,S,int(np.ceil(X.shape[0]/X.shard_sizes[0])), truncate)
+    print(program)
+    s = program.find_starters()
+    children = program.get_children(*s[0])
+    print("Starters: " + str(s))
+    print("Children: " + str(children))
+    print("Grand Children: " + str(program.get_children(*children[0])))
+    print("Terminators: " + str(program.find_terminators()))
+    operator_expr = program.get_expr(s[0][0])
+    inst_block = operator_expr.eval_operator(s[0][1])
+    return program, S, O
+
 
 class CholeskyTest(unittest.TestCase):
     def test_cholesky_single(self):
-        X = np.random.randn(3,3)
+        X = np.random.randn(64, 64)
         A = X.dot(X.T) + np.eye(X.shape[0])
         y = np.random.randn(16)
         pwex = pywren.default_executor()
-        A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=A.shape, write_header=True)
+        shard_size = 16
+        shard_sizes = (shard_size, shard_size)
+        A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
         A_sharded.free()
         shard_matrix(A_sharded, A)
-        instructions, trailing, L_sharded = compiler._chol(A_sharded)
+        instructions, trailing, L_sharded = _chol(A_sharded)
         executor = pywren.lambda_executor
-        pywren_config = pwex.config
         config = npw.config.default()
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
+        program = lp.LambdaPackProgram(instructions, config=config)
         program.start()
-        job_runner.lambdapack_run(program)
+        executor = fs.ProcessPoolExecutor(1)
+        print("starting program")
+        future = executor.submit(job_runner.lambdapack_run, program)
         program.wait()
         program.free()
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
         assert(np.allclose(L_npw, L))
-
+        return
 
     def test_cholesky_multi(self):
-        np.random.seed(1)
-        size = 128
-        shard_size = 32
-        np.random.seed(1)
-        X = np.random.randn(size, 128)
+        X = np.random.randn(64, 64)
         A = X.dot(X.T) + np.eye(X.shape[0])
+        y = np.random.randn(16)
+        pwex = pywren.default_executor()
+        shard_size = 16
         shard_sizes = (shard_size, shard_size)
         A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
         A_sharded.free()
         shard_matrix(A_sharded, A)
-        instructions, trailing, L_sharded = compiler._chol(A_sharded)
-        pwex = pywren.default_executor()
+        instructions, trailing, L_sharded = _chol(A_sharded)
         executor = pywren.lambda_executor
         config = npw.config.default()
-        pywren_config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
+        program = lp.LambdaPackProgram(instructions, config=config)
         program.start()
-        #job_runner.main(program, program.queue_url)
-        job_runner.lambdapack_run(program)
-        print("Program status")
-        print(program.program_status())
-        program.free()
-        print(L_sharded.shape)
-        L_npw = L_sharded.numpy()
-        L = np.linalg.cholesky(A)
-        print(L_npw)
-        print(L)
-        assert(np.allclose(L_npw, L))
-
-
-
-
-
-    def test_cholesky_lambda_single(self): 
-        np.random.seed(1)
-        size = 128
-        shard_size = 128
-        num_cores = 1
-        np.random.seed(1)
-        X = np.random.randn(size, 128)
-        A = X.dot(X.T) + np.eye(X.shape[0])
-        shard_sizes = (shard_size, shard_size)
-        A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
-        A_sharded.free()
-        shard_matrix(A_sharded, A)
-        instructions, trailing, L_sharded = compiler._chol(A_sharded)
-        pwex = pywren.default_executor()
-        executor = pywren.standalone_executor
-        config = npw.config.default()
-        pywren_config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
-        print(program)
-        program.start()
-        num_cores = 1
-        futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"])
-        #futures = pwex.map(lambda x: x, range(num_cores), exclude_modules=["site-packages"], extra_env=redis_env)
-        futures[0].result()
-        pywren.wait(futures)
-        [f.result() for f in futures]
-        program.free()
-        L_npw = L_sharded.numpy()
-        L = np.linalg.cholesky(A)
-        assert(np.allclose(L_npw, L))
-
-    def test_cholesky_multi_process(self):
-        np.random.seed(1)
-        size =  128
-        shard_size = 32
-        np.random.seed(1)
-        X = np.random.randn(size, 128)
-        A = X.dot(X.T) + np.eye(X.shape[0])
-        shard_sizes = (shard_size, shard_size)
-        A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
-        A_sharded.free()
-        shard_matrix(A_sharded, A)
-        instructions, trailing, L_sharded = compiler._chol(A_sharded)
-        pwex = pywren.default_executor()
-        executor = pywren.lambda_executor
-        config = npw.config.default()
-        pywren_config = pwex.config
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
-        print(program)
-        program.start()
-        num_cores = 16
-        #pwex = lp.LocalExecutor(procs=100)
-        executor = fs.ProcessPoolExecutor(num_cores)
-        all_futures  = []
-        for i in range(num_cores):
-            all_futures.append(executor.submit(job_runner.lambdapack_run, program, pipeline_width=1))
+        executor = fs.ProcessPoolExecutor(1)
+        print("starting program")
+        future = executor.submit(job_runner.lambdapack_run, program)
         program.wait()
-        #pywren.wait(all_futures)
-        [f.result() for f in  all_futures]
         program.free()
         L_npw = L_sharded.numpy()
         L = np.linalg.cholesky(A)
         assert(np.allclose(L_npw, L))
-
-    def test_cholesky_multi_lambda(self):
-        np.random.seed(1)
-        size = 128 
-        shard_size = 32
-        np.random.seed(1)
-        X = np.random.randn(size, 1)
-        A = X.dot(X.T) + np.eye(X.shape[0])
-        shard_sizes = (shard_size, shard_size)
-        A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
-        A_sharded.free()
-        shard_matrix(A_sharded, A)
-        instructions, trailing, L_sharded = compiler._chol(A_sharded)
-        pwex = pywren.default_executor()
-        executor = pywren.lambda_executor
-        config = npw.config.default()
-        pywren_config = pwex.config
-        print(pywren_config)
-        program = lp.LambdaPackProgram(instructions, executor=executor, pywren_config=pywren_config, config=config)
-        program.start()
-        num_cores = 100
-        all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program), range(num_cores), exclude_modules=["site-packages"])
-        [f.result() for f in all_futures]
-        program.free()
-        L_npw = L_sharded.numpy()
-        L = np.linalg.cholesky(A)
-        assert(np.allclose(L_npw, L))
+        return
 
 
-
-
-
-
-if __name__ == "__main__":
-    tests = CholeskyTest()
-    tests.test_cholesky_single()
 

@@ -13,6 +13,9 @@ import sympy
 import numpy as np
 import asyncio
 from numpywren.kernels import *
+from sympy.core.relational import *
+
+logger = logging.getLogger('numpywren')
 
 ''' front end parser + typechecker for lambdapack
 
@@ -221,8 +224,27 @@ class LambdaPackParse(ast.NodeVisitor):
         else:
             raise NotImplementedError("Only Integers and Floats supported")
 
+    def visit_BoolOp(self, node):
+        values = [self.visit(x) for x in node.values]
+
+        left = self.visit(node.values[0])
+        right = self.visit(node.values[1])
+        op  = node.op
+        if (isinstance(op, ast.Or)):
+            op = "Or"
+        elif (isinstance(op, ast.And)):
+            op = "And"
+        else:
+            raise Exception("Invalid bool operation {0}".format(op))
+        i = 1
+        lhs = left
+        while (i < len(values)):
+            lhs = BinOp(op, lhs, values[i], None)
+            i += 1
+        return lhs
+
     def visit_BinOp(self, node):
-        VALID_BOPS  = ["Add", "Sub", "Mult", "Div", "Mod",  "Pow", "FloorDiv"]
+        VALID_BOPS  = ["Add", "Sub", "Mult", "Div", "Mod",  "Pow", "FloorDiv", "And", "Or"]
         left = self.visit(node.left)
         right = self.visit(node.right)
         op  = node.op.__class__.__name__
@@ -302,8 +324,8 @@ class LambdaPackParse(ast.NodeVisitor):
                         return RemoteCall(node_func_obj, None, args, None, None)
                 except NameError:
                     pass
-
-        raise Exception("unsupported function")
+        
+        raise Exception("unsupported function {0}".format(func.name))
 
     def visit_Assign(self, node):
         rhs = self.visit(node.value)
@@ -550,6 +572,7 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
             self.decl_types[lhs.name] = rhs.type
         lhs = self.visit(node.lhs)
         return Assign(lhs, rhs)
+
     def visit_If(self, node):
         cond = self.visit(node.cond)
         if (not issubclass(cond.type, BoolType)):
@@ -575,77 +598,80 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         r_type = right.type
         l_type = left.type
         op = node.op
-
-        if ((r_type is None) or (l_type is None)):
-            raise LambdaPackTypeException("BinOp arguments must be typed")
-        type_set = set([r_type, l_type])
-        for t in type_set:
-            if (not issubclass(t, NumericalType)):
-                raise LambdaPackTypeException("BinOp arguments must be Numerical")
-
-        if (op == "Add" or op == "Sub"):
-            # arith type algebra
-            if (issubclass(r_type, ConstIntType) and issubclass(l_type, ConstIntType)):
-                out_type = ConstIntType
-            elif (issubclass(r_type, LinearIntType) and issubclass(l_type, LinearIntType)):
-                out_type = LinearIntType
-            elif (issubclass(r_type, IntType) and issubclass(l_type, IntType)):
-                out_type = IntType
-            elif (issubclass(r_type, ConstFloatType) and issubclass(l_type, ConstFloatType)):
-                out_type = ConstFloatType
-            elif (issubclass(r_type, ConstFloatType) and issubclass(l_type, ConstIntType)):
-                out_type = ConstFloatType
-            elif (issubclass(l_type, ConstFloatType) and issubclass(r_type, ConstIntType)):
-                out_type = ConstFloatType
-            elif (issubclass(r_type, FloatType) or issubclass(l_type, FloatType)):
-                out_type = FloatType
-            else:
-                raise exceptions.LambdaPackTypeException("Unsupported type combination for add/sub")
-        elif (op =="Mult"):
-            # mul type algebra
-            if (issubclass(r_type, LinearIntType) and issubclass(l_type, ConstIntType)):
-                out_type = LinearIntType
-            if (issubclass(r_type, LinearIntType) and issubclass(l_type, LinearIntType)):
-                out_type = IntType
-            elif (issubclass(r_type, IntType) and issubclass(l_type, IntType)):
-                out_type = IntType
-            elif (issubclass(r_type, ConstFloatType) and issubclass(l_type, ConstFloatType)):
-                out_type = ConstFloatType
-            elif (issubclass(r_type, ConstFloatType) and issubclass(l_type, ConstIntType)):
-                out_type = ConstFloatType
-            elif (issubclass(r_type, FloatType) or issubclass(l_type, FloatType)):
-                out_type = FloatType
-            else:
-                raise exceptions.LambdaPackTypeException("Unsupported type combination for mul")
-        elif (op =="Div"):
-            # div type algebra
-            if (issubclass(r_type, LinearIntType) and issubclass(l_type, ConstIntType)):
-                out_type = LinearIntType
-            elif (issubclass(r_type, Const) and issubclass(l_type, Const)):
-                out_type = ConstFloatType
-            else:
-                out_type = FloatType
-        elif (op == "Mod"):
-            if (issubclass(r_type, ConstIntType) and issubclass(l_type, ConstIntType)):
-                out_type = ConstIntType
-            elif (issubclass(r_type, IntType) and issubclass(l_type, IntType)):
-                out_type = IntType
-            else:
-                out_type = FloatType
-        elif (op == "Pow"):
-            if (issubclass(r_type, ConstIntType) and issubclass(l_type, ConstIntType)):
-                out_type = ConstIntType
-            elif (issubclass(r_type, IntType) and issubclass(l_type, IntType)):
-                out_type = IntType
-            elif (issubclass(r_type, Const) and issubclass(l_type, Const)):
-                out_type = ConstFloatType
-            else:
-                out_type = FloatType
-        elif (op == "FloorDiv"):
-            if (issubclass(r_type, ConstIntType) and issubclass(l_type, ConstIntType)):
-                out_type = ConstIntType
-            else:
-                out_type = IntType
+        if (op == "Or" or op == "And"):
+            assert(issubclass(left.type, BoolType))
+            assert(issubclass(right.type, BoolType))
+            out_type = BoolType
+        else:
+            if ((r_type is None) or (l_type is None)):
+                raise LambdaPackTypeException("BinOp arguments must be typed")
+            type_set = set([r_type, l_type])
+            for t in type_set:
+                if (not issubclass(t, NumericalType)):
+                    raise LambdaPackTypeException("BinOp arguments must be Numerical")
+            if (op == "Add" or op == "Sub"):
+                # arith type algebra
+                if (issubclass(r_type, ConstIntType) and issubclass(l_type, ConstIntType)):
+                    out_type = ConstIntType
+                elif (issubclass(r_type, LinearIntType) and issubclass(l_type, LinearIntType)):
+                    out_type = LinearIntType
+                elif (issubclass(r_type, IntType) and issubclass(l_type, IntType)):
+                    out_type = IntType
+                elif (issubclass(r_type, ConstFloatType) and issubclass(l_type, ConstFloatType)):
+                    out_type = ConstFloatType
+                elif (issubclass(r_type, ConstFloatType) and issubclass(l_type, ConstIntType)):
+                    out_type = ConstFloatType
+                elif (issubclass(l_type, ConstFloatType) and issubclass(r_type, ConstIntType)):
+                    out_type = ConstFloatType
+                elif (issubclass(r_type, FloatType) or issubclass(l_type, FloatType)):
+                    out_type = FloatType
+                else:
+                    raise exceptions.LambdaPackTypeException("Unsupported type combination for add/sub")
+            elif (op =="Mult"):
+                # mul type algebra
+                if (issubclass(r_type, LinearIntType) and issubclass(l_type, ConstIntType)):
+                    out_type = LinearIntType
+                if (issubclass(r_type, LinearIntType) and issubclass(l_type, LinearIntType)):
+                    out_type = IntType
+                elif (issubclass(r_type, IntType) and issubclass(l_type, IntType)):
+                    out_type = IntType
+                elif (issubclass(r_type, ConstFloatType) and issubclass(l_type, ConstFloatType)):
+                    out_type = ConstFloatType
+                elif (issubclass(r_type, ConstFloatType) and issubclass(l_type, ConstIntType)):
+                    out_type = ConstFloatType
+                elif (issubclass(r_type, FloatType) or issubclass(l_type, FloatType)):
+                    out_type = FloatType
+                else:
+                    raise exceptions.LambdaPackTypeException("Unsupported type combination for mul")
+            elif (op =="Div"):
+                # div type algebra
+                if (issubclass(r_type, LinearIntType) and issubclass(l_type, ConstIntType)):
+                    out_type = LinearIntType
+                elif (issubclass(r_type, Const) and issubclass(l_type, Const)):
+                    out_type = ConstFloatType
+                else:
+                    out_type = FloatType
+            elif (op == "Mod"):
+                if (issubclass(r_type, ConstIntType) and issubclass(l_type, ConstIntType)):
+                    out_type = ConstIntType
+                elif (issubclass(r_type, IntType) and issubclass(l_type, IntType)):
+                    out_type = IntType
+                else:
+                    out_type = FloatType
+            elif (op == "Pow"):
+                if (issubclass(r_type, ConstIntType) and issubclass(l_type, ConstIntType)):
+                    out_type = ConstIntType
+                elif (issubclass(r_type, IntType) and issubclass(l_type, IntType)):
+                    out_type = IntType
+                elif (issubclass(r_type, Const) and issubclass(l_type, Const)):
+                    out_type = ConstFloatType
+                else:
+                    out_type = FloatType
+            elif (op == "FloorDiv"):
+                if (issubclass(r_type, ConstIntType) and issubclass(l_type, ConstIntType)):
+                    out_type = ConstIntType
+                else:
+                    out_type = IntType
         return BinOp(node.op, left, right, out_type)
 
     def visit_Return(self, node):
@@ -773,22 +799,28 @@ class BackendGenerate(ast.NodeVisitor):
         super().__init__()
         self.global_symbol_table = {}
         self.current_symbol_table = self.global_symbol_table
+        self.all_symbols = {}
         self.count = 0
         self.arg_values = args
         self.kwargs = kwargs
 
     def visit_FuncDef(self, node):
         assert len(node.args) == len(self.arg_values), "function {0} expected {1} args got {2}".format(node.name, len(node.args), len(self.arg_values))
+        print("ARG VALUES", self.arg_values)
         for i, (arg, arg_value, arg_type)  in enumerate(zip(node.args, self.arg_values, node.arg_types)):
             p_type = python_type_to_lp_type(type(arg_value), const=True)
             if (not issubclass(p_type, arg_type)):
                 raise LambdaPackBackendGenerationException("arg {0} wrong type expected {1} got {2}".format(i, arg_type, p_type))
             self.global_symbol_table[arg] = arg_value
+            self.all_symbols[arg] = arg_value
+        print("ALL SYMBOLS", self.all_symbols)
+        [self.visit(x) for x in node.body]
+        self.count = 0
         body = [self.visit(x) for x in node.body]
         return_expr = compiler.OperatorExpr(self.count, compiler.RemoteReturn(len(body)), args=[], outputs=[], scope={})
         body.append(return_expr)
         assert(len(node.args) == len(self.arg_values))
-        self.program = compiler.Program(node.name, body, return_expr=return_expr, symbols=self.global_symbol_table)
+        self.program = compiler.Program(node.name, body, return_expr=return_expr, symbols=self.global_symbol_table, all_symbols=self.all_symbols)
         return self.program
 
     def visit_RemoteCall(self, node):
@@ -807,6 +839,37 @@ class BackendGenerate(ast.NodeVisitor):
 
     def visit_Stargs(self, node):
         return compiler.BackendStargs(self.visit(node.args))
+
+    def visit_If(self, node):
+        cond = self.visit(node.cond)
+        if_body = [self.visit(x) for x in node.body]
+        print("elseBody", node.elseBody)
+        else_body = [self.visit(x) for x in node.elseBody]
+        return compiler.BackendIf(cond, if_body, else_body)
+
+    def visit_CmpOp(self, node):
+        lhs = self.visit(node.left)
+        rhs = self.visit(node.right)
+        print("node.left", node.left)
+        print("node.left.op", node.left.op)
+        print("LHS", lhs)
+        print("RHS", rhs)
+        if (node.op == 'EQ'):
+            return Eq(lhs, rhs)
+        elif (node.op == "NE"):
+            return Ne(lhs, rhs)
+        elif (node.op == "LT"):
+            return Lt(lhs, rhs)
+        elif (node.op == "GT"):
+            return Gt(lhs, rhs)
+        elif (node.op == "LE"):
+            return Le(lhs, rhs)
+        elif (node.op == "GE"):
+            return Ge(lhs, rhs)
+        else:
+            raise Exception("invalid comparator")
+
+
 
     def visit_IndexExpr(self, node):
         if (node.matrix_name not in self.global_symbol_table):
@@ -835,10 +898,19 @@ class BackendGenerate(ast.NodeVisitor):
             return sympy.Mul(lhs,rhs)
         elif node.op == "Div":
             return sympy.Mul(lhs,sympy.Pow(rhs, -1))
+        elif node.op == "Mod":
+            return sympy.Mod(lhs,rhs)
+        elif node.op == "And":
+            return sympy.And(lhs,rhs)
+        elif node.op == "Or":
+            return sympy.Or(lhs,rhs)
+        else:
+            raise Exception("Unknown binop :{0}".format(node.op))
 
     def visit_Assign(self, node):
         lhs = self.visit(node.left)
         rhs = self.visit(node.right)
+        self.all_symbols[lhs] = rhs
         assert isinstance(lhs, sympy.Symbol)
         if (str(lhs) in self.current_symbol_table):
             raise LambdaPackBackendGenerationException("Variables are immutable in a given scope")
@@ -849,6 +921,7 @@ class BackendGenerate(ast.NodeVisitor):
         prev_symbol_table = self.current_symbol_table
         for_loop_symbol_table = {"__parent__": prev_symbol_table}
         self.current_symbol_table = for_loop_symbol_table
+        self.all_symbols[loop_var] = loop_var
         min_idx = self.visit(node.min)
         max_idx = self.visit(node.max)
         body = [self.visit(x) for x in node.body]
@@ -861,6 +934,7 @@ class BackendGenerate(ast.NodeVisitor):
         self.current_symbol_table = reduction_loop_symbol_table
         r_call_op_expr = self.visit(node.remote_call)
         loop_var = sympy.Symbol(node.var)
+        self.all_symbols[loop_var] = loop_var
         min_idx = self.visit(node.min)
         max_idx = self.visit(node.max)
         base_case = [self.visit(x) for x in node.expr]
@@ -900,61 +974,20 @@ class BackendGenerate(ast.NodeVisitor):
 
 
 
-
 def lpcompile(function):
     function_ast = ast.parse(inspect.getsource(function)).body[0]
-    #print("Python AST:\n{}\n".format(astor.dump(function_ast)))
+    logging.debug("Python AST:\n{}\n".format(astor.dump(function_ast)))
     parser = LambdaPackParse()
     type_checker = LambdaPackTypeCheck()
     lp_ast = parser.visit(function_ast)
-    #print("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
+    logging.debug("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
     lp_ast_type_checked = type_checker.visit(lp_ast)
-    #print("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
+    logging.debug("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
     def f(*args, **kwargs):
         backend_generator = BackendGenerate(*args, **kwargs)
         backend_generator.visit(lp_ast_type_checked)
         return backend_generator.program
     return f
-
-
-
-def qr(*blocks):
-    return np.linalg.qr(np.vstack(blocks))
-
-#@lpcompile
-def TSQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int):
-    for i in range(N):
-        Qs[0,i], Rs[0,i] = qr(A[i, 0])
-    with reducer(expr=Rs[0,j], var=j, start=0, end=N, b_fac=2) as r:
-        Qs[r.level + 1, j], Rs[r.level + 1, j] = qr(*r.reduce_args)
-        r.reduce_next(Rs[r.level + 1, j])
-
-#@lpcompile
-def CAQR(A:BigMatrix, Qs:BigMatrix, Rs:BigMatrix, N:int, M:int) -> (BigMatrix, BigMatrix):
-    Qs[0,:],Rs[0,:] = TSQR(A[:, 0])
-    for j in range(N):
-        for z in range(M):
-            S[0,z,j] = qr_trailing_update(A[j,z], Qs[j, 0])
-
-    for i in range(N):
-        Qs[i,:],Rs[i,:] = TSQR(A[:, i])
-        for j in range(N):
-            for z in range(M):
-                S[i+1,z,j] = qr_trailing_update(S[i,j,z], Qs[i, 0])
-
-#lpcompile(CAQR)
-
-#@lpcompile
-def TSLU(A:BigMatrix, P:BigMatrix, S:BigMatrix, L:BigMatrix, U:BigMatrix, N:int) -> (BigMatrix, BigMatrix):
-    P[0], S[0]  = tslu_reduction_leaf(A[0], N, 0)
-    with reducer(expr=(S[j],P[j]), var=j, start=0, end=N, b_fac=2) as r:
-        P[r.level,j], S[r.level, j] =  tslu_reduction(r.level,*r.reduce_args)
-        r.reduce_next((S[r.level, j], P[r.level, j]))
-    max_level = ceiling(log(N))
-    L[0], U[0] = lu_no_pivot(S[max_level])
-    for i in range(1, N):
-        L[i] = trsm_pivot(A[i], U[i], P[max_level])
-    return L,U
 
 if __name__ == "__main__":
     N = 32

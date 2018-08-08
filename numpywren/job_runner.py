@@ -78,6 +78,7 @@ class LambdaPackExecutor(object):
         for expr_idx, var_values in operator_refs:
             expr = self.program.program.get_expr(expr_idx)
             logger.debug("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
+            print("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
             t = time.time()
             node_status = self.program.get_node_status(expr_idx, var_values)
             operator_expr = self.program.program.get_expr(expr_idx)

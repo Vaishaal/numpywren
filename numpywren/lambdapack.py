@@ -29,6 +29,7 @@ import redis
 import scipy.linalg
 import dill
 import redis.exceptions
+import logging
 from .matrix import BigMatrix
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
 from . import control_plane, matrix
@@ -40,22 +41,14 @@ try:
 except:
   DEFAULT_CONFIG = {}
 
+logger = logging.getLogger(__name__)
+
 
 class RemoteInstructionOpCodes(Enum):
     S3_LOAD = 0
     S3_WRITE = 1
-    SYRK = 2
-    TRSM = 3
-    GEMM = 4
-    ADD = 5
-    SUB = 6
-    CHOL = 7
-    INVRS = 8
-    RET = 9
-    BARRIER = 10
-    GENERIC = 11
-    EXIT = 12
-
+    GENERIC = 3
+    RET = 4
 
 
 class NodeStatus(Enum):
@@ -327,57 +320,6 @@ class RemoteWrite(RemoteInstruction):
         return "{0} = S3_WRITE {1} {2} {3} {4}".format(self.id, self.matrix, len(self.bidxs), bidxs_str.strip(), self.data_idx)
 
 
-class RemoteIdentity(RemoteInstruction):
-    def __init__(self, i_id, argv_instr, **kwargs):
-        self.argv = argv_instr
-        pass
-    async def __call__(self, prev=None):
-        self.result = self.argv_instr[0].result
-        return self.result
-
-class RemoteSYRK(RemoteInstruction):
-    def __init__(self, i_id, argv_instr, **kwargs):
-        super().__init__(i_id)
-        self.i_code = OC.SYRK
-        assert len(argv_instr) == 3
-        self.argv = argv_instr
-        self.result = None
-    #@profile
-    async def __call__(self, prev=None):
-        if (prev != None):
-          await prev
-        loop = asyncio.get_event_loop()
-        #@profile
-        def compute():
-          self.start_time = time.time()
-          if (self.result is None):
-            # TODO: we shouldn't need to squeeze here.
-            old_block = self.argv[0].result
-            real_shape = old_block.shape
-            block_2 = np.squeeze(self.argv[1].result)
-            block_1 = np.squeeze(self.argv[2].result)
-            res = old_block - (block_2.dot(block_1.T)).reshape(real_shape)
-            self.result = res
-            self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
-          else:
-            raise Exception("Same Machine Replay instruction... ")
-          self.ret_code = 0
-          self.end_time = time.time()
-          return self.result
-
-        return await loop.run_in_executor(self.executor, compute)
-
-    def get_flops(self):
-      old_block = self.argv[0].result
-      block_2 = self.argv[1].result
-      block_1 = self.argv[2].result
-      self.flops = old_block.size + 2*block_2.shape[0]*block_2.shape[1]*block_1.shape[0]
-      return self.flops
-
-
-    def __str__(self):
-        return "{0} = SYRK {1} {2} {3}".format(self.id, self.argv[0].id,  self.argv[1].id,  self.argv[2].id)
-
 class RemoteCall(RemoteInstruction):
     def __init__(self, i_id, compute, argv_instr, num_outputs, symbols, **kwargs):
         super().__init__(i_id)
@@ -429,202 +371,13 @@ class RemoteCall(RemoteInstruction):
         return "{1} = {0}({2}, **kwargs)".format(self.compute, out_str, ",".join(self.symbols))
 
 
-
-class RemoteAdd(RemoteInstruction):
-    def __init__(self, i_id, argv_instr):
-        super().__init__(i_id)
-        self.i_code = OC.ADD
-        assert len(argv_instr) == 2
-        self.argv = argv_instr
-        self.result = None
-    async def __call__(self, prev=None):
-        if (prev != None):
-          await prev
-        loop = asyncio.get_event_loop()
-        def compute():
-          self.start_time = time.time()
-          if self.result is None:
-              block_1 = self.argv[0].result
-              block_2 = self.argv[1].result
-              self.result = block_1 + block_2
-              self.flops = block_1.shape[0]*block_1.shape[1]
-              self.ret_code = 0
-          self.end_time = time.time()
-          return self.result
-        return await loop.run_in_executor(self.executor, compute)
-
-    def __str__(self):
-        return "{0} = ADD {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
-
-
-class RemoteSub(RemoteInstruction):
-    def __init__(self, i_id, argv_instr):
-        super().__init__(i_id)
-        self.i_code = OC.SUB
-        assert len(argv_instr) == 2
-        self.argv = argv_instr
-        self.result = None
-    async def __call__(self, prev=None):
-        if (prev != None):
-          await prev
-        loop = asyncio.get_event_loop()
-        def compute():
-          self.start_time = time.time()
-          if self.result is None:
-              block_1 = self.argv[0].result
-              block_2 = self.argv[1].result
-              self.result = block_1 - block_2
-              self.flops = block_1.shape[0]*block_1.shape[1]
-              self.ret_code = 0
-          self.end_time = time.time()
-          return self.result
-        return await loop.run_in_executor(self.executor, compute)
-
-    def __str__(self):
-        return "{0} = SUB {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
-
-class RemoteSUM(RemoteInstruction):
-    def __init__(self, i_id, argv_instr):
-        super().__init__(i_id)
-        self.i_code = OC.GEMM
-        assert len(argv_instr) == 2
-        self.argv = argv_instr
-        self.result = None
-    async def __call__(self, prev=None):
-        if (prev != None):
-          await prev
-        loop = asyncio.get_event_loop()
-        def compute():
-          self.start_time = time.time()
-          if (self.result == None):
-              self.result = np.sum(self.argv)
-              self.flops = block_1.shape[0]*block_1.shape[1]*len(self.argv)
-              self.ret_code = 0
-          self.end_time = time.time()
-          return self.result
-        return await loop.run_in_executor(self.executor, compute)
-
-    def __str__(self):
-        return "{0} = GEMM {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
-
-
-class RemoteGEMM(RemoteInstruction):
-    def __init__(self, i_id, argv_instr):
-        super().__init__(i_id)
-        self.i_code = OC.GEMM
-        assert len(argv_instr) == 2
-        self.argv = argv_instr
-        self.result = None
-    async def __call__(self, prev=None):
-        if (prev != None):
-          await prev
-        loop = asyncio.get_event_loop()
-        def compute():
-          self.start_time = time.time()
-          if (self.result == None):
-              block_1 = self.argv[0].result
-              block_2 = self.argv[1].result
-              self.result = block_1.dot(block_2)
-              self.flops = 2*block_1.shape[0]*block_1.shape[1]*block_2.shape[1]
-              self.ret_code = 0
-          self.end_time = time.time()
-          return self.result
-        return await loop.run_in_executor(self.executor, compute)
-
-    def __str__(self):
-        return "{0} = GEMM {1} {2}".format(self.id, self.argv[0].id,  self.argv[1].id)
-
-class RemoteTRSM(RemoteInstruction):
-    def __init__(self, i_id, argv_instr, lower=False, right=True, **kwargs):
-        super().__init__(i_id)
-        self.i_code = OC.TRSM
-        assert len(argv_instr) == 2
-        self.argv = argv_instr
-        self.result = None
-        self.lower = lower
-        self.right = right
-    #@profile
-    async def __call__(self, prev=None):
-      if (prev != None):
-        await prev
-      loop = asyncio.get_event_loop()
-      #@profile
-      def compute():
-          self.start_time = time.time()
-          if self.result is None:
-              A_block = self.argv[0].result
-              B_block = self.argv[1].result
-              # TODO: this is a transpose hack for cholesky
-              A_block_shape = A_block.shape
-              A_block = A_block.squeeze()
-              self.result = scipy.linalg.blas.dtrsm(1.0, A_block.T, B_block, side=int(self.right),lower=int(self.lower))
-              A_block.reshape(A_block_shape)
-              self.flops =  A_block.shape[0] * B_block.shape[0] * B_block.shape[1]
-              self.ret_code = 0
-          else:
-            raise Exception("Same Machine Replay instruction...")
-          self.end_time = time.time()
-          return self.ret_code
-      return await loop.run_in_executor(self.executor, compute)
-
-    def clear(self):
-        self.result = None
-
-    def get_flops(self):
-      L_bb = self.argv[1].result
-      col_block = self.argv[0].result
-      self.flops =  col_block.shape[1] * L_bb.shape[0] * L_bb.shape[1]
-      return self.flops
-
-    def __str__(self):
-        return "{0} = TRSM {1} {2} {3} {4}".format(self.id, self.argv[0].id,  self.argv[1].id, self.lower, self.right)
-
-class RemoteCholesky(RemoteInstruction):
-    def __init__(self, i_id, argv_instr, **kwargs):
-        super().__init__(i_id)
-        self.i_code = OC.CHOL
-        assert len(argv_instr) == 1
-        self.argv = argv_instr
-        self.result = None
-    #@profile
-    async def __call__(self, prev=None):
-      if (prev != None):
-          await prev
-      loop = asyncio.get_event_loop()
-      #@profile
-      def compute():
-          self.start_time = time.time()
-          s = time.time()
-          if (self.result is None):
-              L_bb = self.argv[0].result
-              self.result = np.linalg.cholesky(L_bb)
-              self.flops = 1.0/3.0*(L_bb.shape[0]**3) + 2.0/3.0*(L_bb.shape[0])
-              self.ret_code = 0
-          else:
-            raise Exception("Same Machine Replay instruction...")
-          e = time.time()
-          self.end_time = time.time()
-          return self.result
-      return await loop.run_in_executor(self.executor, compute)
-
-    def clear(self):
-        self.result = None
-
-    def get_flops(self):
-        L_bb = self.argv[0].result
-        self.flops = 1.0/3.0*(L_bb.shape[0]**3)
-        return self.flops
-
-    def __str__(self):
-        return "{0} = CHOL {1}".format(self.id, self.argv[0].id)
-
-
 class RemoteReturn(RemoteInstruction):
     def __init__(self, i_id):
         super().__init__(i_id)
         self.i_code = OC.RET
         self.result = None
     async def __call__(self, client, return_hash):
+      logger.debug("RETURNING...")
       loop = asyncio.get_event_loop()
       self.start_time = time.time()
       if (self.result == None):
@@ -759,6 +512,7 @@ class LambdaPackProgram(object):
           for child in children:
               operator_expr = self.program.get_expr(child[0])
               my_child_edge = self._edge_key(expr_idx, var_values, *child)
+              print("my_child_edge: {0}, me: {1}".format(my_child_edge, var_values))
               child_edge_sum_key = self._node_edge_sum_key(*child)
               # redis transaction should be atomic
               tp = fs.ThreadPoolExecutor(1)
@@ -775,6 +529,7 @@ class LambdaPackProgram(object):
               if ((val == num_child_parents) and self.get_node_status(*child) != NS.FINISHED):
                 self.set_node_status(*child, NS.READY)
                 ready_children.append(child)
+          print(ready_children)
 
           if self.eager and ready_children:
               # TODO: Re-add priorities here
@@ -782,7 +537,6 @@ class LambdaPackProgram(object):
               del ready_children[-1]
           else:
               next_operator = None
-
           # move the highest priority job thats ready onto the local task queue
           # this is JRK's idea of dynamic node fusion or eager scheduling
           # the idea is that if we do something like a local cholesky decomposition
