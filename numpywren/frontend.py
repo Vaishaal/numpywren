@@ -689,9 +689,12 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
             idxs = [self.visit(x) for x in node.indices]
         else:
             idxs = [self.visit(node.indices)]
+
         out_type = unify([x.type for x in idxs])
         if (not issubclass(out_type, LinearIntType)):
-            raise exceptions.LambdaPackTypeException("Indices in IndexExprs must all of type LinearIntType")
+            print("TYPES", [x.type for x in idxs])
+            print("refs", [x.name for x in idxs])
+            raise exceptions.LambdaPackTypeException("Indices in IndexExprs must all of type LinearIntType {0}[{1}]".format(node.matrix_name, [str(x) for x in node.indices]))
         return IndexExpr(node.matrix_name, idxs)
 
     def visit_Stargs(self, node):
@@ -803,6 +806,7 @@ class BackendGenerate(ast.NodeVisitor):
         self.count = 0
         self.arg_values = args
         self.kwargs = kwargs
+        self.for_depth = 0
 
     def visit_FuncDef(self, node):
         assert len(node.args) == len(self.arg_values), "function {0} expected {1} args got {2}".format(node.name, len(node.args), len(self.arg_values))
@@ -842,9 +846,14 @@ class BackendGenerate(ast.NodeVisitor):
 
     def visit_If(self, node):
         cond = self.visit(node.cond)
+        prev_symbol_table = self.current_symbol_table
+        if_symbol_table = {"__parent__": prev_symbol_table}
+        self.current_symbol_table = if_symbol_table
         if_body = [self.visit(x) for x in node.body]
-        print("elseBody", node.elseBody)
+        else_symbol_table = {"__parent__": prev_symbol_table}
+        self.current_symbol_table = else_symbol_table
         else_body = [self.visit(x) for x in node.elseBody]
+        self.current_symbol_table = prev_symbol_table
         return compiler.BackendIf(cond, if_body, else_body)
 
     def visit_CmpOp(self, node):
@@ -904,27 +913,33 @@ class BackendGenerate(ast.NodeVisitor):
             return sympy.And(lhs,rhs)
         elif node.op == "Or":
             return sympy.Or(lhs,rhs)
+        elif node.op == "Pow":
+            return sympy.Pow(lhs,rhs)
         else:
             raise Exception("Unknown binop :{0}".format(node.op))
 
     def visit_Assign(self, node):
-        lhs = self.visit(node.left)
-        rhs = self.visit(node.right)
-        self.all_symbols[lhs] = rhs
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
         assert isinstance(lhs, sympy.Symbol)
-        if (str(lhs) in self.current_symbol_table):
-            raise LambdaPackBackendGenerationException("Variables are immutable in a given scope")
+        if (str(lhs) in self.current_symbol_table and rhs != self.current_symbol_table[str(lhs)]):
+                raise exceptions.LambdaPackBackendGenerationException("Variables are immutable in a given scope\n Old Var: {0}, New Var {1}, Var Name".format(self.current_symbol_table[str(lhs)], rhs, lhs))
+        self.all_symbols[lhs] = rhs
         self.current_symbol_table[str(lhs)] = rhs
+        return compiler.AssignStatement("{0} = {1}".format(lhs, rhs))
 
     def visit_For(self, node):
         loop_var = sympy.Symbol(node.var)
         prev_symbol_table = self.current_symbol_table
-        for_loop_symbol_table = {"__parent__": prev_symbol_table}
+        self.for_depth += 1
+        for_loop_symbol_table = {"__parent__": prev_symbol_table, 'depth': self.for_depth}
+
         self.current_symbol_table = for_loop_symbol_table
         self.all_symbols[loop_var] = loop_var
         min_idx = self.visit(node.min)
         max_idx = self.visit(node.max)
         body = [self.visit(x) for x in node.body]
+        self.for_depth -= 1
         self.current_symbol_table = prev_symbol_table
         return compiler.BackendFor(var=loop_var, limits=[min_idx, max_idx], body=body, symbol_table=for_loop_symbol_table)
 
@@ -940,6 +955,7 @@ class BackendGenerate(ast.NodeVisitor):
         base_case = [self.visit(x) for x in node.expr]
         recursion = [self.visit(x) for x in node.recursion]
         b_fac = self.visit(node.b_fac)
+        self.current_symbol_table = prev_symbol_table
         return compiler.ReductionOperatorExpr(remote_call=r_call_op_expr, var=loop_var, limits=(min_idx, max_idx), recursion=recursion, branch=b_fac, scope=reduction_loop_symbol_table, base_case=base_case)
 
     def visit_Ref(self, node):
@@ -983,6 +999,7 @@ def lpcompile(function):
     logging.debug("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
     lp_ast_type_checked = type_checker.visit(lp_ast)
     logging.debug("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
+    #print("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
     def f(*args, **kwargs):
         backend_generator = BackendGenerate(*args, **kwargs)
         backend_generator.visit(lp_ast_type_checked)

@@ -28,9 +28,10 @@ def f1_if(I:BigMatrix, O:BigMatrix, N:int):
 def f1_if_nested(I:BigMatrix, O:BigMatrix, N:int):
     for i in range(N):
         if ((i % 2) == 0):
-            O[i] = mul(1, I[i])
             if ((i % 3) == 0):
                 O[i] = mul(3, I[i])
+            else:
+                O[i] = mul(1, I[i])
         else:
             O[i] = mul(2, I[i])
 
@@ -74,9 +75,9 @@ class IfTest(unittest.TestCase):
         for s, var_values in p.starters:
             i = var_values['i']
             if(i % 2 == 0 and (not i % 3 == 0)):
-                assert s == 0
+                assert s == 1
             elif(i % 2 == 0 and (i % 3 == 0)):
-                assert (s == 0) or (s == 1)
+                assert s == 0
             else:
                 assert s == 2
 

@@ -24,5 +24,15 @@ def chol(x, *args, **kwargs):
 def mul(x, y, *args, **kwargs):
     return x * y
 
+def gemm(A, B, *args, **kwargs):
+    if (kwargs.get('transpose_A', False)):
+        A = A.T
+    if (kwargs.get('transpose_B', False)):
+        B = B.T
+    return A.dot(B)
+
+def qr_trailing_update(Q0, Q1, S1, S2, *args, **kwargs):
+    pass
+
 def trsm(x, y, lower=False, right=True, *args, **kwargs):
     return scipy.linalg.blas.dtrsm(1.0, x.T, y, lower=lower, side=int(right))

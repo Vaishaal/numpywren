@@ -93,6 +93,7 @@ class ReductionTest(unittest.TestCase):
         assert(np.allclose(reduce_output, reduce_output_check))
 
     def test_reduction_multi_stage(self):
+        #import pdb; pdb.set_trace()
         np.random.seed(1)
         size = 256
         shard_size = 32
@@ -110,14 +111,14 @@ class ReductionTest(unittest.TestCase):
         program_compiled = r_sum(X_sharded, B_sharded, X_sharded.num_blocks(1), b_fac)
         starters = program_compiled.starters
         starters_children = program_compiled.get_children(*starters[0])
+        print("STARTERS", starters)
+        print("STARTERS_CHILDREN", starters_children)
         starters_children = program_compiled.get_children(*starters[1])
         program_executable = lp.LambdaPackProgram(program_compiled, config=config)
         program_executable.start()
         all_futures  = []
         num_cores = 16
-        executor = fs.ProcessPoolExecutor(num_cores)
-        for i in range(num_cores):
-            all_futures.append(executor.submit(job_runner.lambdapack_run, program_executable, pipeline_width=1, idle_timeout=5, timeout=10))
+        job_runner.lambdapack_run(program_executable, pipeline_width=1, idle_timeout=5, timeout=10)
         program_executable.wait()
         time.sleep(5)
         program_executable.free()

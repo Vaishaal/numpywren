@@ -35,13 +35,15 @@ class Statement():
 
 def scope_sub(expr, scope):
     if (isinstance(expr, sympy.Basic)):
+        if (expr in scope):
+            expr = scope[expr]
         expr = expr.subs(scope)
         if "__parent__" in scope:
-            return scope_sub(expr, scope["__parent__"])
-        else:
-            return expr
+            expr = scope_sub(expr, scope["__parent__"])
+        return expr
     elif (isinstance(expr, str)):
-        return sympy.Symbol(expr)
+        expr = sympy.Symbol(expr)
+        return scope_sub(expr, scope)
     elif (isinstance(expr, int)):
         return sympy.Integer(expr)
     elif (isinstance(expr, float)):
@@ -161,14 +163,16 @@ class OperatorExpr(Statement):
         results = []
         for write_expr in self._write_exprs:
             if read_ref.matrix != write_expr.matrix:
-                return []
+                continue
             if not var_names:
                 if tuple(read_ref.indices) == tuple(write_expr.indices):
-                    return [{}]
+                    results.append[{}]
+                    continue
             assert len(read_ref.indices) == len(write_expr.indices)
             results += self._enumerate_possibilities(read_ref.indices, write_expr.indices,
                                                     var_names, var_limits, conds=conds)
-        return utils.remove_duplicates(results)
+        res = utils.remove_duplicates(results)
+        return res
 
     def eval_read_refs(self, var_values):
         read_refs = []
@@ -232,24 +236,28 @@ class OperatorExpr(Statement):
             simple_var = None
             simple_var_idx = None
             var_limits = [(scope_sub(low, self.scope).subs(var_values), scope_sub(high, self.scope).subs(var_values), scope_sub(step, self.scope).subs(var_values)) for (low, high, step) in var_limits]
+            lows = []
+            highs = []
             for (i,(var_name, (low,high,step))) in enumerate(zip(var_names, var_limits)):
                 low = low.subs(var_values)
                 high = low.subs(var_values)
+                lows.append(low)
+                highs.append(high)
                 if (not low.is_Symbol) and (not high.is_Symbol):
                     simple_var = var_name
                     simple_var_idx = i
                     break
             if (simple_var is None):
-                raise Exception("NO simple var in loop")
+                raise Exception("NO simple var in loop lows: {0}, highs: {1} ".format(lows, highs))
             limits = var_limits[simple_var_idx]
             solutions = []
-            if ((not sol[0].is_Symbol) and (sol[0] < limits[0] or sol[0] >= limits[1])):
+            if ((sol[0].is_constant()) and (sol[0] < limits[0] or sol[0] >= limits[1])):
                     return []
             simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
             for val in range(limits[0], limits[1], limits[2]):
                 var_values = var_values.copy()
 
-                var_values[str(simple_var)] = int(simple_var_func(val))
+                var_values[str(simple_var)] = int(sol[0].subs({simple_var: val}).subs(var_values))
                 if(var_values[str(simple_var)] != val):
                     continue
                 limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
@@ -293,12 +301,13 @@ class OperatorExpr(Statement):
             return []
         elif(len(sols) == 1):
             sol = sols[0]
-            if (np.all([x.is_Symbol == False for x in sol]) and
+            if (np.all([x.is_constant() for x in sol]) and
                     np.all([x.is_Integer == True for x in sol])):
                 solutions = [dict(zip([str(x) for x in solve_vars], sol))]
             else:
                 limits = var_limits[simple_var_idx]
                 solutions = []
+                sol = tuple([scope_sub(x, self.scope) for x in sol])
                 simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
                 if ((not sol[0].is_Symbol) and (sol[0] < limits[0] or sol[0] >= limits[1])):
                     return []
@@ -322,6 +331,7 @@ class OperatorExpr(Statement):
             resolved, val = check_cond(conds, sol)
             if (not resolved):
                 raise Exception("Unresolved conditional conds={0}, var_values={1}".format(sol, conds))
+
             bad_sol = (bad_sol) or (not val)
 
             for (var_name, (low,high,step)) in zip(var_names, var_limits):
@@ -477,19 +487,24 @@ class ReductionOperatorExpr(OperatorExpr):
 
 
     def find_writer_var_values(self, read_ref, var_names, var_limits, current_reduction_level=-1, conds=None):
+        #import pdb; pdb.set_trace()
         if (conds is None):
             conds = []
         current_reduction_level -= 1
-        if (current_reduction_level == -1):
+        if (current_reduction_level < 0):
+            return []
+        if (current_reduction_level == 0):
             reduction_expr = self.base_case
         else:
             reduction_expr = self.recursion
 
         self.scope["__LEVEL__"] = current_reduction_level
-        var_names.append(self.var)
+        if (self.var in var_names):
+            assert(False)
         low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
         branch = scope_sub(self.branch, self.scope)
-        var_limits.append((low, high, branch))
+        var_names = var_names + [self.var]
+        var_limits = var_limits + [(low, high, branch)]
         results = []
         for output in self.outputs:
             if (output.matrix != read_ref.matrix):
@@ -512,10 +527,12 @@ class ReductionOperatorExpr(OperatorExpr):
             reduction_expr = self.base_case
         else:
             reduction_expr = self.recursion
-        var_names.append(self.var)
+        if (self.var in var_names):
+            assert(False)
         low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
         branch = scope_sub(self.branch, self.scope)
-        var_limits.append((low, high, branch))
+        var_names = var_names + [self.var]
+        var_limits = var_limits + [(low, high, branch)]
         self.scope["__LEVEL__"] = current_reduction_level
         if ((current_reduction_level + 1) >= np.ceil(np.log(int(high))/np.log(int(branch)))):
             return []
@@ -531,7 +548,7 @@ class ReductionOperatorExpr(OperatorExpr):
                     continue
                 assert len(write_ref.indices) == len(read_expr.indices)
                 possibs = self._enumerate_possibilities(write_ref.indices, read_expr.indices,
-                                                     var_names, var_limits, conds=conds)
+                                                     var_names + [self.var], var_limits + [(low, high, branch)], conds=conds)
                 results += possibs
             elif (isinstance(arg, sympy.Basic)):
                 continue
@@ -543,7 +560,7 @@ class ReductionOperatorExpr(OperatorExpr):
                     if not var_names:
                         if tuple(write_ref.indices) == tuple(reduction.indices):
                             results.append({})
-                        continue
+                            continue
                     assert len(write_ref.indices) == len(reduction.indices)
                     possibs = self._enumerate_possibilities(write_ref.indices, idxs_subbed, var_names, var_limits, conds=conds)
                     results += possibs
@@ -552,8 +569,8 @@ class ReductionOperatorExpr(OperatorExpr):
         for r in results:
             r["__LEVEL__"] = (current_reduction_level + 1)
             r_var = r[str(self.var)]
-            r_start = var_limits[-1][0]
-            r_end = var_limits[-1][1]
+            r_start = scope_sub(var_limits[-1][0], self.scope)
+            r_end = scope_sub(var_limits[-1][1], self.scope)
             chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(current_reduction_level+1))), branch))
             out_var = None
             for i,c in enumerate(chunked_lst):
@@ -567,12 +584,24 @@ class ReductionOperatorExpr(OperatorExpr):
             r[str(self.var)] = r_var
         return results
 
+class AssignStatement(Statement):
+    def __init__(self, assign):
+        self.assign = assign
+        self.num_exprs = 0
+        self.num_statements = 0
+        self._is_input = False
+        self._is_output = False
+
+    def __str__(self):
+        return self.assign
 class BlockStatement(Statement):
     def __init__(self, body=[]):
         self._body = body
         self.num_stmts = 0
         self.num_exprs = 0
         for statement in self._body:
+            if (not isinstance(statement, Statement)):
+                continue
             self.num_exprs += statement.num_exprs
             self.num_stmts += 1
 
@@ -636,7 +665,7 @@ class Program(BlockStatement):
         write_refs = operator_expr.eval_write_ref(var_values)
         children = []
         for write_ref in write_refs:
-            print("Looking for write ref ", write_ref)
+            print("write ref", write_ref)
             children += self.eval_read_operators(write_ref, current_reduction_level=reduction_level)
         if (operator_expr._is_output):
             children += [(self.num_exprs - 1, {})]
@@ -656,7 +685,6 @@ class Program(BlockStatement):
         parents = []
         operator_expr = self.get_expr(expr_idx)
         read_refs = operator_expr.eval_read_refs(var_values)
-
         for read_ref in read_refs:
             local_parents = self.eval_write_operators(read_ref, current_reduction_level=current_reduction_level)
             parents += local_parents
@@ -791,6 +819,7 @@ class Program(BlockStatement):
                             var_values_recurse["__LEVEL__"] = 0
                             if (len(self.get_parents(expr_id, var_values_recurse)) == 0):
                                 starters.append((expr_id, var_values_recurse))
+                    expr_id += 1
                 elif isinstance(statement, BackendIf):
                     if (not statement._is_input):
                         continue
@@ -853,8 +882,11 @@ class Program(BlockStatement):
                 if isinstance(statement, OperatorExpr):
                     valid_var_values = statement.find_reader_var_values(
                         write_ref, var_names, var_limits, current_reduction_level=current_reduction_level, conds=conds)
+                    print("statement", statement, valid_var_values)
                     read_ops += [(expr_counter, vals) for vals in valid_var_values]
                 elif isinstance(statement, BackendFor):
+                    if (statement.var in var_names):
+                        assert(false)
                     read_ops += recurse_eval_read_ops(statement._body,
                                                       expr_counter,
                                                       var_names + [str(statement.var)], 
@@ -873,7 +905,8 @@ class Program(BlockStatement):
                                                           var_names,
                                                           var_limits,
                                                           conds + [~statement._cond])
-
+                elif isinstance(statement, AssignStatement):
+                    pass
                 else:
                     raise NotImplementedError
                 expr_counter += statement.num_exprs
@@ -889,6 +922,8 @@ class Program(BlockStatement):
                         read_ref, var_names, var_limits, current_reduction_level=current_reduction_level, conds=conds)
                     write_ops += [(expr_counter, vals) for vals in valid_var_values]
                 elif isinstance(statement, BackendFor):
+                    if (statement.var in var_names):
+                        assert(False)
                     write_ops += recurse_eval_write_ops(statement._body,
                                                         expr_counter,
                                                         var_names + [statement.var],
@@ -907,12 +942,16 @@ class Program(BlockStatement):
                                                           var_names,
                                                           var_limits,
                                                           conds + [~statement._cond])
-
+                elif isinstance(statement, AssignStatement):
+                    pass
                 else:
                     raise NotImplementedError
                 expr_counter += statement.num_exprs
             return write_ops
-        return recurse_eval_write_ops(self._body, 0, [], [], [])
+
+
+        val = recurse_eval_write_ops(self._body, 0, [], [], [])
+        return val
 
     def __str__(self):
         str_repr = "def {0}():\n".format(self.name)
