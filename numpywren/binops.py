@@ -15,6 +15,10 @@ import time
 from . import lambdapack as lp
 from . import job_runner 
 
+import sys
+sys.path.insert(0, '/home/ec2-user/stragglers')
+from make_coding_function import make_coding_function2D
+
 
 def ind1Dto2D(i, len_A_coded, num_parity_blocks):
     if i < len_A_coded:
@@ -123,11 +127,14 @@ def decode_vector(Y, num_parity_blocks):
 def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **kwargs):
     print(reduce_idxs)
     print(block_pairs)
-    t1 = time.time()
+    # t1 = time.time()
     assert(len(Y.shape) == 1 or Y.shape[1] == 1)
     num_parity_blocks = kwargs['num_parity_blocks']
-    breakdown = kwargs['breakdown']
-    print("1", time.time() - t1)
+    if 'breakdown' in kwargs:
+        breakdown = kwargs['breakdown']
+    else:
+        breakdown=1
+    # print("1", time.time() - t1)
     if num_parity_blocks==0:
         shard_size = Y.shard_sizes[0]
         y_local = np.zeros(Y.shape)
@@ -136,17 +143,19 @@ def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
         #     return
         # block_idxs_exist = set([x[0] for x in Y.block_idxs_exist])
         # for r in block_idxs_exist:
-        print("2", time.time() - t1)
+        # print("2", time.time() - t1)
         for r in Y._block_idxs(0):
             y_local[r*shard_size:(r + 1)*shard_size] = Y.get_block(r, 0)
             if r%50==0:
                 print("r, time", r, time.time() - t1)
+    elif (num_parity_blocks==-1):
+        y_local = Y.get_block(0,0)
     else:
         y_local = decode_vector(Y, num_parity_blocks)
     # print("y_local after decoding", y_local)
     
-    t2 = time.time()
-    print ("phase 1 time", t2-t1)
+    # t2 = time.time()
+    # print ("phase 1 time", t2-t1)
     for bp in block_pairs:
         bidx_0, bidx_1 = bp
         XY_block = None
@@ -154,8 +163,11 @@ def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
         for r in reduce_idxs:
             print ("At reduce id:", r)
             block1 = X.get_block(bidx_0, r)
-            sidx,eidx = Y.blocks[r]
-            sidx, eidx = sidx
+            # sidx,eidx = Y.blocks[r]
+            # sidx, eidx = sidx
+            shard_size = X.shard_sizes[1]
+            sidx = r*shard_size
+            eidx = (r+1)*shard_size
             sidx = int(sidx*breakdown)
             eidx = int(eidx*breakdown)
             y_block = y_local[sidx:eidx]
@@ -165,7 +177,7 @@ def _gemm_remote_3(block_pairs, XY, X, Y, reduce_idxs=[0], dtype=np.float64, **k
             else:
                 XY_block = XY_block + block1.dot(y_block)
         XY.put_block(XY_block, bidx_0, bidx_1)
-    print ("phase 2 time", time.time()-t2)
+    # print ("phase 2 time", time.time()-t2)
     return 0
 
 
@@ -325,6 +337,7 @@ def gemm(pwex, X, Y, out_bucket=None, tasks_per_job=1, local=False, dtype=np.flo
         if (result_count >= straggler_thresh*len(futures)):
             # [f.result() for f in fs_dones]
             for f in fs_dones:
+                # f.result()
                 try:
                     f.result()
                 except Exception as e:
