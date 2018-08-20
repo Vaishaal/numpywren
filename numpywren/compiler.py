@@ -11,6 +11,9 @@ import dill
 import logging
 import numpy as np
 import time
+import pdb
+from IPython.core.debugger import set_trace
+
 
 logger = logging.getLogger('numpywren')
 
@@ -33,7 +36,28 @@ class Statement():
     def get_expr(self, index):
         pass
 
+
+def scope_sub_wrapper(scope_sub):
+    memo_dict = {}
+    def scope_sub_memoized(expr, scope):
+        if ((expr, tuple(memo_dict.items())) not in memo_dict):
+            ret_val = scope_sub(expr, scope)
+            memo_dict[(expr, tuple(memo_dict.items()))] = ret_val
+            return ret_val
+        else:
+            return memo_dict[(expr, tuple(memo_dict.items()))]
+    return scope_sub_memoized
+
 def scope_sub(expr, scope):
+    val0 = _scope_sub(expr, scope)
+    val1 = _scope_sub(val0, scope)
+    values = [val0, val1]
+    while (values[-2] != values[-1]):
+        values.append(_scope_sub(values[-1], scope))
+    return values[-1]
+
+
+def _scope_sub(expr, scope):
     if (isinstance(expr, sympy.Basic)):
         if (expr in scope):
             expr = scope[expr]
@@ -50,6 +74,17 @@ def scope_sub(expr, scope):
         return sympy.Float(expr)
     else:
         return expr
+
+def is_linear(expr, vars):
+    for x in vars:
+        for y in vars:
+            try:
+                if not sympy.Eq(sympy.diff(expr, x, y), 0):
+                    return False
+            except TypeError:
+                return False
+    return True
+
 
 
 class OperatorExpr(Statement):
@@ -78,8 +113,9 @@ class OperatorExpr(Statement):
     def eval_big_matrix_block(self, bigm_block, var_values):
         idx_evaluated = ()
         for idx in bigm_block.indices:
-            idx_subbed = scope_sub(idx, var_values)
-            idx = scope_sub(idx_subbed, self.scope)
+            sub_dict = self.scope.copy()
+            sub_dict.update(var_values)
+            idx = scope_sub(idx, sub_dict)
             if (idx.is_integer is None):
                 raise Exception("Big matrix indices must evaluated to be integers, got {0} for {1}, var_values is {2}".format(idx, bigm_block, var_values))
             idx = int(idx)
@@ -276,6 +312,7 @@ class OperatorExpr(Statement):
         simple_var = None
         simple_var_idx = None
         var_limits = [(scope_sub(x, self.scope), scope_sub(y, self.scope), scope_sub(z, self.scope)) for (x,y,z) in var_limits]
+        linear_eqns = [scope_sub(x, self.scope) for x in linear_eqns]
         for (i,(var_name, (low,high,step))) in enumerate(zip(var_names, var_limits)):
             if (low.is_constant()) and (high.is_constant()):
                 simple_var = var_name
@@ -291,8 +328,60 @@ class OperatorExpr(Statement):
             if (isinstance(x, str)):
                 solve_vars[i] = sympy.Symbol(x)
 
+        nonlinear = False
+        linear_eqns_fixed = []
+        non_lin_idxs = []
+        nl_map = {}
+        for i, eq in enumerate(linear_eqns):
+            nonlinear = nonlinear or (not is_linear(eq, solve_vars))
+            if (not is_linear(eq, solve_vars)):
+                placeholder = sympy.Symbol('__nl{0}__'.format(i))
+                solve_vars.append(placeholder)
+                linear_eqns_fixed.append(placeholder)
+                nl_map[placeholder] = eq
+                non_lin_idxs.append(i)
+            else:
+                linear_eqns_fixed.append(eq)
 
-        sols = list(sympy.linsolve(linear_eqns, solve_vars)) 
+
+
+
+        t = time.time()
+        sols = list(sympy.linsolve(linear_eqns_fixed, solve_vars)) 
+        e = time.time()
+        print("Solve time ", e - t)
+        if (nonlinear):
+            print(f"Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_idxs is {non_lin_idxs}")
+            good_sols = []
+            for j, sol in enumerate(sols):
+                lin_subs = {}
+                sol = list(sol)
+                for i, var in enumerate(sol):
+                    if (i in non_lin_idxs):
+                        continue
+                    lin_subs[solve_vars[i]] = var
+                bad_sol = False
+                for i in non_lin_idxs:
+                    print(non_lin_idxs)
+                    print(sol)
+                    print(i)
+                    print(sol[i])
+                    assert sol[i] == 0
+                    before = sol[i]
+                    nl_var = solve_vars[i].subs(nl_map)
+                    nl_sub = nl_var.subs(lin_subs)
+                    if (nl_sub != 0):
+                        bad_sol = True
+                        break
+                if (not bad_sol):
+                    good_sols.append(sol)
+            sols = good_sols
+            print(f"(after simplification): Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_map is {nl_map}")
+
+
+
+
+
         # three cases
         # case 1 len(sols) == 0 -> no solution
         # case 2 exact (single) solution and solution is integer
@@ -319,6 +408,8 @@ class OperatorExpr(Statement):
                     limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
                     if (len(limits_left) > 0):
                         var_names_recurse = [x for x in var_names if x != simple_var]
+                        print("Length var names recurse ", len(var_names_recurse))
+                        print("Length limits ", len(limits_left))
                         solutions += brute_force_limits(sol[1:], var_values, var_names_recurse, limits_left, conds)
                     else:
                         solutions.append(var_values)
@@ -417,7 +508,7 @@ class ReductionOperatorExpr(OperatorExpr):
             raise Exception("Reduction branch must be constant at eval time")
         reduction_branch = int(reduction_branch)
         start = scope_sub(self.limits[0], var_values)
-        start = scope_sub(self.limits[0], self.scope)
+        start = scope_sub(start, self.scope)
         if (not start.is_constant()):
             raise Exception("Reduction start must be constant at eval time")
         start = int(start)
@@ -487,37 +578,38 @@ class ReductionOperatorExpr(OperatorExpr):
 
 
     def find_writer_var_values(self, read_ref, var_names, var_limits, current_reduction_level=-1, conds=None):
-        #import pdb; pdb.set_trace()
+        MAX_REDUCTION = 10
         if (conds is None):
             conds = []
-        current_reduction_level -= 1
-        if (current_reduction_level < 0):
-            return []
-        if (current_reduction_level == 0):
-            reduction_expr = self.base_case
-        else:
-            reduction_expr = self.recursion
+        all_results = []
+        for reduction_level in range(current_reduction_level, MAX_REDUCTION):
+            if (reduction_level == 0):
+                reduction_expr = self.base_case
+            else:
+                reduction_expr = self.recursion
 
+            self.scope["__LEVEL__"] = reduction_level 
+            if (self.var in var_names):
+                assert(False)
+            low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
+            branch = scope_sub(self.branch, self.scope)
+            var_names = var_names + [str(self.var)]
+            var_limits = var_limits + [(low, high, branch)]
+            results = []
+            for output in self.outputs:
+                if (output.matrix != read_ref.matrix):
+                    continue
+                if not var_names:
+                    if tuple(read_ref.indices) == tuple(output.indices):
+                        return [{}]
+                assert len(read_ref.indices) == len(output.indices)
+                idxs = [scope_sub(x, self.scope) for x in output.indices]
+                results = self._enumerate_possibilities(read_ref.indices, idxs, var_names, var_limits, conds=conds)
+            for r in results:
+                r["__LEVEL__"] = reduction_level
+            all_results += results
         self.scope["__LEVEL__"] = current_reduction_level
-        if (self.var in var_names):
-            assert(False)
-        low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
-        branch = scope_sub(self.branch, self.scope)
-        var_names = var_names + [self.var]
-        var_limits = var_limits + [(low, high, branch)]
-        results = []
-        for output in self.outputs:
-            if (output.matrix != read_ref.matrix):
-                continue
-            if not var_names:
-                if tuple(read_ref.indices) == tuple(output.indices):
-                    return [{}]
-            assert len(read_ref.indices) == len(output.indices)
-            idxs = [scope_sub(x, self.scope) for x in output.indices]
-            results = self._enumerate_possibilities(read_ref.indices, idxs, var_names, var_limits, conds=conds)
-        for r in results:
-            r["__LEVEL__"] = current_reduction_level
-        return utils.remove_duplicates(results)
+        return utils.remove_duplicates(all_results)
 
 
     def find_reader_var_values(self, write_ref, var_names, var_limits, current_reduction_level=-1, conds=None):
@@ -529,12 +621,14 @@ class ReductionOperatorExpr(OperatorExpr):
             reduction_expr = self.recursion
         if (self.var in var_names):
             assert(False)
+        print("SCOPE IS ", self.scope)
         low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
         branch = scope_sub(self.branch, self.scope)
-        var_names = var_names + [self.var]
+        var_names = var_names + [str(self.var)]
         var_limits = var_limits + [(low, high, branch)]
         self.scope["__LEVEL__"] = current_reduction_level
-        if ((current_reduction_level + 1) >= np.ceil(np.log(int(high))/np.log(int(branch)))):
+        print(low, high)
+        if ((current_reduction_level + 1) > np.ceil(np.log(int(high))/np.log(int(branch)))):
             return []
 
         results = []
@@ -543,12 +637,12 @@ class ReductionOperatorExpr(OperatorExpr):
                 if write_ref.matrix != arg.matrix:
                     continue
                 if not var_names:
-                    if tuple(write_ref.indices) == tuple(read_expr.indices):
+                    if tuple(write_ref.indices) == tuple(arg.indices):
                         results.append({})
                     continue
-                assert len(write_ref.indices) == len(read_expr.indices)
-                possibs = self._enumerate_possibilities(write_ref.indices, read_expr.indices,
-                                                     var_names + [self.var], var_limits + [(low, high, branch)], conds=conds)
+                assert len(write_ref.indices) == len(arg.indices)
+                possibs = self._enumerate_possibilities(write_ref.indices, arg.indices,
+                                                     var_names, var_limits, conds=conds)
                 results += possibs
             elif (isinstance(arg, sympy.Basic)):
                 continue
@@ -565,24 +659,33 @@ class ReductionOperatorExpr(OperatorExpr):
                     possibs = self._enumerate_possibilities(write_ref.indices, idxs_subbed, var_names, var_limits, conds=conds)
                     results += possibs
         results = utils.remove_duplicates(results)
+        print(f"Results are {results} write_ref {write_ref}, var_names {var_names}, var_limits {var_limits}, current_reduction_level {current_reduction_level}")
         branch = scope_sub(self.branch, self.scope)
+        good_results = []
         for r in results:
             r["__LEVEL__"] = (current_reduction_level + 1)
             r_var = r[str(self.var)]
-            r_start = scope_sub(var_limits[-1][0], self.scope)
-            r_end = scope_sub(var_limits[-1][1], self.scope)
+            scope = self.scope.copy()
+            scope.update(r)
+            r_start = scope_sub(var_limits[-1][0], scope)
+            r_end = scope_sub(var_limits[-1][1], scope)
+            print("r_start ", r_start)
+            print("r_end ", r_end)
             chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(current_reduction_level+1))), branch))
+
             out_var = None
+            print("chunked_lst", chunked_lst)
             for i,c in enumerate(chunked_lst):
                 if (r_var in c):
                     out_var = i
-
-
             if (out_var == None):
-                raise Exception("Invalid Reduction")
+                print(chunked_lst)
+                print("rvar", r_var)
+                continue
             r_var = chunked_lst[out_var][0]
             r[str(self.var)] = r_var
-        return results
+            good_results.append(r)
+        return good_results
 
 class AssignStatement(Statement):
     def __init__(self, assign):
@@ -633,9 +736,6 @@ class BlockStatement(Statement):
 
 
 
-
-
-
     def __str__(self):
         str_repr = ""
         for stmt in self._body:
@@ -651,8 +751,8 @@ class Program(BlockStatement):
         self.symbols = symbols
         self.all_symbols = all_symbols
         super().__init__(body)
-        self.starters = self.find_starters()
-        self.num_terminators = len(self.find_terminators())
+        #self.starters = self.find_starters()
+        #self.num_terminators = len(self.find_terminators())
 
     def get_children(self, expr_idx, var_values):
         operator_expr = self.get_expr(expr_idx)
@@ -664,13 +764,12 @@ class Program(BlockStatement):
             return []
         write_refs = operator_expr.eval_write_ref(var_values)
         children = []
+        #set_trace()
         for write_ref in write_refs:
-            print("write ref", write_ref)
             children += self.eval_read_operators(write_ref, current_reduction_level=reduction_level)
         if (operator_expr._is_output):
             children += [(self.num_exprs - 1, {})]
-
-        return children
+        return utils.remove_duplicates(children)
 
     def get_parents(self, expr_idx, var_values):
         operator_expr = self.get_expr(expr_idx)
@@ -879,10 +978,13 @@ class Program(BlockStatement):
         def recurse_eval_read_ops(body, expr_counter, var_names, var_limits, conds):
             read_ops = []
             for statement in body:
+
                 if isinstance(statement, OperatorExpr):
+                    if (expr_counter == 3):
+                        #set_trace()
+                        pass
                     valid_var_values = statement.find_reader_var_values(
                         write_ref, var_names, var_limits, current_reduction_level=current_reduction_level, conds=conds)
-                    print("statement", statement, valid_var_values)
                     read_ops += [(expr_counter, vals) for vals in valid_var_values]
                 elif isinstance(statement, BackendFor):
                     if (statement.var in var_names):

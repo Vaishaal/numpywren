@@ -9,36 +9,66 @@ def add(*args, **kwargs):
         out += a
     return out
 
-def fast_qr(x):
-    if (not os.path.isfile("/tmp/dgqert3.cpython-36m-x86_64-linux-gnu.so")):
-        with open("/tmp/dgqert3.cpython-36m-x86_64-linux-gnu.so", "wb+") as f:
+def get_shared_so(so_name):
+    if (not os.path.isfile(f"/tmp/{so_name}")):
+        with open(f"/tmp/{so_name}", "wb+") as f:
             client = boto3.client('s3')
-            bstream = client.get_object(Bucket="numpywrenpublic", Key="shared_sos/dgqert3.cpython-36m-x86_64-linux-gnu.so")["Body"].read()
+            bstream = client.get_object(Bucket="numpywrenpublic", Key=f"shared_sos/{so_name}")["Body"].read()
             f.write(bstream)
+
+
+
+def slow_qr(x):
+    get_shared_so("dlarft.cpython-36m-x86_64-linux-gnu.so")
+    import sys
+    sys.path.insert(0, "/tmp/")
+    import dlarft
+    qr, tau, work, info = scipy.linalg.lapack.dgeqrf(a=x)
+    r = np.triu(qr)
+    k = min(x.shape[0], x.shape[1])
+    t = np.zeros((k, k), order='F')
+    v = np.tril(qr)
+    v = v[:,:k]
+    idxs = np.diag_indices(k)
+    v[idxs] = 1
+    idxs = np.diag_indices(min(v.shape[0], v.shape[1]))
+    r = r[:r.shape[1],:]
+    dlarft.dlarft(direct='F',storev='C', n=v.shape[0], k=k, v=v, ldv=v.shape[0], tau=tau, t=t, ldt=t.shape[0])
+    return v,t,r
+
+def fast_qr(x):
+    get_shared_so("dgqert3.cpython-36m-x86_64-linux-gnu.so")
     import sys
     sys.path.insert(0, "/tmp/")
     import dgqert3
-    x = x.copy()
+    m = x.shape[0]
+    n = x.shape[1]
+    transposed = False
+    if (n > m):
+        return slow_qr(x)
+    x = x.copy(order='F')
     t = np.zeros((x.shape[1], x.shape[1]), order='F')
-    dgqert3.dgeqrt3(x.shape[0], x.shape[1], a=x, t=t, info=0)
+    dgqert3.dgeqrt3(m=x.shape[0], n=x.shape[1], a=x, t=t, info=0)
     r = np.triu(x)
     v = np.triu(x.T).T
-    idxs = np.diag_indices(v.shape[0])
+    idxs = np.diag_indices(min(v.shape[0], v.shape[1]))
     v[idxs] = 1
+    r = r[:r.shape[1],:]
     return v,t,r
-
-
-
-
-
 
 def qr_factor(*blocks, **kwargs):
     ins = np.vstack(blocks)
-    out = np.linalg.qr(ins)
-    print("IN SHAPE", ins.shape)
-    print("OUT Q SHAPE", out[0].shape)
-    print("OUT R SHAPE", out[1].shape)
-    return out
+    v,t,r = fast_qr(ins)
+    return v,t,r
+
+def qr_leaf(V, T, S0, *args, **kwargs):
+    return V.dot(T.dot(V.T.dot(S0)))
+
+def qr_trailing_update(V, T, S0, S1, *args, **kwargs):
+    W = T.dot((S0 + V.T.dot(S1)))
+    S01 = S01 - W
+    S11 = S1 - V.dot(W)
+    return S01, S11
 
 def syrk(s, x, y, *args, **kwargs):
     return s - x.dot(y.T)

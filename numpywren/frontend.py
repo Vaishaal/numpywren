@@ -178,7 +178,7 @@ class ReducerCall(ast.AST):
 
 
 
-REDUCTION_SPECIALS = ["level", "reduce_args", "reduce_next"]
+REDUCTION_SPECIALS = ["level", "reduce_args", "reduce_next", "reduce_idxs"]
 
 def unify(type_list):
     if (len(type_list) == 1): return type_list[0]
@@ -500,6 +500,7 @@ class LambdaPackParse(ast.NodeVisitor):
         for a in recursive_args:
             assert (isinstance(a, IndexExpr))
 
+        self.in_reduction = False
         return Reduction(kwargs["var"].name, kwargs["start"], kwargs["end"], kwargs["expr"], kwargs["b_fac"], reduction_op, recursive_args)
 
 
@@ -585,8 +586,10 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         if (node.function == "reduce_args" or node.function == "level"):
             out_type = LinearIntType
             if (node.args is not None):
-                raise exceptions.LambdaPackTypeException("r.reduce_args and r.level are reducer attributes")
+                raise exceptions.LambdaPackTypeException("reduce_args, level, reduce_level are reducer attributes")
             args = None
+            if (node.function == "level"):
+                out_type = ConstIntType
             return Ref("__" + node.function.upper() + "__", out_type)
         else:
             raise exceptions.LambdaPackTypeException("unsupported reduction feature")
@@ -692,8 +695,6 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
 
         out_type = unify([x.type for x in idxs])
         if (not issubclass(out_type, LinearIntType)):
-            print("TYPES", [x.type for x in idxs])
-            print("refs", [x.name for x in idxs])
             raise exceptions.LambdaPackTypeException("Indices in IndexExprs must all of type LinearIntType {0}[{1}]".format(node.matrix_name, [str(x) for x in node.indices]))
         return IndexExpr(node.matrix_name, idxs)
 
