@@ -75,7 +75,7 @@ def _scope_sub(expr, scope):
                 sub_dict[k] = scope[k]
         expr = f(**sub_dict)
         if "__parent__" in scope:
-            expr = scope_sub(expr, scope["__parent__"])
+            expr = _scope_sub(expr, scope["__parent__"])
         return sympy.sympify(expr)
     elif (isinstance(expr, str)):
         expr = sympy.Symbol(expr)
@@ -111,7 +111,7 @@ def is_nonlinear(expr, vars):
     '''
     return False
 
-
+solve_answers = {}
 
 class OperatorExpr(Statement):
     def __init__(self, opid, compute, args, outputs, scope, is_input=False, is_output=False, **options):
@@ -228,7 +228,7 @@ class OperatorExpr(Statement):
                 continue
             if not var_names:
                 if tuple(read_ref.indices) == tuple(write_expr.indices):
-                    results.append[{}]
+                    results.append({})
                     continue
             assert len(read_ref.indices) == len(write_expr.indices)
             results += self._enumerate_possibilities(read_ref.indices, write_expr.indices,
@@ -372,7 +372,11 @@ class OperatorExpr(Statement):
 
 
         t = time.time()
-        sols = list(sympy.linsolve(linear_eqns_fixed, solve_vars)) 
+        if ((tuple(linear_eqns_fixed), tuple(solve_vars)) in solve_answers):
+            sols = solve_answers[(tuple(linear_eqns_fixed), tuple(solve_vars))]
+        else:
+            sols = list(sympy.linsolve(linear_eqns_fixed, solve_vars))
+            solve_answers[(tuple(linear_eqns_fixed), tuple(solve_vars))] = sols
         e = time.time()
         #print("Solve time ", e - t)
         if (nonlinear):
@@ -599,13 +603,13 @@ class ReductionOperatorExpr(OperatorExpr):
 
 
     def find_writer_var_values(self, read_ref, var_names, var_limits, current_reduction_level=-1, conds=None):
-        MAX_REDUCTION = 3
+        MAX_REDUCTION = 10
         if (conds is None):
             conds = []
         all_results = []
         var_names_orig = var_names
         var_limits_orig = var_limits
-        for reduction_level in range(max(current_reduction_level,0), MAX_REDUCTION):
+        for reduction_level in range(0, MAX_REDUCTION):
             if (reduction_level == 0):
                 reduction_expr = self.base_case
             else:
@@ -693,7 +697,6 @@ class ReductionOperatorExpr(OperatorExpr):
             r_start = int(scope_sub(var_limits[-1][0], scope))
             r_end = int(scope_sub(var_limits[-1][1], scope))
             branch = int(branch)
-
             r_fac = np.ceil((r_end- r_start)/branch**(current_reduction_level+1))
             if (r_fac <= 1):
                 continue
@@ -779,12 +782,12 @@ class Program(BlockStatement):
         self.all_symbols = all_symbols
 
         for v in self.all_symbols:
-            all_vars[str(v)] = v
+            all_vars[str(v)] = sympy.Symbol(str(v))
         all_vars["__LEVEL__"] = sympy.Symbol("__LEVEL__")
 
         super().__init__(body)
-        #self.starters = self.find_starters()
-        #self.num_terminators = len(self.find_terminators())
+        self.starters = self.find_starters()
+        self.num_terminators = len(self.find_terminators())
 
     def get_children(self, expr_idx, var_values):
         operator_expr = self.get_expr(expr_idx)
@@ -820,6 +823,7 @@ class Program(BlockStatement):
             local_parents = self.eval_write_operators(read_ref, current_reduction_level=current_reduction_level)
             parents += local_parents
         parents = utils.remove_duplicates(parents)
+        print(f"Get parents call for {expr_idx, var_values} returned {parents}")
         return parents
 
     def find_terminators(self):
