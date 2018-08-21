@@ -56,15 +56,27 @@ def scope_sub(expr, scope):
         values.append(_scope_sub(values[-1], scope))
     return values[-1]
 
+expr_dict = {}
+all_vars = {}
 
 def _scope_sub(expr, scope):
     if (isinstance(expr, sympy.Basic)):
         if (expr in scope):
             expr = scope[expr]
-        expr = expr.subs(scope)
+        if (expr not in expr_dict):
+            f = sympy.lambdify(list(all_vars.keys()), expr, dummify=False, modules='sympy')
+            expr_dict[expr] = f
+        else:
+            f = expr_dict[expr]
+        sub_dict = all_vars.copy()
+        #sub_dict.update(scope)
+        for k in all_vars.keys():
+            if k in scope:
+                sub_dict[k] = scope[k]
+        expr = f(**sub_dict)
         if "__parent__" in scope:
             expr = scope_sub(expr, scope["__parent__"])
-        return expr
+        return sympy.sympify(expr)
     elif (isinstance(expr, str)):
         expr = sympy.Symbol(expr)
         return scope_sub(expr, scope)
@@ -75,7 +87,20 @@ def _scope_sub(expr, scope):
     else:
         return expr
 
-def is_linear(expr, vars):
+def is_nonlinear(expr, vars):
+    if (expr.has(sympy.log)):
+        return True
+
+    if (expr.has(sympy.ceiling)):
+        return True
+
+    if (expr.has(sympy.floor)):
+        return True
+
+    if (expr.has(sympy.Pow)):
+        return True
+
+    '''
     for x in vars:
         for y in vars:
             try:
@@ -83,7 +108,8 @@ def is_linear(expr, vars):
                     return False
             except TypeError:
                 return False
-    return True
+    '''
+    return False
 
 
 
@@ -292,7 +318,6 @@ class OperatorExpr(Statement):
             simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
             for val in range(limits[0], limits[1], limits[2]):
                 var_values = var_values.copy()
-
                 var_values[str(simple_var)] = int(sol[0].subs({simple_var: val}).subs(var_values))
                 if(var_values[str(simple_var)] != val):
                     continue
@@ -333,13 +358,13 @@ class OperatorExpr(Statement):
         non_lin_idxs = []
         nl_map = {}
         for i, eq in enumerate(linear_eqns):
-            nonlinear = nonlinear or (not is_linear(eq, solve_vars))
-            if (not is_linear(eq, solve_vars)):
+            nonlinear = nonlinear or (is_nonlinear(eq, solve_vars))
+            if (is_nonlinear(eq, solve_vars)):
                 placeholder = sympy.Symbol('__nl{0}__'.format(i))
+                non_lin_idxs.append(len(solve_vars))
                 solve_vars.append(placeholder)
                 linear_eqns_fixed.append(placeholder)
                 nl_map[placeholder] = eq
-                non_lin_idxs.append(i)
             else:
                 linear_eqns_fixed.append(eq)
 
@@ -349,9 +374,9 @@ class OperatorExpr(Statement):
         t = time.time()
         sols = list(sympy.linsolve(linear_eqns_fixed, solve_vars)) 
         e = time.time()
-        print("Solve time ", e - t)
+        #print("Solve time ", e - t)
         if (nonlinear):
-            print(f"Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_idxs is {non_lin_idxs}")
+            #print(f"Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_idxs is {non_lin_idxs}")
             good_sols = []
             for j, sol in enumerate(sols):
                 lin_subs = {}
@@ -362,10 +387,6 @@ class OperatorExpr(Statement):
                     lin_subs[solve_vars[i]] = var
                 bad_sol = False
                 for i in non_lin_idxs:
-                    print(non_lin_idxs)
-                    print(sol)
-                    print(i)
-                    print(sol[i])
                     assert sol[i] == 0
                     before = sol[i]
                     nl_var = solve_vars[i].subs(nl_map)
@@ -376,7 +397,7 @@ class OperatorExpr(Statement):
                 if (not bad_sol):
                     good_sols.append(sol)
             sols = good_sols
-            print(f"(after simplification): Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_map is {nl_map}")
+            #print(f"(after simplification): Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_map is {nl_map}")
 
 
 
@@ -578,23 +599,25 @@ class ReductionOperatorExpr(OperatorExpr):
 
 
     def find_writer_var_values(self, read_ref, var_names, var_limits, current_reduction_level=-1, conds=None):
-        MAX_REDUCTION = 10
+        MAX_REDUCTION = 3
         if (conds is None):
             conds = []
         all_results = []
-        for reduction_level in range(current_reduction_level, MAX_REDUCTION):
+        var_names_orig = var_names
+        var_limits_orig = var_limits
+        for reduction_level in range(max(current_reduction_level,0), MAX_REDUCTION):
             if (reduction_level == 0):
                 reduction_expr = self.base_case
             else:
                 reduction_expr = self.recursion
 
-            self.scope["__LEVEL__"] = reduction_level 
+            self.scope["__LEVEL__"] = reduction_level
             if (self.var in var_names):
                 assert(False)
             low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
             branch = scope_sub(self.branch, self.scope)
-            var_names = var_names + [str(self.var)]
-            var_limits = var_limits + [(low, high, branch)]
+            var_names = var_names_orig + [str(self.var)]
+            var_limits = var_limits_orig + [(low, high, branch)]
             results = []
             for output in self.outputs:
                 if (output.matrix != read_ref.matrix):
@@ -667,10 +690,13 @@ class ReductionOperatorExpr(OperatorExpr):
             r_var = r[str(self.var)]
             scope = self.scope.copy()
             scope.update(r)
-            r_start = scope_sub(var_limits[-1][0], scope)
-            r_end = scope_sub(var_limits[-1][1], scope)
-            print("r_start ", r_start)
-            print("r_end ", r_end)
+            r_start = int(scope_sub(var_limits[-1][0], scope))
+            r_end = int(scope_sub(var_limits[-1][1], scope))
+            branch = int(branch)
+
+            r_fac = np.ceil((r_end- r_start)/branch**(current_reduction_level+1))
+            if (r_fac <= 1):
+                continue
             chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(current_reduction_level+1))), branch))
 
             out_var = None
@@ -685,6 +711,7 @@ class ReductionOperatorExpr(OperatorExpr):
             r_var = chunked_lst[out_var][0]
             r[str(self.var)] = r_var
             good_results.append(r)
+        print("good results", good_results)
         return good_results
 
 class AssignStatement(Statement):
@@ -750,6 +777,11 @@ class Program(BlockStatement):
         self.return_expr = return_expr
         self.symbols = symbols
         self.all_symbols = all_symbols
+
+        for v in self.all_symbols:
+            all_vars[str(v)] = v
+        all_vars["__LEVEL__"] = sympy.Symbol("__LEVEL__")
+
         super().__init__(body)
         #self.starters = self.find_starters()
         #self.num_terminators = len(self.find_terminators())
@@ -820,6 +852,7 @@ class Program(BlockStatement):
                         branch_val = branch_lambda(**sub_dict)
                         end_val = int(max_idx_lambda(**sub_dict))
                         num_reductions = max(int(np.ceil(np.log((end_val - start_val))/np.log(branch_val))), 1)
+                        print("Number reductions ", num_reductions)
 
                         for i in range(num_reductions):
                             for j in range(start_val, end_val, branch_val**(i+1)):
@@ -882,7 +915,6 @@ class Program(BlockStatement):
 
         recurse_find_terminators(self._body, expr_id, var_values, self.symbols)
         return utils.remove_duplicates(terminators)
-
 
     def find_starters(self):
         starters = []
