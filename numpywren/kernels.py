@@ -70,9 +70,11 @@ def qr_leaf(V, T, S0, *args, **kwargs):
 def identity(X, *args, **kwargs):
     return X
 
-def qr_trailing_update(V, T, S0, S1, *args, **kwargs):
+def qr_trailing_update(V, T, S0, S1=None, *args, **kwargs):
+    if (S1 is None):
+        return qr_leaf(V, T, S0)
     V = V[-S0.shape[0]:]
-    W = T.T.dot((S0 + V.T.dot(S1)))
+    W = T.T @ (S0 + V.T @ S1)
     S01 = S0 - W
     S11 = S1 - V.dot(W)
     return S01, S11
