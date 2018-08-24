@@ -82,7 +82,7 @@ class QRTest(unittest.TestCase):
         X = np.random.randn(8, 8)
         pwex = pywren.default_executor()
         N = 8
-        shard_size = 1
+        shard_size = 2
         shard_sizes = (shard_size, shard_size)
         np.random.seed(0)
         X =  np.random.randn(N, N)
@@ -123,7 +123,6 @@ class QRTest(unittest.TestCase):
         Ss = BigMatrix("Ss", shape=(N, N, N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, shard_size, shard_size), write_header=True, parent_fn=parent_fn, safe=False)
         print("N BLOCKS", N_blocks)
         pc = frontend.lpcompile(QR)(Vs, Ts, Rs, Ss, N_blocks, 0)
-        return
         #print(pc.starters)
         #print(pc.get_children(*pc.starters[0]))
         #print(pc.num_terminators)
@@ -169,10 +168,10 @@ class QRTest(unittest.TestCase):
         program = lp.LambdaPackProgram(pc, config=config)
         program.start()
         executor = fs.ProcessPoolExecutor(1)
-        executor.submit(job_runner.lambdapack_run, program, pipeline_width=1, timeout=30, idle_timeout=30)
+        executor.submit(job_runner.lambdapack_run, program, pipeline_width=1, timeout=65, idle_timeout=65)
         program.wait()
         print(Rs.get_block(1, 1, 0))
-        print(np.linalg.qr(X)[1][6:, 6:])
+        print(np.linalg.qr(X)[1][4:, 4:])
         return
         exit()
 

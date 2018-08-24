@@ -72,7 +72,7 @@ def identity(X, *args, **kwargs):
 
 def qr_trailing_update(V, T, S0, S1=None, *args, **kwargs):
     if (S1 is None):
-        return qr_leaf(V, T, S0)
+        return qr_leaf(V, T, S0), np.zeros(S0.shape)
     V = V[-S0.shape[0]:]
     W = T.T @ (S0 + V.T @ S1)
     S01 = S0 - W
