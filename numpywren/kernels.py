@@ -43,6 +43,7 @@ def fast_qr(x):
     import dgqert3
     m = x.shape[0]
     n = x.shape[1]
+    k = min(x.shape[0], x.shape[1])
     transposed = False
     if (n > m):
         return slow_qr(x)
@@ -52,8 +53,10 @@ def fast_qr(x):
     r = np.triu(x)
     v = np.triu(x.T).T
     idxs = np.diag_indices(min(v.shape[0], v.shape[1]))
+    v = v[:,:k]
     v[idxs] = 1
     r = r[:r.shape[1],:]
+    print(v[:, 0])
     return v,t,r
 
 def qr_factor(*blocks, **kwargs):
@@ -62,11 +65,15 @@ def qr_factor(*blocks, **kwargs):
     return v,t,r
 
 def qr_leaf(V, T, S0, *args, **kwargs):
-    return V.dot(T.dot(V.T.dot(S0)))
+    return S0 - (V @ T.T @ V.T @ S0)
+
+def identity(X, *args, **kwargs):
+    return X
 
 def qr_trailing_update(V, T, S0, S1, *args, **kwargs):
-    W = T.dot((S0 + V.T.dot(S1)))
-    S01 = S01 - W
+    V = V[-S0.shape[0]:]
+    W = T.T.dot((S0 + V.T.dot(S1)))
+    S01 = S0 - W
     S11 = S1 - V.dot(W)
     return S01, S11
 
@@ -86,8 +93,6 @@ def gemm(A, B, *args, **kwargs):
         B = B.T
     return A.dot(B)
 
-def qr_trailing_update(Q0, Q1, S1, S2, *args, **kwargs):
-    pass
 
 def trsm(x, y, lower=False, right=True, *args, **kwargs):
     return scipy.linalg.blas.dtrsm(1.0, x.T, y, lower=lower, side=int(right))

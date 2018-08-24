@@ -351,6 +351,7 @@ class BigMatrix(object):
                 block = block.reshape(current_shape)
 
         if (self.safe and block.shape != current_shape):
+            print("Block idx is ", block_idx)
             raise Exception("{2} Incompatible block size: {0} vs {1}".format(block.shape, current_shape, self))
 
         #block = block.astype(self.dtype)

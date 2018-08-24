@@ -273,6 +273,7 @@ class OperatorExpr(Statement):
             else:
                 pass
 
+
         def check_cond(conds, var_values):
             ''' Check if any of conds evaluated to False
                 returns (True, True) if all conds evaluated to True
@@ -378,7 +379,10 @@ class OperatorExpr(Statement):
             sols = list(sympy.linsolve(linear_eqns_fixed, solve_vars))
             solve_answers[(tuple(linear_eqns_fixed), tuple(solve_vars))] = sols
         e = time.time()
+        #print(f"linear eqns {linear_eqns_fixed}")
+        #print(f"linear sol {sols}")
         #print("Solve time ", e - t)
+        good_sols = sols
         if (nonlinear):
             #print(f"Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_idxs is {non_lin_idxs}")
             good_sols = []
@@ -394,7 +398,10 @@ class OperatorExpr(Statement):
                     assert sol[i] == 0
                     before = sol[i]
                     nl_var = solve_vars[i].subs(nl_map)
+                    #print(f"nl_var, {nl_var}")
+                    #print(f"lin subs {lin_subs}")
                     nl_sub = nl_var.subs(lin_subs)
+                    del sol[i]
                     if (nl_sub != 0):
                         bad_sol = True
                         break
@@ -402,6 +409,7 @@ class OperatorExpr(Statement):
                     good_sols.append(sol)
             sols = good_sols
             #print(f"(after simplification): Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_map is {nl_map}")
+        #print(f"good sols {good_sols}")
 
 
 
@@ -433,8 +441,8 @@ class OperatorExpr(Statement):
                     limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
                     if (len(limits_left) > 0):
                         var_names_recurse = [x for x in var_names if x != simple_var]
-                        print("Length var names recurse ", len(var_names_recurse))
-                        print("Length limits ", len(limits_left))
+                        #print("Length var names recurse ", len(var_names_recurse))
+                        #print("Length limits ", len(limits_left))
                         solutions += brute_force_limits(sol[1:], var_values, var_names_recurse, limits_left, conds)
                     else:
                         solutions.append(var_values)
@@ -609,7 +617,9 @@ class ReductionOperatorExpr(OperatorExpr):
         all_results = []
         var_names_orig = var_names
         var_limits_orig = var_limits
+        good_results = []
         for reduction_level in range(0, MAX_REDUCTION):
+            #print("reduction level", reduction_level)
             if (reduction_level == 0):
                 reduction_expr = self.base_case
             else:
@@ -628,93 +638,145 @@ class ReductionOperatorExpr(OperatorExpr):
                     continue
                 if not var_names:
                     if tuple(read_ref.indices) == tuple(output.indices):
-                        return [{}]
+                        continue
                 assert len(read_ref.indices) == len(output.indices)
                 idxs = [scope_sub(x, self.scope) for x in output.indices]
-                results = self._enumerate_possibilities(read_ref.indices, idxs, var_names, var_limits, conds=conds)
+                #print(f"read_ref.indices: {read_ref.indices}, {idxs}")
+                possibs = self._enumerate_possibilities(read_ref.indices, idxs, var_names, var_limits, conds=conds)
+                results += possibs
+            #print(f"Looking for {read_ref} in {self} found{results}, level {reduction_level}")
             for r in results:
                 r["__LEVEL__"] = reduction_level
-            all_results += results
-        self.scope["__LEVEL__"] = current_reduction_level
-        return utils.remove_duplicates(all_results)
+                r_var = r[str(self.var)]
+                scope = self.scope.copy()
+                scope.update(r)
+                r_start = int(scope_sub(var_limits[-1][0], scope))
+                r_end = int(scope_sub(var_limits[-1][1], scope))
+                branch = int(branch)
+                #print("r_start", r_start)
+                #print("r_end", r_end)
+                r_fac = np.ceil((r_end- r_start)/branch**(reduction_level))
+                #print(r_fac)
+                if (r_fac <= 1):
+                    continue
+                chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(reduction_level))), branch))
+                #print("chunked list", chunked_lst)
+                #print("rvar", r_var)
+                out_var = None
+                for i,c in enumerate(chunked_lst):
+                    if (r_var in c):
+                        out_var = i
+                #print("out_var", out_var)
+                if (out_var == None):
+                    continue
+                r_var = chunked_lst[out_var][0]
+                r[str(self.var)] = r_var
+                good_results.append(r)
+        return utils.remove_duplicates(good_results)
 
 
     def find_reader_var_values(self, write_ref, var_names, var_limits, current_reduction_level=-1, conds=None):
         if (conds is  None):
             conds = []
-        if (current_reduction_level == -1):
-            reduction_expr = self.base_case
-        else:
-            reduction_expr = self.recursion
         if (self.var in var_names):
             assert(False)
-        print("SCOPE IS ", self.scope)
-        low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
-        branch = scope_sub(self.branch, self.scope)
-        var_names = var_names + [str(self.var)]
-        var_limits = var_limits + [(low, high, branch)]
-        self.scope["__LEVEL__"] = current_reduction_level
-        print(low, high)
-        if ((current_reduction_level + 1) > np.ceil(np.log(int(high))/np.log(int(branch)))):
-            return []
+        #print("SCOPE IS ", self.scope)
+        MAX_REDUCTION = 3
+        good_results = []
+        var_names_orig = var_names
+        var_limits_orig = var_limits
 
-        results = []
-        for arg in self.remote_call.args:
-            if (isinstance(arg, BigMatrixBlock)):
-                if write_ref.matrix != arg.matrix:
-                    continue
-                if not var_names:
-                    if tuple(write_ref.indices) == tuple(arg.indices):
-                        results.append({})
-                    continue
-                assert len(write_ref.indices) == len(arg.indices)
-                possibs = self._enumerate_possibilities(write_ref.indices, arg.indices,
-                                                     var_names, var_limits, conds=conds)
-                results += possibs
-            elif (isinstance(arg, sympy.Basic)):
+        for reduction_level in range(0, MAX_REDUCTION):
+            #print("reduction level ", reduction_level)
+            low, high = scope_sub(self.limits[0], self.scope), scope_sub(self.limits[1], self.scope)
+            branch = scope_sub(self.branch, self.scope)
+            if (str(self.var) in var_names_orig):
+                assert False
+            var_names = var_names_orig + [str(self.var)]
+            var_limits = var_limits_orig + [(low, high, branch)]
+            self.scope["__LEVEL__"] = reduction_level
+            #print(low, high)
+            if (reduction_level - 1 <= 0):
+                prev_reduction_expr = self.base_case
+            else:
+                prev_reduction_expr = self.recursion
+
+            if (reduction_level == 0):
+                reduction_expr = self.base_case
+            else:
+                reduction_expr = self.recursion
+
+            if ((reduction_level + 1) > np.ceil(np.log(int(high))/np.log(int(branch)))):
                 continue
-            elif (isinstance(arg, BackendStargs) and arg.args.name == "__REDUCE_ARGS__"):
-                for reduction in reduction_expr:
-                    idxs_subbed = [scope_sub(x, self.scope) for x in reduction.indices]
-                    if write_ref.matrix != reduction.matrix:
+
+            results = []
+            if (len(list(set(var_names))) != len(var_names)):
+                print(var_names)
+                print(self)
+                assert(False)
+            for arg in self.remote_call.args:
+                if (isinstance(arg, BigMatrixBlock)):
+                    if write_ref.matrix != arg.matrix:
                         continue
                     if not var_names:
-                        if tuple(write_ref.indices) == tuple(reduction.indices):
+                        if tuple(write_ref.indices) == tuple(arg.indices):
                             results.append({})
-                            continue
-                    assert len(write_ref.indices) == len(reduction.indices)
-                    possibs = self._enumerate_possibilities(write_ref.indices, idxs_subbed, var_names, var_limits, conds=conds)
+                        continue
+                    assert len(write_ref.indices) == len(arg.indices)
+                    possibs = self._enumerate_possibilities(write_ref.indices, arg.indices,
+                                                         var_names, var_limits, conds=conds)
                     results += possibs
-        results = utils.remove_duplicates(results)
-        print(f"Results are {results} write_ref {write_ref}, var_names {var_names}, var_limits {var_limits}, current_reduction_level {current_reduction_level}")
-        branch = scope_sub(self.branch, self.scope)
-        good_results = []
-        for r in results:
-            r["__LEVEL__"] = (current_reduction_level + 1)
-            r_var = r[str(self.var)]
-            scope = self.scope.copy()
-            scope.update(r)
-            r_start = int(scope_sub(var_limits[-1][0], scope))
-            r_end = int(scope_sub(var_limits[-1][1], scope))
-            branch = int(branch)
-            r_fac = np.ceil((r_end- r_start)/branch**(current_reduction_level+1))
-            if (r_fac <= 1):
-                continue
-            chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(current_reduction_level+1))), branch))
-
-            out_var = None
-            print("chunked_lst", chunked_lst)
-            for i,c in enumerate(chunked_lst):
-                if (r_var in c):
-                    out_var = i
-            if (out_var == None):
-                print(chunked_lst)
-                print("rvar", r_var)
-                continue
-            r_var = chunked_lst[out_var][0]
-            r[str(self.var)] = r_var
-            good_results.append(r)
-        print("good results", good_results)
+                elif (isinstance(arg, sympy.Basic)):
+                    continue
+                elif (isinstance(arg, BackendStargs) and arg.args.name == "__REDUCE_ARGS__"):
+                    #print("Reduction Expr ", reduction_expr[0])
+                    for reduction in reduction_expr:
+                        self.scope["__LEVEL__"] -= 1
+                        idxs_subbed = [scope_sub(x, self.scope) for x in reduction.indices]
+                        if write_ref.matrix != reduction.matrix:
+                            continue
+                        if not var_names:
+                            if tuple(write_ref.indices) == tuple(reduction.indices):
+                                results.append({})
+                                continue
+                        assert len(write_ref.indices) == len(reduction.indices)
+                        #print(f"Looking for {write_ref.indices} in {idxs_subbed} (calling enumerate_possibilities(*)")
+                        possibs = self._enumerate_possibilities(write_ref.indices, idxs_subbed, var_names, var_limits, conds=conds)
+                        self.scope["__LEVEL__"] += 1
+                        results += possibs
+                        #print(f"Looking for {write_ref.indices} in {idxs_subbed} in {reduction}, {reduction_level}, {possibs}")
+            results = utils.remove_duplicates(results)
+            #print(f"potato Looking for {write_ref} in  found {results}, level {reduction_level}")
+            #print(f"Results are {results} write_ref {write_ref}, var_names {var_names}, var_limits {var_limits}, current_reduction_level {current_reduction_level}")
+            branch = scope_sub(self.branch, self.scope)
+            for r in results:
+                r["__LEVEL__"] = reduction_level
+                r_var = r[str(self.var)]
+                scope = self.scope.copy()
+                scope.update(r)
+                r_start = int(scope_sub(var_limits[-1][0], scope))
+                r_end = int(scope_sub(var_limits[-1][1], scope))
+                branch = int(branch)
+                #print("r_start", r_start)
+                #print("r_end", r_end)
+                r_fac = np.ceil((r_end- r_start)/branch**(reduction_level))
+                #print(r_fac)
+                if (r_fac <= 1):
+                    continue
+                chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(reduction_level))), branch))
+                #print("chunked list", chunked_lst)
+                #print("rvar", r_var)
+                out_var = None
+                for i,c in enumerate(chunked_lst):
+                    if (r_var in c):
+                        out_var = i
+                #print("out_var", out_var)
+                if (out_var == None):
+                    continue
+                r_var = chunked_lst[out_var][0]
+                r[str(self.var)] = r_var
+                good_results.append(r)
+                #print("good results", good_results)
         return good_results
 
 class AssignStatement(Statement):
@@ -800,11 +862,19 @@ class Program(BlockStatement):
         write_refs = operator_expr.eval_write_ref(var_values)
         children = []
         #set_trace()
+
         for write_ref in write_refs:
-            children += self.eval_read_operators(write_ref, current_reduction_level=reduction_level)
+            children_for_ref = self.eval_read_operators(write_ref, current_reduction_level=reduction_level)
+            print(f"Ref {write_ref} Children  {children_for_ref}")
+            children += children_for_ref
         if (operator_expr._is_output):
             children += [(self.num_exprs - 1, {})]
-        return utils.remove_duplicates(children)
+        good_children = []
+        for child in children:
+            if (child[0] == expr_idx and child[1] == var_values):
+                continue
+            good_children.append(child)
+        return utils.remove_duplicates(good_children)
 
     def get_parents(self, expr_idx, var_values):
         operator_expr = self.get_expr(expr_idx)
@@ -821,9 +891,14 @@ class Program(BlockStatement):
         read_refs = operator_expr.eval_read_refs(var_values)
         for read_ref in read_refs:
             local_parents = self.eval_write_operators(read_ref, current_reduction_level=current_reduction_level)
+            #print(f"Ref {read_ref} parents {local_parents}")
             parents += local_parents
         parents = utils.remove_duplicates(parents)
-        print(f"Get parents call for {expr_idx, var_values} returned {parents}")
+        good_parents = []
+        for parent in parents:
+            if (parent[0] == expr_idx and parent[1] == var_values):
+                continue
+            good_parents.append(parent)
         return parents
 
     def find_terminators(self):
@@ -856,9 +931,10 @@ class Program(BlockStatement):
                         branch_val = branch_lambda(**sub_dict)
                         end_val = int(max_idx_lambda(**sub_dict))
                         num_reductions = max(int(np.ceil(np.log((end_val - start_val))/np.log(branch_val))), 1)
-                        print("Number reductions ", num_reductions)
 
                         for i in range(num_reductions):
+                            if (end_val - start_val <= 1):
+                                continue
                             for j in range(start_val, end_val, branch_val**(i+1)):
                                 var_values_recurse = var_values.copy()
                                 var_values_recurse[str(var)] = j
@@ -1023,11 +1099,11 @@ class Program(BlockStatement):
                         write_ref, var_names, var_limits, current_reduction_level=current_reduction_level, conds=conds)
                     read_ops += [(expr_counter, vals) for vals in valid_var_values]
                 elif isinstance(statement, BackendFor):
-                    if (statement.var in var_names):
+                    if (str(statement.var) in var_names):
                         assert(false)
                     read_ops += recurse_eval_read_ops(statement._body,
                                                       expr_counter,
-                                                      var_names + [str(statement.var)], 
+                                                      var_names + [str(statement.var)],
                                                       var_limits + [statement.limits],
                                                       conds = [])
                 elif isinstance(statement, BackendIf):
