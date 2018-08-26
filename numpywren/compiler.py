@@ -1111,7 +1111,7 @@ def cholesky(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
 
 def _forward_solve(L,b,out_bucket=None, truncate=0):
     S = BigMatrix("Fsolve.Intermediate({0})".format(L.key), shape=(L.shape[0], L.shape[0]), shard_sizes=(L.shard_sizes[0], L.shard_sizes[0]), write_header=True)
-    X = BigMatrix("FSolve({0}, {1})".format(L.key, b.key), shape=(L.shape[0],1), shard_sizes=(L.shard_sizes[0],1), write_header=True)
+    X = BigMatrix("FSolve({0}, {1})".format(L.key, b.key), shape=(L.shape[0],1), shard_sizes=(L.shard_sizes[0],1), write_header=True, diag_copy=False)
     program = lpcompile(forward_sub, inputs=["L", "b"], outputs=["x"])(x=X,S=S,b=b,L=L, N=int(np.ceil(X.shape[0]/X.shard_sizes[0])))
     print(program.starters)
     print(program.unroll_program())

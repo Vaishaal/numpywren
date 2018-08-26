@@ -6,6 +6,8 @@ import pytest
 import numpy as np
 import pywren
 import unittest
+import pywren.wrenconfig as wc
+from numpywren import config
 
 
 class SimpleTestClass(unittest.TestCase):
@@ -24,6 +26,28 @@ class SimpleTestClass(unittest.TestCase):
         X_sharded_local = X_sharded.numpy()
         X_sharded.free()
         assert(np.all(X == X_sharded_local))
+
+    def test_multiple_shard_matrix_diag(self):
+        X = np.random.randn(128,128)
+        shard_sizes = tuple(map(int, np.array(X.shape)/2))
+        X_sharded = local_numpy_init(X, shard_sizes=shard_sizes, diag_copy=True, hash_keys=False)
+        X_sharded_local = X_sharded.numpy()
+        X_sharded.free()
+        assert(np.all(X == X_sharded_local))
+
+    def test_multiple_shard_matrix_diag_lambda(self):
+        X = np.random.randn(128,128)
+        pywren_config = wc.default()
+        config = config.default()
+        pywren_config['runtime']['s3_bucket'] = config['runtime']['bucket']
+        pywren_config['runtime']['s3_key'] =  config['runtime']['s3_key']
+        pwex = pywren.default_executor(config=pywren_config)
+        shard_sizes = tuple(map(int, np.array(X.shape)/2))
+        X_sharded = local_numpy_init(X, shard_sizes=shard_sizes, diag_copy=True, hash_keys=False)
+        X_sharded_local = X_sharded.numpy()
+        X_sharded.free()
+        assert(np.all(X == X_sharded_local))
+
 
     def test_matrix_header(self):
         np.random.seed(0)

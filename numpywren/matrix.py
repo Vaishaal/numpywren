@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 try:
     DEFAULT_BUCKET = wc.default()['s3']['bucket']
-    DEFAULT_BUCKET = "numpywrentop500testdata"
+    DEFAULT_BUCKET = "numpywrentop500testdata2"
     DEFAULT_REGION = wc.default()['account']['aws_region']
 except Exception as e:
     DEFAULT_BUCKET = ""
@@ -87,7 +87,9 @@ class BigMatrix(object):
                  autosqueeze=True,
                  lambdav=0.0,
                  region=DEFAULT_REGION,
-                 hash_keys=True):
+                 hash_keys=True,
+                 diag_copy=False,
+                 num_diag_copies=10):
         if bucket is None:
             bucket = os.environ.get('PYWREN_LINALG_BUCKET')
             if bucket is None:
@@ -104,6 +106,8 @@ class BigMatrix(object):
         self.lambdav = lambdav
         self.region = region
         self.hash_keys = hash_keys
+        self.diag_copy = diag_copy
+        self.num_diag_copies = num_diag_copies
         if (shape == None or shard_sizes == None):
             header = self.__read_header__()
         else:
@@ -300,6 +304,9 @@ class BigMatrix(object):
         elif (not exists and self.parent_fn != None):
             X_block = await dill.loads(self.parent_fn)(self, loop, *block_idx)
         else:
+            if (self.diag_copy and len(set(block_idx)) == 1 and len(set(self.shape)) == 1):
+                idx = np.random.choice(self.num_diag_copies)
+                key = key + "_" + str(idx)
             bio = await self.__s3_key_to_byte_io__(key, loop=loop)
             X_block = np.load(bio)
         if (self.autosqueeze):
@@ -356,9 +363,14 @@ class BigMatrix(object):
 
         if (block.shape != current_shape):
             raise Exception("Incompatible block size: {0} vs {1}".format(block.shape, current_shape))
+        res = await self.__save_matrix_to_s3__(block, key, loop)
+        session = aiobotocore.get_session(loop=loop)
+        client = session.create_client('s3', use_ssl=False, verify=False, region_name=self.region)
+        if (self.diag_copy and len(set(block_idx)) == 1 and len(set(self.shape)) == 1):
+            for i in range(self.num_diag_copies):
+                    await client.copy_object(Bucket=self.bucket, Key=(key + "_" + str(i)), CopySource=f"{self.bucket}/{key}")
+        return res
 
-        #block = block.astype(self.dtype)
-        return await self.__save_matrix_to_s3__(block, key, loop)
 
     def delete_block(self, block, *block_idx):
         loop = asyncio.new_event_loop()
@@ -393,6 +405,9 @@ class BigMatrix(object):
         session = aiobotocore.get_session(loop=loop)
         async with session.create_client('s3', use_ssl=False, verify=False, region_name=self.region) as client:
             resp = await client.delete_object(Key=key, Bucket=self.bucket)
+            if (self.diag_copy and len(set(block_idx)) == 1 and len(set(self.shape)) == 1):
+                for i in range(self.num_diag_copies):
+                    await client.delete_object(Key=key + "_" + str(i), Bucket=self.bucket)
         return resp
 
     def free(self):

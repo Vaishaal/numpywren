@@ -125,6 +125,9 @@ def block_key_to_block(key):
         block_key = key.strip().split("/")[-1]
         if (block_key) == "header": return None
         blocks_split = block_key.strip('_').split("_")
+        r = len(blocks_split) % 3
+        if (len(blocks_split)%3 != 0):
+            blocks_split = blocks_split[:-r]
 
         assert(len(blocks_split)%3 == 0)
         block = []

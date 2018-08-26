@@ -25,6 +25,7 @@ def warmup(control_plane, num_lambdas, warmup_rate, warmup_sleep, start_lambdas)
     print(f"requesting {request} lambdas...")
     executor = fs.ProcessPoolExecutor(2)
     future = executor.submit(delayed_exec, request, start, control_plane, warmup_sleep)
+    print("requested..")
     curr_lambda_count = 0
     last_launch = start
     iter_count = 0

@@ -17,12 +17,12 @@ import numpy as np
 import pywren
 
 
-def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=False, executor=None, write_header=False, bucket=matrix.DEFAULT_BUCKET, overwrite=True):
+def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=False, executor=None, write_header=False, bucket=matrix.DEFAULT_BUCKET, overwrite=True, **kwargs):
     key = generate_key_name_local_matrix(X_local)
     if (not symmetric):
-        bigm = BigMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype, write_header=write_header, bucket=bucket)
+        bigm = BigMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype, write_header=write_header, bucket=bucket, **kwargs)
     else:
-        bigm = BigSymmetricMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype, write_header=write_header, bucket=bucket)
+        bigm = BigSymmetricMatrix(key, shape=X_local.shape, shard_sizes=shard_sizes, dtype=X_local.dtype, write_header=write_header, bucket=bucket, **kwargs)
     if (not exists):
         return shard_matrix(bigm, X_local, n_jobs=n_jobs, executor=executor, overwrite=overwrite)
     else:

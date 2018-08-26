@@ -29,6 +29,7 @@ import redis
 import scipy.linalg
 import dill
 import redis.exceptions
+import random
 
 from .matrix import BigMatrix
 from .matrix_utils import load_mmap, chunk, generate_key_name_uop, generate_key_name_binop, constant_zeros
@@ -185,7 +186,7 @@ def incr(client, key, amount=1, s3=False, s3_bucket=""):
           backoff *= 2
       return val
 
-def decr(client, key, amount, s3=False, s3_bucket=""):
+def decr(client, key, amount=1, s3=False, s3_bucket=""):
     #TODO: fall back to S3 here
     if (s3):
       # read from S3
@@ -207,6 +208,7 @@ def decr(client, key, amount, s3=False, s3_bucket=""):
 
 
 async def rate_limit(loop, client, key_base, limit, sleep_time=0.5, expire_time=10, log_fn=None):
+  return 0
   while(True):
     t = int(sleep_time)
     key_name = "{0}_{1}".format(key_base, t)
@@ -307,7 +309,7 @@ class RemoteRead(RemoteInstruction):
         self.bidxs = bidxs
         self.result = None
         self.cache_hit = False
-        self.MAX_READ_TIME = 15
+        self.MAX_READ_TIME = 30
         self.read_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     #@profile
@@ -332,7 +334,7 @@ class RemoteRead(RemoteInstruction):
                   self.result = await asyncio.wait_for(self.matrix.get_block_async(loop, *self.bidxs), self.MAX_READ_TIME)
                   break
                 except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError):
-                  await asyncio.sleep(backoff)
+                  await asyncio.sleep(backoff + random.random())
                   if (redis_client is not None):
                     incr_s3_timeouts_read(redis_client)
                   backoff *= 2
@@ -361,7 +363,7 @@ class RemoteWrite(RemoteInstruction):
         self.bidxs = bidxs
         self.data_instr = data_instr
         self.result = None
-        self.MAX_WRITE_TIME = 15
+        self.MAX_WRITE_TIME =  45
         self.write_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     #@profile
@@ -381,7 +383,7 @@ class RemoteWrite(RemoteInstruction):
                 self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_instr.result, loop, *self.bidxs), self.MAX_WRITE_TIME)
                 break
               except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError) as e:
-                  await asyncio.sleep(backoff)
+                  await asyncio.sleep(backoff + random.random())
                   backoff *= 2
                   if (redis_client is not None):
                     incr_s3_timeouts_write(redis_client)
@@ -775,15 +777,11 @@ class LambdaPackProgram(object):
       if (loop == None):
         loop = asyncio.get_event_loop()
       key = "{0}.write".format(self.hash)
-      if (self.write_limit) > 0:
-        await rate_limit(loop, self.control_plane.client, key, self.write_limit)
 
     async def begin_read(self, loop=None):
       if (loop == None):
         loop = asyncio.get_event_loop()
       key = "{0}.read".format(self.hash)
-      if (self.read_limit) > 0:
-        await rate_limit(loop, self.control_plane.client, key, self.read_limit)
 
     def post_op(self, expr_idx, var_values, ret_code, inst_block, tb=None):
         # need clean post op logic to handle
@@ -881,13 +879,13 @@ class LambdaPackProgram(object):
     def stop(self):
         client = boto3.client('s3')
         print("Stopping program")
-        client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTION.DRIVER.CANCELLED", Bucket=self.bucket, Body="cancelled by driver")
+        client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTIONS/DRIVER.CANCELLED", Bucket=self.bucket, Body="cancelled by driver")
         e = PS.EXCEPTION.value
         put(self.control_plane.client, self.hash, e)
 
     def handle_exception(self, error, tb, expr_idx, var_values):
         client = boto3.client('s3')
-        client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTION.{0}".format(self._node_str(expr_idx, var_values)), Bucket=self.bucket, Body=tb + str(error))
+        client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTIONS/{0}".format(self._node_str(expr_idx, var_values)), Bucket="numpywrentop500testmetadata", Body=tb + str(error))
         e = PS.EXCEPTION.value
         put(self.control_plane.client, self.hash, e)
 

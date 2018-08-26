@@ -24,6 +24,7 @@ import hashlib
 
 
 REDIS_CLIENT = None
+METADATABUCKET = "numpywrentop500testmetadata"
 logger = logging.getLogger(__name__)
 
 def mem():
@@ -274,7 +275,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
        try:
          new_loop = asyncio.new_event_loop()
          res = new_loop.run_until_complete(asyncio.ensure_future(program.begin_write(), loop=new_loop))
-         client.put_object(Bucket=program.bucket, Key=p_key, Body=profile_bytes)
+         client.put_object(Bucket=METADATABUCKET, Key=p_key, Body=profile_bytes)
          break
        except botocore.exceptions.ClientError:
          time.sleep(backoff)

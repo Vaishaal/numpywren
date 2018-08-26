@@ -55,13 +55,15 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_ACCESS_KEY_ID"], "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
         config = wc.default()
         config['runtime']['s3_bucket'] = 'numpywrenpublic-us-east-1'
-        config['runtime']['s3_key'] = 'pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz'
+        key = "pywren.runtime/pywren_runtime-3.6-numpywren-08-25-2018.tar.gz"
+        config['runtime']['s3_key'] = key
         pwex = pywren.standalone_executor(config=config)
     else:
         extra_env = {"AWS_DEFAULT_REGION":region}
         config = wc.default()
         config['runtime']['s3_bucket'] = 'numpywrenpublic-us-east-1'
-        config['runtime']['s3_key'] = 'pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz'
+        key = "pywren.runtime/pywren_runtime-3.6-numpywren-08-25-2018.tar.gz"
+        config['runtime']['s3_key'] = key
         pwex = pywren.default_executor(config=config)
 
     if (not matrix_exists):
@@ -318,7 +320,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
                    # [x.result() for x in all_futures]
                     all_futures.extend(new_future_futures)
             elif (autoscale_policy == "constant_timeout"):
-                if (time_since_launch > (0.7*timeout)):
+                if (time_since_launch > (0.85*timeout)):
                     cores_to_launch = max_cores
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
                     new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=extra_env))
@@ -371,7 +373,7 @@ if __name__ == "__main__":
     parser.add_argument('--max_cores', type=int, default=32)
     parser.add_argument('--start_cores', type=int, default=32)
     parser.add_argument('--pipeline', type=int, default=1)
-    parser.add_argument('--timeout', type=int, default=180)
+    parser.add_argument('--timeout', type=int, default=140)
     parser.add_argument('--write_limit', type=int, default=1e6)
     parser.add_argument('--read_limit', type=int, default=1e6)
     parser.add_argument('--autoscale_policy', type=str, default="constant_timeout")
