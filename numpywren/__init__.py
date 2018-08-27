@@ -6,7 +6,6 @@ import os
 import logging
 
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
-print("POOOP")
 logger = logging.getLogger('numpywren')
 ch = logging.StreamHandler()
 conf = config.default()

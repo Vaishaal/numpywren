@@ -905,7 +905,7 @@ class Program(BlockStatement):
             if (parent[0] == expr_idx and parent[1] == var_values):
                 continue
             good_parents.append(parent)
-        return parents
+        return good_parents
 
     def find_terminators(self):
         terminators = []

@@ -52,21 +52,16 @@ class MatmulTest(unittest.TestCase):
         C_sharded= BigMatrix("matmul_test_C", shape=C.shape, shard_sizes=shard_sizes, write_header=True)
 
         b_fac = 2
-        print("AA\n\n\n\n")
         config = npw.config.default()
         compiled_matmul = frontend.lpcompile(matmul)
-        print("BB\n\n\n\n")
         program = compiled_matmul(A_sharded, B_sharded, A_sharded.num_blocks(0), A_sharded.num_blocks(1), B_sharded.num_blocks(1), b_fac, Temp, C_sharded)
         program_executable = lp.LambdaPackProgram(program, config=config)
         program_executable.start()
         job_runner.lambdapack_run(program_executable, pipeline_width=1, idle_timeout=5, timeout=60)
         executor = fs.ThreadPoolExecutor(1)
-        print("CC\n\n\n\n")
         all_futures = [executor.submit(job_runner.lambdapack_run, program_executable, pipeline_width=1, idle_timeout=5, timeout=60)]
         program_executable.wait()
-        time.sleep(10)
         program_executable.free()
-        print(C_sharded.get_block(0, 0))
         C_remote = C_sharded.numpy()
         assert(np.allclose(C, C_remote))
 
