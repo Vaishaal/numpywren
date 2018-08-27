@@ -86,6 +86,9 @@ def chol(x, *args, **kwargs):
 def mul(x, y, *args, **kwargs):
     return x * y
 
+def identity(x, *args, **kwargs):
+    return x
+
 def gemm(A, B, *args, **kwargs):
     if (kwargs.get('transpose_A', False)):
         A = A.T
