@@ -52,7 +52,7 @@ class QRTest(unittest.TestCase):
         y = np.random.randn(16)
         pwex = pywren.default_executor()
         N = 128
-        shard_size = 32
+        shard_size = 64
         shard_sizes = (shard_size, shard_size)
         X =  np.random.randn(N, N)
         X_sharded = BigMatrix("QR_input_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
@@ -79,32 +79,31 @@ class QRTest(unittest.TestCase):
         assert((0, {'i': 3, 'j': 3}) in children)
 
     def test_qr_single_dynamic(self):
-        X = np.random.randn(8, 8)
         pwex = pywren.default_executor()
-        N = 8
-        shard_size = 2
+        N = 32768
+        shard_size = 4096
         shard_sizes = (shard_size, shard_size)
         np.random.seed(0)
         X =  np.random.randn(N, N)
-        v0, t0, r0 = kernels.qr_factor(X[:4, :4])
-        v1,t1, r1 = kernels.qr_factor(X[4:, :4])
+        #v0, t0, r0 = kernels.qr_factor(X[:4, :4])
+        #v1,t1, r1 = kernels.qr_factor(X[4:, :4])
 
-        v00, t00, r_out = kernels.qr_factor(np.vstack((r0,r1)))
+        #v00, t00, r_out = kernels.qr_factor(np.vstack((r0,r1)))
         #print(v0)
         #print(t0)
         #print(r_out)
-        Q0 = (np.eye(v0.shape[0]) - v0.dot(t0).dot(v0.T))
-        Q1 = (np.eye(v1.shape[0]) - v1.dot(t1).dot(v1.T))
+        #Q0 = (np.eye(v0.shape[0]) - v0.dot(t0).dot(v0.T))
+        #Q1 = (np.eye(v1.shape[0]) - v1.dot(t1).dot(v1.T))
 
 
-        I = np.eye(v0.shape[0])
-        Q = I - v0.dot(t0).dot(v0.T)
+        #I = np.eye(v0.shape[0])
+        #Q = I - v0.dot(t0).dot(v0.T)
 
-        s0 = kernels.qr_leaf(v0, t0, X[:4, 4:])
-        s1 = kernels.qr_leaf(v1, t1, X[4:, 4:])
+        #s0 = kernels.qr_leaf(v0, t0, X[:4, 4:])
+        #s1 = kernels.qr_leaf(v1, t1, X[4:, 4:])
         #print("s0", s0)
-        s01, s11 = kernels.qr_trailing_update(v00, t00, s0, s1)
-        _, _, r11 = kernels.qr_factor(s11)
+        #s01, s11 = kernels.qr_trailing_update(v00, t00, s0, s1)
+        #_, _, r11 = kernels.qr_factor(s11)
         #print("numpy", np.linalg.qr(X)[-1][4:, 4:])
         #print("lapack", r11)
         X_sharded = BigMatrix("QR_input_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
@@ -122,18 +121,21 @@ class QRTest(unittest.TestCase):
         Rs = BigMatrix("Rs", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
         Ss = BigMatrix("Ss", shape=(N, N, N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, shard_size, shard_size), write_header=True, parent_fn=parent_fn, safe=False)
         print("N BLOCKS", N_blocks)
+        t = time.time()
         pc = frontend.lpcompile(QR)(Vs, Ts, Rs, Ss, N_blocks, 0)
+        e = time.time()
+        print(f"Compile took {e - t} seconds")
         #print(pc.starters)
         #print(pc.get_children(*pc.starters[0]))
         #print(pc.num_terminators)
         #print(pc.find_terminators())
         #print(N_blocks)
         print("========="*25)
+        #print(pc.get_children(0, {'i': 0, 'j': 1}))
         #print(pc.get_children(1, {'i': 0, 'j': 0, '__LEVEL__': 0}))
-        print(pc.get_parents(0, {'i': 1, 'j': 2}))
-        print(pc.get_children(3, {'i': 0, 'k': 1, 'j': 0, '__LEVEL__': 0}))
-        print(pc.get_children(3, {'i': 0, 'k': 1, 'j': 0, '__LEVEL__': 1}))
-        return
+        #print(pc.get_parents(0, {'i': 1, 'j': 2}))
+        #print(pc.get_children(3, {'i': 0, 'k': 1, 'j': 0, '__LEVEL__': 0}))
+        #print(pc.get_children(3, {'i': 0, 'k': 1, 'j': 0, '__LEVEL__': 1}))
         #print(pc.get_parents(1, {'i': 0, 'j': 0, '__LEVEL__': 1}))
 
         #print(pc.get_parents(2, {'i': 0, 'j': 1, 'k': 1}))
@@ -144,9 +146,9 @@ class QRTest(unittest.TestCase):
         #print(pc.get_children(1, {'i': 0, 'j': 0, '__LEVEL__': 0}))
         #print(pc.get_children(2, {'i': 0, 'j': 0, 'k': 1}))
         #print(pc.get_children(2, {'i': 0, 'j': 1, 'k': 1}))
+        '''
         all_nodes = pc.find_terminators()
         for node in all_nodes:
-            print(f"CALLING GET parent for {node}")
             parents = pc.get_parents(*node)
             children = pc.get_children(*node)
             for child in children:
@@ -162,18 +164,27 @@ class QRTest(unittest.TestCase):
                 print("parent", parent)
                 print("children", children_parents)
                 assert node in children_parents
+        '''
 
 
-        return
         config = npw.config.default()
         program = lp.LambdaPackProgram(pc, config=config)
         program.start()
-        executor = fs.ProcessPoolExecutor(1)
-        executor.submit(job_runner.lambdapack_run, program, pipeline_width=1, timeout=30, idle_timeout=30)
+        executor = fs.ProcessPoolExecutor(32)
+        for i in range(32):
+            executor.submit(job_runner.lambdapack_run, program, pipeline_width=3, timeout=2000, idle_timeout=60)
         program.wait()
-        print(Rs.get_block(1, 1, 0))
-        print(np.linalg.qr(X)[1][4:, 4:])
-        return
+        R_remote = Rs.get_block(N_blocks - 1, N_blocks - 1, 0)
+        R_local = np.linalg.qr(X)[1][-shard_size:, -shard_size:]
+        sign_matrix_local = np.eye(R_local.shape[0])
+        sign_matrix_remote = np.eye(R_local.shape[0])
+        sign_matrix_local[np.where(np.diag(R_local) <= 0)]  *= -1
+        sign_matrix_remote[np.where(np.diag(R_remote) <= 0)]  *= -1
+        # make the signs match
+        R_remote *= sign_matrix_remote
+        R_local  *= sign_matrix_local
+        assert(np.allclose(R_local, R_remote))
+        print("test success!")
         exit()
 
 if __name__ == "__main__":

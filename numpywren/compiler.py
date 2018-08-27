@@ -16,6 +16,8 @@ from IPython.core.debugger import set_trace
 
 
 logger = logging.getLogger('numpywren')
+num_calls = 0
+num_enums = 0
 
 class BackendStargs(ast.AST):
     _fields = ['args']
@@ -265,7 +267,10 @@ class OperatorExpr(Statement):
         return BigMatrixBlock(block_expr.name, block_expr.matrix, tuple([scope_sub(idx, self.scope).subs(var_values) for idx in block_expr.indices]))
 
     def _enumerate_possibilities(self, in_ref, out_expr, var_names, var_limits, conds):
+        global num_enums
+        num_enums += 1
         s = time.time()
+
         # pad loops with loop step if not explicitly provided
         for i,c in enumerate(var_limits):
             if(len(var_limits[i]) < 3):
@@ -641,8 +646,8 @@ class ReductionOperatorExpr(OperatorExpr):
                         continue
                 assert len(read_ref.indices) == len(output.indices)
                 idxs = [scope_sub(x, self.scope) for x in output.indices]
-                #print(f"read_ref.indices: {read_ref.indices}, {idxs}")
                 possibs = self._enumerate_possibilities(read_ref.indices, idxs, var_names, var_limits, conds=conds)
+                #print(f"read_ref.indices: {read_ref.indices}, {idxs}, result={possibs}")
                 results += possibs
             #print(f"Looking for {read_ref} in {self} found{results}, level {reduction_level}")
             for r in results:
@@ -664,13 +669,14 @@ class ReductionOperatorExpr(OperatorExpr):
                 #print("rvar", r_var)
                 out_var = None
                 for i,c in enumerate(chunked_lst):
-                    if (r_var in c):
+                    if (r_var == c[0]):
                         out_var = i
                 #print("out_var", out_var)
                 if (out_var == None):
                     continue
                 r_var = chunked_lst[out_var][0]
                 r[str(self.var)] = r_var
+                #print(f"Adding {r} to good_results")
                 good_results.append(r)
         return utils.remove_duplicates(good_results)
 
@@ -865,7 +871,7 @@ class Program(BlockStatement):
 
         for write_ref in write_refs:
             children_for_ref = self.eval_read_operators(write_ref, current_reduction_level=reduction_level)
-            print(f"Ref {write_ref} Children  {children_for_ref}")
+            #print(f"Ref {write_ref} Children  {children_for_ref}")
             children += children_for_ref
         if (operator_expr._is_output):
             children += [(self.num_exprs - 1, {})]
@@ -1002,6 +1008,8 @@ class Program(BlockStatement):
         var_values = {}
         cached_sub_funcs = {}
         def recurse_find_starters(body, expr_id, var_values, current_scope):
+            global num_calls
+            num_calls += 1
             for statement in body:
                 if isinstance(statement, ReductionOperatorExpr):
                     if (not statement._is_input):
@@ -1083,6 +1091,8 @@ class Program(BlockStatement):
                     expr_id += statement.num_exprs
 
         recurse_find_starters(self._body, expr_id, var_values, self.symbols)
+        print("Num calls", num_calls)
+        print("Num enums", num_enums)
         return starters
 
 
@@ -1090,11 +1100,7 @@ class Program(BlockStatement):
         def recurse_eval_read_ops(body, expr_counter, var_names, var_limits, conds):
             read_ops = []
             for statement in body:
-
                 if isinstance(statement, OperatorExpr):
-                    if (expr_counter == 3):
-                        #set_trace()
-                        pass
                     valid_var_values = statement.find_reader_var_values(
                         write_ref, var_names, var_limits, current_reduction_level=current_reduction_level, conds=conds)
                     read_ops += [(expr_counter, vals) for vals in valid_var_values]
@@ -1126,7 +1132,6 @@ class Program(BlockStatement):
                 expr_counter += statement.num_exprs
             return read_ops
         return recurse_eval_read_ops(self._body, 0, [], [], [])
-
     def eval_write_operators(self, read_ref, current_reduction_level):
         def recurse_eval_write_ops(body, expr_counter, var_names, var_limits, conds):
             write_ops = []
