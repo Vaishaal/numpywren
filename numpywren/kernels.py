@@ -56,7 +56,6 @@ def fast_qr(x):
     v = v[:,:k]
     v[idxs] = 1
     r = r[:r.shape[1],:]
-    print(v[:, 0])
     return v,t,r
 
 def qr_factor(*blocks, **kwargs):

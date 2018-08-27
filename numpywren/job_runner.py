@@ -78,7 +78,7 @@ class LambdaPackExecutor(object):
         for expr_idx, var_values in operator_refs:
             expr = self.program.program.get_expr(expr_idx)
             logger.debug("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
-            print("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
+            #print("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
             t = time.time()
             node_status = self.program.get_node_status(expr_idx, var_values)
             operator_expr = self.program.program.get_expr(expr_idx)
@@ -301,6 +301,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             if ((current_time - start_time) > timeout):
                 print("Hit timeout...returning now")
                 shared_state["done_workers"] += 1
+                loop.stop()
                 return
             await asyncio.sleep(0)
             # go from high priority -> low priority

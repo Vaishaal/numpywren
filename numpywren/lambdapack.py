@@ -236,6 +236,7 @@ class RemoteRead(RemoteInstruction):
     async def __call__(self):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
+        t = time.time()
         if (self.result is None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
             if (self.cache != None and cache_key in self.cache):
@@ -247,7 +248,7 @@ class RemoteRead(RemoteInstruction):
             else:
               t = time.time()
               backoff = 0.2
-              print(f"Reading from {self.matrix} at {self.bidxs}")
+              #print(f"Reading from {self.matrix} at {self.bidxs}")
               while (True):
                 try:
                   self.result = await asyncio.wait_for(self.matrix.get_block_async(loop, *self.bidxs), self.MAX_READ_TIME)
@@ -261,6 +262,8 @@ class RemoteRead(RemoteInstruction):
                 self.cache[cache_key] = self.result
               e = time.time()
         self.end_time = time.time()
+        e = time.time()
+        print(f"Read took {e - t} seconds")
         return self.result
 
     def clear(self):
@@ -289,6 +292,7 @@ class RemoteWrite(RemoteInstruction):
     async def __call__(self, prev=None):
         if (prev != None):
           await prev
+        t = time.time()
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result is None):
@@ -297,7 +301,7 @@ class RemoteWrite(RemoteInstruction):
               # write to the cache
               self.cache[cache_key] = self.data_loc[self.data_idx]
             backoff = 0.2
-            print(f"Writing to {self.matrix} at {self.bidxs}")
+            #print(f"Writing to {self.matrix} at {self.bidxs}")
             while (True):
               try:
                 self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_loc[self.data_idx], loop, *self.bidxs), self.MAX_WRITE_TIME)
@@ -309,6 +313,8 @@ class RemoteWrite(RemoteInstruction):
             self.size = sys.getsizeof(self.data_loc[self.data_idx])
             self.ret_code = 0
         self.end_time = time.time()
+        e = time.time()
+        print(f"Write took {e - t} seconds")
         return self.result
 
     def clear(self):
@@ -333,6 +339,7 @@ class RemoteCall(RemoteInstruction):
         self.argv_instr = argv_instr
     #@profile
     async def __call__(self, prev=None):
+        t = time.time()
         if (prev != None):
           await prev
         loop = asyncio.get_event_loop()
@@ -346,7 +353,7 @@ class RemoteCall(RemoteInstruction):
               pyarg_list.append(arg.result)
             elif (isinstance(arg, float)):
               pyarg_list.append(arg)
-          print("CALLING COMPUTE", self.compute)
+          #print("CALLING COMPUTE", self.compute)
           results = self.compute(*pyarg_list, **self.kwargs)
           if (isinstance(results, tuple) and len(results) != len(self.results)):
             raise Exception("Expected {0} results, got {1}".format(len(self.results), len(results)))
@@ -358,7 +365,10 @@ class RemoteCall(RemoteInstruction):
           self.ret_code = 0
           self.end_time = time.time()
           return self.results
-        return await loop.run_in_executor(self.executor, compute)
+        res = await loop.run_in_executor(self.executor, compute)
+        e = time.time()
+        print(f"Compute {self.compute} took {e - t} seconds")
+        return res
 
     def get_flops(self):
       if getattr(self.compute, "flops", None) is not None:
@@ -503,6 +513,7 @@ class LambdaPackProgram(object):
 
         # for each dependency2
         # post op needs to ATOMICALLY check dependencies
+        t = time.time()
         try:
           post_op_start = time.time()
           children = self.program.get_children(expr_idx, var_values)
@@ -563,6 +574,8 @@ class LambdaPackProgram(object):
           post_op_time = post_op_end - post_op_start
           self.incr_progress()
           self.set_profiling_info(inst_block, expr_idx, var_values)
+          e = time.time()
+          print(f"Post op for {expr_idx, var_values}, took {e - t} seconds")
           return next_operator
         except Exception as e:
             tb = traceback.format_exc()
@@ -653,7 +666,7 @@ class LambdaPackProgram(object):
         while (status == PS.RUNNING):
               time.sleep(sleep_time)
               status = self.program_status()
-              print("Program status is ", status)
+              #print("Program status is ", status)
 
     def free(self):
         for queue_url in self.queue_urls:
