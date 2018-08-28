@@ -12,7 +12,6 @@ import logging
 import numpy as np
 import time
 import pdb
-from IPython.core.debugger import set_trace
 
 
 logger = logging.getLogger('numpywren')

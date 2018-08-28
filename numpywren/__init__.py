@@ -1,3 +1,4 @@
+
 from . import config
 from . import matrix
 from . import binops
@@ -6,29 +7,32 @@ import os
 import logging
 
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
-print("POOOP")
 logger = logging.getLogger('numpywren')
 ch = logging.StreamHandler()
-conf = config.default()
-log_level = conf['logging']['level']
-if (log_level == 'DEBUG'):
-    log_level = logging.DEBUG
-elif (log_level == 'ERROR'):
-    log_level = logging.ERROR
-elif (log_level == 'WARNING'):
-    log_level = logging.WARNING
-elif (log_level == 'INFO'):
+print(logging.INFO)
+try:
+    conf = config.default()
+    log_level = conf['logging']['level']
+    if (log_level == ''):
+        log_level = logging.DEBUG
+    elif (log_level == 'ERROR'):
+        log_level = logging.ERROR
+    elif (log_level == 'WARNING'):
+        log_level = logging.WARNING
+    elif (log_level == 'INFO'):
+        log_level = logging.INFO
+    else:
+        raise Exception("Unsupported loglevel")
+except:
     log_level = logging.INFO
-else:
-    raise Exception("Unsupported loglevel")
-
-logger.setLevel(log_level)
+    pass
+logger.setLevel(logging.INFO)
 logging.getLogger('boto').setLevel(logging.CRITICAL)
 logging.getLogger('botocore').setLevel(logging.CRITICAL)
 logging.getLogger('boto3').setLevel(logging.CRITICAL)
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
-print("log level ", log_level)
-logging.basicConfig(level=logging.CRITICAL)
+logging.getLogger('multyvac.dependency-analyzer').setLevel(logging.CRITICAL)
+logging.basicConfig(level=log_level)
 
 
 
