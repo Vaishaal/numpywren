@@ -2,6 +2,7 @@ import numpy as np
 import scipy.linalg
 import boto3
 import os
+import sys
 
 def add(*args, **kwargs):
     out = np.zeros(args[0].shape)
@@ -21,7 +22,16 @@ def get_shared_so(so_name):
 def slow_qr(x):
     get_shared_so("dlarft.cpython-36m-x86_64-linux-gnu.so")
     import sys
+    import scipy.linalg
     sys.path.insert(0, "/tmp/")
+    lst = os.listdir("/tmp/")
+    for elem in lst:
+        if "condaruntime" in elem:
+            conda_root = elem
+            break
+
+    ld_path = os.path.join("/tmp/", conda_root, "/lib/")
+    os.environ["LD_LIBRARY_PATH"] = ld_path
     import dlarft
     qr, tau, work, info = scipy.linalg.lapack.dgeqrf(a=x)
     r = np.triu(qr)
@@ -37,9 +47,19 @@ def slow_qr(x):
     return v,t,r
 
 def fast_qr(x):
+    if (os.path.exists("/tmp/dgqert3.cpython-36m-x86_64-linux-gnu.so")):
+        os.remove("/tmp/dgqert3.cpython-36m-x86_64-linux-gnu.so")
     get_shared_so("dgqert3.cpython-36m-x86_64-linux-gnu.so")
-    import sys
     sys.path.insert(0, "/tmp/")
+    import scipy.linalg
+    conda_root = ""
+    lst = os.listdir("/tmp/")
+    for elem in lst:
+        if "condaruntime" in elem:
+            conda_root = elem
+            break
+
+    ld_path = os.path.join("/tmp/", conda_root, "/lib/python3.6/site-packages/numpy/linalg/")
     import dgqert3
     m = x.shape[0]
     n = x.shape[1]
@@ -97,3 +117,10 @@ def gemm(A, B, *args, **kwargs):
 
 def trsm(x, y, lower=False, right=True, *args, **kwargs):
     return scipy.linalg.blas.dtrsm(1.0, x.T, y, lower=lower, side=int(right))
+
+if __name__ == "__main__":
+    x = np.random.randn(4,4)
+    print(fast_qr(x))
+    print(slow_qr(x))
+
+

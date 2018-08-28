@@ -13,6 +13,7 @@ import redis
 import time
 from numpywren.matrix_utils import key_exists, list_all_keys
 import pandas as pd
+from numpywren.scripts import lapack
 
 GIT_URL = "https://github.com/Vaishaal/numpywren"
 NUMPYWREN_SETUP =\
@@ -401,6 +402,7 @@ def interactive_setup(ctx):
 cli.add_command(control_plane)
 cli.add_command(test)
 cli.add_command(setup)
+cli.add_command(lapack.lapack)
 
 
 def main():
