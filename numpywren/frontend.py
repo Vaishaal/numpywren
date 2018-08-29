@@ -1,5 +1,5 @@
+
 import ast
-import inspect
 import astor
 import time
 import dill
@@ -8,7 +8,6 @@ import abc
 from numpywren.matrix import BigMatrix
 from numpywren.matrix_init import shard_matrix
 from numpywren import exceptions, compiler
-from pydoc import locate
 import sympy
 import numpy as np
 import asyncio
@@ -974,32 +973,15 @@ class BackendGenerate(ast.NodeVisitor):
     def visit_FloatConst(self, node):
         return sympy.Float(node.val)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def lpcompile(function):
     function_ast = ast.parse(inspect.getsource(function)).body[0]
-    logging.debug("Python AST:\n{}\n".format(astor.dump(function_ast)))
+    #logging.debug("Python AST:\n{}\n".format(astor.dump(function_ast)))
     parser = LambdaPackParse()
     type_checker = LambdaPackTypeCheck()
     lp_ast = parser.visit(function_ast)
-    logging.debug("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
+    #logging.debug("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
     lp_ast_type_checked = type_checker.visit(lp_ast)
-    logging.debug("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
+    #logging.debug("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
     #print("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
     def f(*args, **kwargs):
         backend_generator = BackendGenerate(*args, **kwargs)

@@ -71,8 +71,9 @@ def export_function(function, full_name, num_shards, num_threads, blas):
     futures = []
     with open(f"/tmp/{out_name}", 'rb') as f:
         f_bytes = f.read()
-        for i in range(num_shards):
-            future = tp.submit(client.put_object, Bucket=bucket, Key=f"lapack/{out_name}_{i}", Body=f_bytes)
+        client.put_object(Bucket=bucket, Key=f"lapack/{out_name}", Body=f_bytes)
+        for i in range(1, num_shards):
+            future = tp.submit(client.copy_object, Bucket=bucket, Key=f"lapack/{out_name}_{i}", CopySource=f"{bucket}/lapack/{out_name}")
             futures.append(future)
     fs.wait(futures)
     [f.result() for f in futures]

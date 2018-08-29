@@ -26,14 +26,15 @@ try:
 except:
     log_level = logging.INFO
     pass
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 logging.getLogger('boto').setLevel(logging.CRITICAL)
 logging.getLogger('botocore').setLevel(logging.CRITICAL)
 logging.getLogger('boto3').setLevel(logging.CRITICAL)
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
-logging.getLogger('multyvac.dependency-analyzer').setLevel(logging.CRITICAL)
-logging.basicConfig(level=log_level)
-
+#logging.getLogger('multyvac.dependency-analyzer').setLevel(logging.CRITICAL)
+f_stream = open("/tmp/numpywren.log", "w+")
+logging.basicConfig(stream=f_stream, level=logging.DEBUG)
+#logging.basicConfig(level=logging.DEBUG)
 
 
 

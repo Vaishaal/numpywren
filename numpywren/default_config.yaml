@@ -22,5 +22,8 @@ control_plane:
     control_plane_prefix: numpywren.control
     ec2_ssh_key : AWS_SSH_KEY
 
+logging:
+    level: INFO
+
 
 

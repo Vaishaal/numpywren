@@ -46,6 +46,48 @@ def QR(Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int, truncate:in
 
 
 class QRTest(unittest.TestCase):
+    def test_qr_perf(self):
+        pwex = pywren.default_executor()
+        N = 65536
+        shard_size = 4096
+        shard_sizes = (shard_size, shard_size)
+        np.random.seed(0)
+        X =  np.zeros((N,N))
+        X_sharded = BigMatrix("QR_input_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
+        #shard_matrix(X_sharded, X)
+        N_blocks = X_sharded.num_blocks(0)
+        b_fac = 2
+        num_tree_levels = max(int(np.ceil(np.log2(X_sharded.num_blocks(0))/np.log2(b_fac))), 1)
+        async def parent_fn(self, loop, *block_idxs):
+            if (block_idxs[-1] == 0 and block_idxs[-2] == 0):
+                return await X_sharded.get_block_async(None, *block_idxs[:-2])
+        Vs = BigMatrix("Vs", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
+        Ts = BigMatrix("Ts", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
+        Rs = BigMatrix("Rs", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
+        Ss = BigMatrix("Ss", shape=(N, N, N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, shard_size, shard_size), write_header=True, parent_fn=parent_fn, safe=False)
+        print("N BLOCKS", N_blocks)
+        t = time.time()
+        print("Starting compile...")
+        pc = frontend.lpcompile(QR)(Vs, Ts, Rs, Ss, N_blocks, 0)
+        e = time.time()
+        print(f"Compile took {e - t} seconds")
+        t = time.time()
+        pc.get_parents(0, {'i': 1, 'j': 2})
+        pc.get_children(3, {'i': 0, 'k': 1, 'j': 0, '__LEVEL__': 0})
+        e = time.time()
+        print(f"{e - t} seconds to get parent and children")
+        config = npw.config.default()
+        program = lp.LambdaPackProgram(pc, config=config)
+        program.start()
+        t = time.time()
+        expr_idx, var_values = 3, {'i': 0, 'k': 1, 'j': 0, '__LEVEL__': 0}
+        expr_idx, var_values = 0, {'i': 0, 'j': 0}
+        operator_expr = program.program.get_expr(expr_idx)
+        inst_block = operator_expr.eval_operator(var_values, hash=program.hash)
+        program.post_op(expr_idx, var_values, 0, inst_block)
+        e = time.time()
+        print(f"{e - t} seconds to do post_op")
+
     def test_qr_single_static(self):
         X = np.random.randn(64, 64)
         A = X.dot(X.T) + np.eye(X.shape[0])
