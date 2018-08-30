@@ -13,6 +13,7 @@ import numpy as np
 import asyncio
 from numpywren.kernels import *
 from sympy.core.relational import *
+import inspect
 
 logger = logging.getLogger('numpywren')
 

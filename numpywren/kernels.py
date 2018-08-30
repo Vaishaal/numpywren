@@ -17,14 +17,17 @@ def add(*args, **kwargs):
     return out
 
 def get_shared_so(so_name):
+    out_str = f"/tmp/{so_name}.{SO_TAIL}"
+    if (os.path.exists(out_str)):
+        return
     shard = random.randint(0,NUM_SO_SHARDS)
     if (shard > 0):
         shard_str = str(shard)
     else:
         shard_str = ""
-    print(f"lapack/{so_name}.{SO_TAIL}_{shard_str}")
+    print(f"Fetching lapack/{so_name}.{SO_TAIL}_{shard_str}")
     if (not os.path.isfile(f"/tmp/{so_name}")):
-        with open(f"/tmp/{so_name}.{SO_TAIL}", "wb+") as f:
+        with open(out_str, "wb+") as f:
             client = boto3.client('s3')
             bstream = client.get_object(Bucket="top500test", Key=f"lapack/{so_name}.{SO_TAIL}_{shard_str}")["Body"].read()
             f.write(bstream)
@@ -74,8 +77,6 @@ def slow_qr(x):
     return v,t,r
 
 def fast_qr(x):
-    if (os.path.exists("/tmp/dgqert3.cpython-36m-x86_64-linux-gnu.so")):
-        os.remove("/tmp/dgqert3.cpython-36m-x86_64-linux-gnu.so")
     get_shared_so("dgeqrt3")
     sys.path.insert(0, "/tmp/")
     import dgeqrt3

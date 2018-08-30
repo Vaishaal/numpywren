@@ -88,6 +88,27 @@ def _scope_sub(expr, scope):
     else:
         return expr
 
+def _scope_sub(expr, scope):
+    if (isinstance(expr, sympy.Basic)):
+        if (expr in scope):
+            expr = scope[expr]
+            return expr
+        else:
+            expr = expr.subs(scope)
+        if "__parent__" in scope:
+            expr = _scope_sub(expr, scope["__parent__"])
+        return sympy.sympify(expr)
+    elif (isinstance(expr, str)):
+        expr = sympy.Symbol(expr)
+        return scope_sub(expr, scope)
+    elif (isinstance(expr, int)):
+        return sympy.Integer(expr)
+    elif (isinstance(expr, float)):
+        return sympy.Float(expr)
+    else:
+        return expr
+
+
 def is_nonlinear(expr, vars):
     if (expr.has(sympy.log)):
         return True
@@ -140,11 +161,15 @@ class OperatorExpr(Statement):
     def eval_big_matrix_block(self, bigm_block, var_values):
         idx_evaluated = ()
         for idx in bigm_block.indices:
+            before_sub = idx
             sub_dict = self.scope.copy()
             sub_dict.update(var_values)
             idx = scope_sub(idx, sub_dict)
+            idx = idx.subs(var_values)
+            str_symbol = str(before_sub)
+            in_sub_dict = str_symbol in sub_dict
             if (idx.is_integer is None):
-                raise Exception("Big matrix indices must evaluated to be integers, got {0} for {1}, var_values is {2}".format(idx, bigm_block, var_values))
+                raise Exception("Big matrix indices must evaluated to be integers, got {0} for {1}, var_values is {2}, sub_dict is {3}, before sub is {4}, in sub dict: {5}".format(idx, bigm_block, var_values, sub_dict, before_sub, in_sub_dict))
             idx = int(idx)
             idx_evaluated += (idx,)
         return BigMatrixBlock(bigm_block.name, bigm_block.matrix, idx_evaluated)

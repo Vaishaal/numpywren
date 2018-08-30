@@ -548,7 +548,7 @@ class LambdaPackProgram(object):
               if ((val == num_child_parents) and self.get_node_status(*child) != NS.FINISHED):
                 self.set_node_status(*child, NS.READY)
                 ready_children.append(child)
-          #print(ready_children)
+          print("Ready children", ready_children)
 
           if self.eager and ready_children:
               # TODO: Re-add priorities here
@@ -666,7 +666,7 @@ class LambdaPackProgram(object):
         while (status == PS.RUNNING):
               time.sleep(sleep_time)
               status = self.program_status()
-              #print("Program status is ", status)
+              print("Program status is ", status)
 
     def free(self):
         for queue_url in self.queue_urls:

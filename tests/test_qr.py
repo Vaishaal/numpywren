@@ -48,7 +48,7 @@ def QR(Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int, truncate:in
 class QRTest(unittest.TestCase):
     def test_qr_perf(self):
         pwex = pywren.default_executor()
-        N = 65536
+        N = 16384
         shard_size = 4096
         shard_sizes = (shard_size, shard_size)
         np.random.seed(0)
@@ -122,8 +122,8 @@ class QRTest(unittest.TestCase):
 
     def test_qr_single_dynamic(self):
         pwex = pywren.default_executor()
-        N = 32768
-        shard_size = 4096
+        N = 128
+        shard_size = 32
         shard_sizes = (shard_size, shard_size)
         np.random.seed(0)
         X =  np.random.randn(N, N)
@@ -149,6 +149,7 @@ class QRTest(unittest.TestCase):
         #print("numpy", np.linalg.qr(X)[-1][4:, 4:])
         #print("lapack", r11)
         X_sharded = BigMatrix("QR_input_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
+        print("Uploading...")
         shard_matrix(X_sharded, X)
         #print("First block", X_sharded.get_block(0,0))
         #print("Second block", X_sharded.get_block(1,0))
@@ -163,6 +164,7 @@ class QRTest(unittest.TestCase):
         Rs = BigMatrix("Rs", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
         Ss = BigMatrix("Ss", shape=(N, N, N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, shard_size, shard_size), write_header=True, parent_fn=parent_fn, safe=False)
         print("N BLOCKS", N_blocks)
+        print("Compiling...")
         t = time.time()
         pc = frontend.lpcompile(QR)(Vs, Ts, Rs, Ss, N_blocks, 0)
         e = time.time()
@@ -212,10 +214,22 @@ class QRTest(unittest.TestCase):
         config = npw.config.default()
         program = lp.LambdaPackProgram(pc, config=config)
         program.start()
-        executor = fs.ProcessPoolExecutor(32)
-        for i in range(32):
-            executor.submit(job_runner.lambdapack_run, program, pipeline_width=3, timeout=2000, idle_timeout=60)
+        pwex = pywren.default_executor()
+
+        def pywren_run(x):
+            return job_runner.lambdapack_run(program, pipeline_width=3, timeout=160, idle_timeout=160)
+        '''
+        executor = fs.ProcessPoolExecutor()
+        futures = []
+        for i in range(16):
+            futures.append(executor.submit(job_runner.lambdapack_run, program, pipeline_width=3, timeout=80, idle_timeout=80))
+        '''
+        futures = pwex.map(pywren_run, range(32))
         program.wait()
+        #fs.wait(futures)
+        #print(pywren_run(0))
+        #futures = pwex.map(pywren_run, range(32))
+        assert (program.program_status() == lp.PS.SUCCESS)
         R_remote = Rs.get_block(N_blocks - 1, N_blocks - 1, 0)
         R_local = np.linalg.qr(X)[1][-shard_size:, -shard_size:]
         sign_matrix_local = np.eye(R_local.shape[0])
@@ -227,7 +241,6 @@ class QRTest(unittest.TestCase):
         R_local  *= sign_matrix_local
         assert(np.allclose(R_local, R_remote))
         print("test success!")
-        exit()
 
 if __name__ == "__main__":
     test  = QRTest()

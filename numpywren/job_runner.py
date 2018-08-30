@@ -76,16 +76,24 @@ class LambdaPackExecutor(object):
         operator_refs = [(expr_idx, var_values)]
         operator_refs_to_ret = []
         for expr_idx, var_values in operator_refs:
-            expr = self.program.program.get_expr(expr_idx)
-            logger.debug("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
-            #print("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
-            t = time.time()
-            node_status = self.program.get_node_status(expr_idx, var_values)
-            operator_expr = self.program.program.get_expr(expr_idx)
-            inst_block = operator_expr.eval_operator(var_values, hash=self.program.hash)
-            inst_block.start_time = time.time()
-            instrs = inst_block.instrs
-            next_operator = None
+            try:
+               expr = self.program.program.get_expr(expr_idx)
+               logger.debug("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
+               #print("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
+               t = time.time()
+               node_status = self.program.get_node_status(expr_idx, var_values)
+               operator_expr = self.program.program.get_expr(expr_idx)
+               inst_block = operator_expr.eval_operator(var_values, hash=self.program.hash)
+               inst_block.start_time = time.time()
+               instrs = inst_block.instrs
+               next_operator = None
+            except:
+               tb = traceback.format_exc()
+               traceback.print_exc()
+               self.program.handle_exception("EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+               raise
+
+
             if (len(instrs) != len(set(instrs))):
                 raise Exception("Duplicate instruction in instruction stream")
             try:
