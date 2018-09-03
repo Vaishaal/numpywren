@@ -122,8 +122,8 @@ class QRTest(unittest.TestCase):
 
     def test_qr_single_dynamic(self):
         pwex = pywren.default_executor()
-        N = 128
-        shard_size = 32
+        N = 8192
+        shard_size = 4096
         shard_sizes = (shard_size, shard_size)
         np.random.seed(0)
         X =  np.random.randn(N, N)
@@ -217,16 +217,19 @@ class QRTest(unittest.TestCase):
         pwex = pywren.default_executor()
 
         def pywren_run(x):
-            return job_runner.lambdapack_run(program, pipeline_width=3, timeout=160, idle_timeout=160)
-        '''
+            return job_runner.lambdapack_run(program, pipeline_width=3, timeout=180, idle_timeout=180)
         executor = fs.ProcessPoolExecutor()
         futures = []
-        for i in range(16):
-            futures.append(executor.submit(job_runner.lambdapack_run, program, pipeline_width=3, timeout=80, idle_timeout=80))
         '''
+        for i in range(16):
+            futures.append(executor.submit(job_runner.lambdapack_run, program, pipeline_width=3, timeout=60, idle_timeout=60))
+        #fs.wait(futures)
+        '''
+
         futures = pwex.map(pywren_run, range(32))
         program.wait()
-        #fs.wait(futures)
+        print("getting result...")
+        print(futures[0].result())
         #print(pywren_run(0))
         #futures = pwex.map(pywren_run, range(32))
         assert (program.program_status() == lp.PS.SUCCESS)

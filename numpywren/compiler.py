@@ -565,7 +565,7 @@ class ReductionOperatorExpr(OperatorExpr):
         reduction_level = var_values.get("__LEVEL__", 0)
         reduction_var = var_values[str(self.var)]
         reduction_branch = scope_sub(self.branch, var_values)
-        reduction_branch = scope_sub(self.branch, self.scope)
+        reduction_branch = scope_sub(reduction_branch, self.scope)
         if (not reduction_branch.is_constant()):
             raise Exception("Reduction branch must be constant at eval time")
         reduction_branch = int(reduction_branch)
@@ -574,9 +574,11 @@ class ReductionOperatorExpr(OperatorExpr):
         if (not start.is_constant()):
             raise Exception("Reduction start must be constant at eval time")
         start = int(start)
-
+        print("Before", self.limits[1])
+        print(var_values)
+        print(self.scope)
         end = scope_sub(self.limits[1], var_values)
-        end = scope_sub(self.limits[1], self.scope)
+        end = scope_sub(end, self.scope)
         if (not end.is_constant()):
             raise Exception("Reduction end must be constant at eval time")
 
@@ -682,11 +684,8 @@ class ReductionOperatorExpr(OperatorExpr):
                 r_start = int(scope_sub(var_limits[-1][0], scope))
                 r_end = int(scope_sub(var_limits[-1][1], scope))
                 branch = int(branch)
-                #print("r_start", r_start)
-                #print("r_end", r_end)
                 r_fac = np.ceil((r_end- r_start)/branch**(reduction_level))
-                #print(r_fac)
-                if (r_fac <= 1):
+                if (r_fac < 1):
                     continue
                 chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(reduction_level))), branch))
                 #print("chunked list", chunked_lst)
@@ -735,10 +734,6 @@ class ReductionOperatorExpr(OperatorExpr):
                 reduction_expr = self.base_case
             else:
                 reduction_expr = self.recursion
-
-            if ((reduction_level + 1) > np.ceil(np.log(int(high))/np.log(int(branch)))):
-                continue
-
             results = []
             if (len(list(set(var_names))) != len(var_names)):
                 print(var_names)
@@ -770,11 +765,11 @@ class ReductionOperatorExpr(OperatorExpr):
                                 results.append({})
                                 continue
                         assert len(write_ref.indices) == len(reduction.indices)
-                        #print(f"Looking for {write_ref.indices} in {idxs_subbed} (calling enumerate_possibilities(*)")
+                        print(f"Looking for {write_ref.indices} in {idxs_subbed} (calling enumerate_possibilities(*)")
                         possibs = self._enumerate_possibilities(write_ref.indices, idxs_subbed, var_names, var_limits, conds=conds)
                         self.scope["__LEVEL__"] += 1
                         results += possibs
-                        #print(f"Looking for {write_ref.indices} in {idxs_subbed} in {reduction}, {reduction_level}, {possibs}")
+                        print(f"Looking for {write_ref.indices} in {idxs_subbed} in {reduction}, {reduction_level}, {possibs}")
             results = utils.remove_duplicates(results)
             #print(f"potato Looking for {write_ref} in  found {results}, level {reduction_level}")
             #print(f"Results are {results} write_ref {write_ref}, var_names {var_names}, var_limits {var_limits}, current_reduction_level {current_reduction_level}")
@@ -787,11 +782,11 @@ class ReductionOperatorExpr(OperatorExpr):
                 r_start = int(scope_sub(var_limits[-1][0], scope))
                 r_end = int(scope_sub(var_limits[-1][1], scope))
                 branch = int(branch)
-                #print("r_start", r_start)
-                #print("r_end", r_end)
+                print("r_start", r_start)
+                print("r_end", r_end)
                 r_fac = np.ceil((r_end- r_start)/branch**(reduction_level))
                 #print(r_fac)
-                if (r_fac <= 1):
+                if (r_fac < 1):
                     continue
                 chunked_lst = list(utils.chunk(list(range(r_start, r_end, branch**(reduction_level))), branch))
                 #print("chunked list", chunked_lst)
@@ -881,7 +876,7 @@ class Program(BlockStatement):
         self.starters = self.find_starters()
         self.num_terminators = len(self.find_terminators())
 
-    def get_children(self, expr_idx, var_values):
+    def get_children(self, expr_idx, var_values, debug=False):
         operator_expr = self.get_expr(expr_idx)
         reduction_level = -1
         if isinstance(operator_expr, ReductionOperatorExpr):
@@ -890,12 +885,15 @@ class Program(BlockStatement):
         if (operator_expr == self.return_expr):
             return []
         write_refs = operator_expr.eval_write_ref(var_values)
+        print([str(x) for x in write_refs])
         children = []
-        #set_trace()
+        if (debug):
+            from pdb import set_trace
+            set_trace()
 
         for write_ref in write_refs:
             children_for_ref = self.eval_read_operators(write_ref, current_reduction_level=reduction_level)
-            #print(f"Ref {write_ref} Children  {children_for_ref}")
+            print(f"Ref {write_ref} Children  {children_for_ref}")
             children += children_for_ref
         if (operator_expr._is_output):
             children += [(self.num_exprs - 1, {})]
@@ -949,19 +947,25 @@ class Program(BlockStatement):
                         for k,v in var_values.items():
                             sub_dict[str(k)] = v
                         if (statement in cached_sub_funcs):
-                            min_idx_lambda, max_idx_lambda, branch_lambda = cached_sub_funcs[statement]
+                            min_idx_lambda, max_idx_larbda, branch_lambda = cached_sub_funcs[statement]
                         else:
                             symbols = [sympy.Symbol(x) for x in sub_dict.keys()]
+                            current_scope = current_scope.copy()
+                            current_scope.update(var_values)
                             min_idx_lambda = sympy.lambdify(symbols, scope_sub(statement.limits[0], current_scope), 'numpy', dummify=False)
                             branch_lambda = sympy.lambdify(symbols, scope_sub(statement.branch, current_scope), 'numpy', dummify=False)
                             max_idx_lambda = sympy.lambdify(symbols, scope_sub(statement.limits[1], current_scope), 'numpy', dummify=False)
                             cached_sub_funcs[statement] = (min_idx_lambda, max_idx_lambda, branch_lambda)
 
+
                         start_val = min_idx_lambda(**sub_dict)
                         branch_val = branch_lambda(**sub_dict)
                         end_val = int(max_idx_lambda(**sub_dict))
-                        num_reductions = max(int(np.ceil(np.log((end_val - start_val))/np.log(branch_val))), 1)
+                        if (end_val - start_val <= 0):
+                            expr_id += 1
+                            continue
 
+                        num_reductions = max(int(np.ceil(np.log((end_val - start_val))/np.log(branch_val))), 1)
                         for i in range(num_reductions):
                             if (end_val - start_val <= 1):
                                 continue
@@ -1056,10 +1060,12 @@ class Program(BlockStatement):
                         start_val = min_idx_lambda(**sub_dict)
                         branch_val = branch_lambda(**sub_dict)
                         end_val = int(np.ceil(max_idx_lambda(**sub_dict)))
+                        print(f"Reduction start {start_val}, reduciton end {end_val}")
                         for j in range(start_val, end_val, branch_val):
                             var_values_recurse = var_values.copy()
                             var_values_recurse[str(var)] = j
                             var_values_recurse["__LEVEL__"] = 0
+                            print(expr_id, self.get_parents(expr_id, var_values_recurse))
                             if (len(self.get_parents(expr_id, var_values_recurse)) == 0):
                                 starters.append((expr_id, var_values_recurse))
                     expr_id += 1
@@ -1125,6 +1131,7 @@ class Program(BlockStatement):
             read_ops = []
             for statement in body:
                 if isinstance(statement, OperatorExpr):
+                    print(statement)
                     valid_var_values = statement.find_reader_var_values(
                         write_ref, var_names, var_limits, current_reduction_level=current_reduction_level, conds=conds)
                     read_ops += [(expr_counter, vals) for vals in valid_var_values]

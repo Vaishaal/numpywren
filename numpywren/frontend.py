@@ -40,9 +40,8 @@ _var_assign ::= var ‘=’ expr
 assign_stmt ::= _index_expr_assign | _var_assign
 block := stmt (NEW_LINE stmt)*
 for_stmt ::= 'for' var 'in' ‘range(‘expr, expr’)’  ':' block
-with_stmt ::= 'with' with_item (',' with_item)* ':' block
 if_stmt: 'if' expr ':' block  ['else' ':' block]
-stmt ::= for_stmt | with_stmt | assign_stmt | expr
+stmt ::= for_stmt | assign_stmt | expr
 '''
 
 KEYWORDS = ["ceiling", "floor", "log", "REDUCTION_LEVEL"]
