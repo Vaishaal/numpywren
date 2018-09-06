@@ -18,6 +18,14 @@ import time
 import os
 import boto3
 
+def cholesky(O:BigMatrix, S:BigMatrix, N:int):
+    for i in range(0,N):
+        O[i,i] = chol(S[i,i,i])
+        for j in range(i+1,N):
+            O[j,i] = trsm(O[i,i], S[i,j,i])
+            for k in range(i+1,j+1):
+                S[i+1,j,k] = syrk(S[i,j,k], O[j,i], O[k,i])
+
 def cholesky(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
     # handle first loop differently
     O[0,0] = chol(I[0,0])

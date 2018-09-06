@@ -82,7 +82,7 @@ Vs = BigMatrix("Vs", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, 
 Ts = BigMatrix("Ts", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
 Rs = BigMatrix("Rs", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
 Ss = BigMatrix("Ss", shape=(N, N, N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, shard_size, shard_size), write_header=True, parent_fn=parent_fn, safe=False)
-tsqr = frontend.lpcompile(TSQR_BinTree)
+#tsqr = frontend.lpcompile(TSQR_BinTree)
 N_blocks = X_sharded.num_blocks(0)
 program_compiled = frontend.lpcompile(SimpleTestLinear)(Vs)
 

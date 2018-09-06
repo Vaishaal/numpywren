@@ -17,6 +17,14 @@ import os
 import numpywren
 import boto3
 
+def TSQR(A:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, N:int):
+    for j in range(0, N)
+        Vs[0, j], Ts[0, j], Rs[0, j] = qr_factor(A[j])
+
+    for level in range(0, ceiling(log(N))):
+        for j in range(0, N, 2**(level)):
+            Vs[level+1, j], Ts[level+1, j], Rs[level+1, j] = struct_qr_factor(R[level, j], R[level, j+1])
+
 
 def TSQR(A:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, N:int, bfac:int):
     with reducer(expr=A[j, 0], var=j, start=0, end=N, b_fac=bfac) as r:

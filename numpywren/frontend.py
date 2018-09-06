@@ -871,42 +871,15 @@ def scope_lookup(var, scope):
     else:
         raise Exception(f"Scope lookup failed: scope={scope}, var={var}")
 
-def eval_index_expr(index_expr, scope):
+def eval_index_expr(index_expr, scope, dummify=False):
     bigm = scope_lookup(index_expr.matrix_name, scope)
     idxs = []
     for index in index_expr.indices:
-        idxs.append(eval_expr(index, scope))
+        idxs.append(eval_expr(index, scope, dummify=dummify))
     return bigm, tuple(idxs)
 
-def find_vars(expr):
-    if (isinstance(expr, IndexExpr)):
-        return [z for x in expr.indices for z in find_vars(x)]
-    if (isinstance(expr, int)):
-        return []
-    elif (isinstance(expr, float)):
-        return []
-    if (isinstance(expr, IntConst)):
-        return []
-    elif (isinstance(expr, FloatConst)):
-        return []
-    elif (isinstance(expr, BoolConst)):
-        return []
-    elif (isinstance(expr, Ref)):
-        return [expr.name]
-    elif (isinstance(expr, BinOp)):
-        left = find_vars(expr.left)
-        right = find_vars(expr.right)
-        return left + right
-    elif (isinstance(expr, CmpOp)):
-        left = find_vars(expr.left)
-        right = find_vars(expr.right)
-        return left + right
-    elif (isinstance(expr, UnOp)):
-        return find_vars(expr.e)
-    elif (isinstance(expr, Mfunc)):
-        return find_vars(expr.e)
-    else:
-        raise Exception(f"Unknown type for {expr}, {type(expr)}")
+
+
 
 def eval_expr(expr, scope, dummify=False):
     if (isinstance(expr, sympy.Basic)):
@@ -1022,6 +995,10 @@ def is_linear(expr, vars):
 def is_constant(expr):
     if (isinstance(expr, Number)): return True
     return expr.is_constant()
+
+def extract_vars(expr):
+    vars = [term for term in expr.args if term.free_symbols]
+    return vars
 
 def extract_constant(expr):
     consts = [term for term in expr.args if not term.free_symbols]
@@ -1167,7 +1144,7 @@ def template_match(page, offset, abstract_page, abstract_offset, scope):
 
     assert abstract_page == page
     assert len(offset) == len(abstract_offset)
-    vars_for_arg = list(set(find_vars(abstract_offset)))
+    vars_for_arg = list(set([extract_vars(x) for x in abstract_offset]))
     A = []
     b0 =[]
     C = []
@@ -1276,16 +1253,15 @@ def find_children(r_call, program, **kwargs):
         if (not isinstance(inst, lp.RemoteWrite)): continue
         assert(isinstance(inst, lp.RemoteWrite))
         page = inst.matrix
-        offset = inst.indices
+        offset = inst.bidxs
         for p_idx in program.keys():
             r_call_abstract_with_scope = program[p_idx]
             r_call_abstract = r_call_abstract_with_scope.remote_call
             scope = r_call_abstract_with_scope.scope.copy()
-            scope_orig = r_call_abstract_with_scope.scope.copy()
             for i, arg in enumerate(r_call_abstract.args):
                 if (not isinstance(arg, IndexExpr)): continue
-                abstract_page, abstract_offset = eval_index_expr(arg, scope)
-                children += template_match(page, offset, abstract_page, abstract_offset)
+                abstract_page, abstract_offset = eval_index_expr(arg, scope, dummify=True)
+                children += template_match(page, offset, abstract_page, abstract_offset, scope)
     return utils.remove_duplicates(children)
 
 
