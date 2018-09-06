@@ -7,13 +7,42 @@ import logging
 import abc
 from numpywren.matrix import BigMatrix
 from numpywren.matrix_init import shard_matrix
-from numpywren import exceptions, compiler
-import sympy
+from numpywren import exceptions, compiler, utils
 import numpy as np
 import asyncio
 from numpywren.kernels import *
-from sympy.core.relational import *
+from collections import namedtuple
 import inspect
+from operator import *
+from numpywren import lambdapack as lp
+from scipy.linalg import qr
+import sympy
+from numbers import Number
+
+op_table = {}
+
+op_table['Add'] = add
+op_table['Div'] = truediv
+op_table['And'] = and_
+op_table['Not'] = and_
+op_table['Mult'] = mul
+op_table['Mul'] = mul
+op_table['Sub'] = sub
+op_table['Mod'] = mod
+op_table['Pow'] = pow
+op_table['Or'] = or_
+op_table['EQ'] = eq
+op_table['NE'] = ne
+op_table['Neg'] = neg
+op_table['Not'] = not_
+op_table['LT'] = lt
+op_table['LE'] = le
+op_table['GE'] = ge
+op_table['GT'] = gt
+op_table['ceiling'] = sympy.ceiling
+op_table['floor'] = sympy.floor
+op_table['log'] = sympy.log
+
 
 logger = logging.getLogger('numpywren')
 
@@ -41,7 +70,7 @@ assign_stmt ::= _index_expr_assign | _var_assign
 block := stmt (NEW_LINE stmt)*
 for_stmt ::= 'for' var 'in' ‘range(‘expr, expr’)’  ':' block
 if_stmt: 'if' expr ':' block  ['else' ':' block]
-stmt ::= for_stmt | assign_stmt | expr
+stmt ::= for_stmt | with_stmt | assign_stmt | expr
 '''
 
 KEYWORDS = ["ceiling", "floor", "log", "REDUCTION_LEVEL"]
@@ -100,6 +129,8 @@ class IndexExprType(LambdaPackType):
 class BigMatrixType(LambdaPackType):
     pass
 
+RangeVar = namedtuple("RangeVar", ["var", "start", "end", "step"])
+RemoteCallWithContext = namedtuple("RemoteCall", ["remote_call", "scope"])
 
 ## Exprs ##
 class BinOp(ast.AST, Expression):
@@ -173,9 +204,6 @@ class Return(ast.AST):
 
 class ReducerCall(ast.AST):
     _fields = ['name','function', 'args', 'type']
-
-
-
 
 REDUCTION_SPECIALS = ["level", "reduce_args", "reduce_next", "reduce_idxs"]
 
@@ -323,7 +351,6 @@ class LambdaPackParse(ast.NodeVisitor):
                         return RemoteCall(node_func_obj, None, args, None, None)
                 except NameError:
                     pass
-        
         raise Exception("unsupported function {0}".format(func.name))
 
     def visit_Assign(self, node):
@@ -437,7 +464,6 @@ class LambdaPackParse(ast.NodeVisitor):
         idxs = self.visit(index)
         return IndexExpr(matrix_id, idxs)
 
-
     def visit_Slice(self, node):
         if (node.lower is not None):
             low = self.visit(node.lower)
@@ -455,55 +481,6 @@ class LambdaPackParse(ast.NodeVisitor):
 
     def visit_Expr(self, node):
         return self.visit(node.value)
-
-
-    def visit_With(self, node):
-        #TODO: this is just a giant hack right now figure out whats the best way to express this with JRK later
-        reduction_err =\
-        '''
-        Malford reduction clause, reductions are of the form:
-            with reduction(<REDUCTION_EXPR>, var=<VAR>, start=<START_EXPR>, end=<END_EXPR>, bfac=<BFAC>) as r:
-                <OUT_EXPR>, <OTHER_EXPR> = <REMOTE CALL>
-                r.reduce_next(<OUT_EXPR>)
-        '''
-        if (self.in_reduction):
-            raise exceptions.LambdaPackParsingException("nested reduction not supported")
-
-        if (len(node.items) != 1):
-            raise exceptions.LambdaPackParsingException(reduction_err)
-        with_item = node.items[0]
-        if (not isinstance(with_item.context_expr, ast.Call)):
-            raise exceptions.LambdaPackParsingException(reduction_err)
-        is_reducer = with_item.context_expr.func.id == "reducer"
-        if (not is_reducer):
-            raise exceptions.LambdaPackParsingException(reduction_err)
-        if (self.in_reduction):
-            raise exceptions.LambdaPackParsingException("Nested Reductions not supported")
-        self.in_reduction = True
-        self.current_reduction_object = self.visit(with_item.optional_vars)
-        self.decl_dict[self.current_reduction_object.name] = self.current_reduction_object
-        kwargs = {x.arg: self.visit(x.value) for x in with_item.context_expr.keywords}
-        if (set(kwargs.keys()) != set(["expr","start","end","var","b_fac"])):
-            raise exceptions.LambdaPackParsingException(reduction_err)
-
-        if (len(node.body) != 2):
-            raise exceptions.LambdaPackParsingException(reduction_err)
-
-        reduction_op = self.visit(node.body[0])
-        if (not isinstance(reduction_op, RemoteCall)):
-            raise exceptions.LambdaPackParsingException(reduction_err)
-        tail_recursive_call = self.visit(node.body[1])
-        if (not isinstance(tail_recursive_call, ReducerCall) or tail_recursive_call.function != "reduce_next"):
-            raise exceptions.LambdaPackParsingException(reduction_err)
-        recursive_args = tail_recursive_call.args
-        for a in recursive_args:
-            assert (isinstance(a, IndexExpr))
-
-        self.in_reduction = False
-        return Reduction(kwargs["var"].name, kwargs["start"], kwargs["end"], kwargs["expr"], kwargs["b_fac"], reduction_op, recursive_args)
-
-
-
 
 
 def python_type_to_lp_type(p_type, const=False):
@@ -580,19 +557,6 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         body = [self.visit(x) for x in node.body]
         else_body = [self.visit(x) for x in node.elseBody]
         return If(cond, body, else_body)
-
-    def visit_ReducerCall(self, node):
-        if (node.function == "reduce_args" or node.function == "level"):
-            out_type = LinearIntType
-            if (node.args is not None):
-                raise exceptions.LambdaPackTypeException("reduce_args, level, reduce_level are reducer attributes")
-            args = None
-            if (node.function == "level"):
-                out_type = ConstIntType
-            return Ref("__" + node.function.upper() + "__", out_type)
-        else:
-            raise exceptions.LambdaPackTypeException("unsupported reduction feature")
-
 
     def visit_BinOp(self, node):
         right = self.visit(node.right)
@@ -693,7 +657,7 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
             idxs = [self.visit(node.indices)]
 
         out_type = unify([x.type for x in idxs])
-        if (not issubclass(out_type, LinearIntType)):
+        if (not issubclass(out_type, IntType)):
             raise exceptions.LambdaPackTypeException("Indices in IndexExprs must all of type LinearIntType {0}[{1}]".format(node.matrix_name, [str(x) for x in node.indices]))
         return IndexExpr(node.matrix_name, idxs)
 
@@ -790,19 +754,15 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         recursion = [self.visit(x) for x in node.recursion]
         return Reduction(node.var, min_idx, max_idx, expr, b_fac, remote_call, recursion)
 
-class LambdaMacroExpand(ast.NodeVisitor):
-    '''
-    Macro expand function calls
-    '''
-    pass
-
 class BackendGenerate(ast.NodeVisitor):
-
     def __init__(self, *args, **kwargs):
         super().__init__()
-        self.global_symbol_table = {}
-        self.current_symbol_table = self.global_symbol_table
+        self.global_scope = {}
+        self.current_scope = self.global_scope
         self.all_symbols = {}
+        self.remote_calls = {}
+        self.evaluators = {}
+        self.max_calls = 0
         self.count = 0
         self.arg_values = args
         self.kwargs = kwargs
@@ -815,179 +775,691 @@ class BackendGenerate(ast.NodeVisitor):
             p_type = python_type_to_lp_type(type(arg_value), const=True)
             if (not issubclass(p_type, arg_type)):
                 raise LambdaPackBackendGenerationException("arg {0} wrong type expected {1} got {2}".format(i, arg_type, p_type))
-            self.global_symbol_table[arg] = arg_value
+            self.global_scope[arg] = arg_value
             self.all_symbols[arg] = arg_value
-        print("ALL SYMBOLS", self.all_symbols)
-        [self.visit(x) for x in node.body]
-        self.count = 0
         body = [self.visit(x) for x in node.body]
-        return_expr = compiler.OperatorExpr(self.count, compiler.RemoteReturn(len(body)), args=[], outputs=[], scope={})
-        body.append(return_expr)
         assert(len(node.args) == len(self.arg_values))
-        self.program = compiler.Program(node.name, body, return_expr=return_expr, symbols=self.global_symbol_table, all_symbols=self.all_symbols)
-        return self.program
 
     def visit_RemoteCall(self, node):
         reads = [self.visit(x) for x in node.args]
         writes = [self.visit(x) for x in node.output]
-
-        compute = node.compute
-        #TODO pass these in later
-        if (node.kwargs is None):
-            kwargs = {}
-        else:
-            kwargs = node.kwargs
-        opexpr = compiler.OperatorExpr(self.count, compute=compute, args=reads, outputs=writes, scope=self.current_symbol_table, is_input=True, is_output=True, **kwargs)
-        self.count += 1
-        return opexpr
-
-    def visit_Stargs(self, node):
-        return compiler.BackendStargs(self.visit(node.args))
+        self.remote_calls[self.max_calls] = RemoteCallWithContext(node, self.current_scope)
+        self.max_calls += 1
+        return node
 
     def visit_If(self, node):
         cond = self.visit(node.cond)
-        prev_symbol_table = self.current_symbol_table
-        if_symbol_table = {"__parent__": prev_symbol_table}
-        self.current_symbol_table = if_symbol_table
+        prev_scope = self.current_scope
+        self.current_conds.append(cond)
+        if_scope = {"__parent__": prev_scope, "__condtrue__": cond}
+        self.current_scope = if_scope
         if_body = [self.visit(x) for x in node.body]
-        else_symbol_table = {"__parent__": prev_symbol_table}
-        self.current_symbol_table = else_symbol_table
+        else_scope = {"__parent__": prev_scope, "__condfalse__": cond}
+        self.current_scope = else_scope
         else_body = [self.visit(x) for x in node.elseBody]
-        self.current_symbol_table = prev_symbol_table
-        return compiler.BackendIf(cond, if_body, else_body)
+        self.current_scope = prev_scope
+        return node
 
     def visit_CmpOp(self, node):
-        lhs = self.visit(node.left)
-        rhs = self.visit(node.right)
-        print("node.left", node.left)
-        print("node.left.op", node.left.op)
-        print("LHS", lhs)
-        print("RHS", rhs)
-        if (node.op == 'EQ'):
-            return Eq(lhs, rhs)
-        elif (node.op == "NE"):
-            return Ne(lhs, rhs)
-        elif (node.op == "LT"):
-            return Lt(lhs, rhs)
-        elif (node.op == "GT"):
-            return Gt(lhs, rhs)
-        elif (node.op == "LE"):
-            return Le(lhs, rhs)
-        elif (node.op == "GE"):
-            return Ge(lhs, rhs)
-        else:
-            raise Exception("invalid comparator")
-
-
+        return node
 
     def visit_IndexExpr(self, node):
-        if (node.matrix_name not in self.global_symbol_table):
-            raise exceptions.LambdaPackBackendGenerationException("Unknown BigMatrix ref {0}".format(node.matrix_name))
-        matrix = self.global_symbol_table[node.matrix_name]
-        indices = [self.visit(x) for x in node.indices]
-        return compiler.BigMatrixBlock(node.matrix_name, matrix, indices)
+        return node
 
     def visit_Mfunc(self, node):
-        arg = self.visit(node.e)
-        if (node.op == "ceiling"):
-            return sympy.ceiling(arg)
-        elif (node.op == "floor"):
-            return sympy.floor(arg)
-        elif (node.op == "log"):
-            return sympy.log(arg)
+        return node
 
     def visit_BinOp(self, node):
-        lhs = self.visit(node.left)
-        rhs = self.visit(node.right)
-        if node.op == "Add":
-            return sympy.Add(lhs,rhs)
-        elif node.op =="Sub":
-            return sympy.Add(lhs,-1*rhs)
-        elif node.op =="Mul":
-            return sympy.Mul(lhs,rhs)
-        elif node.op == "Div":
-            return sympy.Mul(lhs,sympy.Pow(rhs, -1))
-        elif node.op == "Mod":
-            return sympy.Mod(lhs,rhs)
-        elif node.op == "And":
-            return sympy.And(lhs,rhs)
-        elif node.op == "Or":
-            return sympy.Or(lhs,rhs)
-        elif node.op == "Pow":
-            return sympy.Pow(lhs,rhs)
-        else:
-            raise Exception("Unknown binop :{0}".format(node.op))
+        return node
 
     def visit_Assign(self, node):
         lhs = self.visit(node.lhs)
         rhs = self.visit(node.rhs)
-        assert isinstance(lhs, sympy.Symbol)
-        if (str(lhs) in self.current_symbol_table and rhs != self.current_symbol_table[str(lhs)]):
-                raise exceptions.LambdaPackBackendGenerationException("Variables are immutable in a given scope\n Old Var: {0}, New Var {1}, Var Name".format(self.current_symbol_table[str(lhs)], rhs, lhs))
         self.all_symbols[lhs] = rhs
-        self.current_symbol_table[str(lhs)] = rhs
-        return compiler.AssignStatement("{0} = {1}".format(lhs, rhs))
+        self.current_scope[str(lhs)] = rhs
+        return node
 
     def visit_For(self, node):
-        loop_var = sympy.Symbol(node.var)
-        prev_symbol_table = self.current_symbol_table
+        prev_scope = self.current_scope
         self.for_depth += 1
-        for_loop_symbol_table = {"__parent__": prev_symbol_table, 'depth': self.for_depth}
+        for_loop_scope = {"__parent__": prev_scope, 'depth': self.for_depth}
 
-        self.current_symbol_table = for_loop_symbol_table
-        self.all_symbols[loop_var] = loop_var
+        self.current_scope = for_loop_scope
         min_idx = self.visit(node.min)
         max_idx = self.visit(node.max)
+        step = self.visit(node.step)
+        for_loop_scope[node.var] = RangeVar(node.var, min_idx, max_idx, step)
         body = [self.visit(x) for x in node.body]
         self.for_depth -= 1
-        self.current_symbol_table = prev_symbol_table
-        return compiler.BackendFor(var=loop_var, limits=[min_idx, max_idx], body=body, symbol_table=for_loop_symbol_table)
-
-    def visit_Reduction(self, node):
-        prev_symbol_table = self.current_symbol_table
-        reduction_loop_symbol_table = {"__parent__": prev_symbol_table}
-        self.current_symbol_table = reduction_loop_symbol_table
-        r_call_op_expr = self.visit(node.remote_call)
-        loop_var = sympy.Symbol(node.var)
-        self.all_symbols[loop_var] = loop_var
-        min_idx = self.visit(node.min)
-        max_idx = self.visit(node.max)
-        base_case = [self.visit(x) for x in node.expr]
-        recursion = [self.visit(x) for x in node.recursion]
-        b_fac = self.visit(node.b_fac)
-        self.current_symbol_table = prev_symbol_table
-        return compiler.ReductionOperatorExpr(remote_call=r_call_op_expr, var=loop_var, limits=(min_idx, max_idx), recursion=recursion, branch=b_fac, scope=reduction_loop_symbol_table, base_case=base_case)
+        self.current_scope = prev_scope
+        return node
 
     def visit_Ref(self, node):
-        s = sympy.Symbol(node.name)
-        return s
+        return node.name
 
     def visit_UnOp(self, node):
-        val = self.visit(node.e)
-        if (node.op == "Neg"):
-            return sympy.Mul(-1, val)
+        return node
 
     def visit_IntConst(self, node):
-        return sympy.Integer(node.val)
+        return node
 
     def visit_FloatConst(self, node):
-        return sympy.Float(node.val)
+        return node
+
 
 def lpcompile(function):
     function_ast = ast.parse(inspect.getsource(function)).body[0]
-    #logging.debug("Python AST:\n{}\n".format(astor.dump(function_ast)))
+    logging.debug("Python AST:\n{}\n".format(astor.dump(function_ast)))
     parser = LambdaPackParse()
     type_checker = LambdaPackTypeCheck()
     lp_ast = parser.visit(function_ast)
-    #logging.debug("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
+    logging.debug("IR AST:\n{}\n".format(astor.dump_tree(lp_ast)))
     lp_ast_type_checked = type_checker.visit(lp_ast)
-    #logging.debug("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
-    #print("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
+    logging.debug("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
+    print("typed IR AST:\n{}\n".format(astor.dump_tree(lp_ast_type_checked)))
     def f(*args, **kwargs):
         backend_generator = BackendGenerate(*args, **kwargs)
         backend_generator.visit(lp_ast_type_checked)
-        return backend_generator.program
+        return backend_generator.remote_calls
     return f
+
+def scope_lookup(var, scope):
+    if (var in scope):
+        return scope[var]
+    elif "__parent__" in scope:
+        return scope_lookup(var, scope["__parent__"])
+    else:
+        raise Exception(f"Scope lookup failed: scope={scope}, var={var}")
+
+def eval_index_expr(index_expr, scope):
+    bigm = scope_lookup(index_expr.matrix_name, scope)
+    idxs = []
+    for index in index_expr.indices:
+        idxs.append(eval_expr(index, scope))
+    return bigm, tuple(idxs)
+
+def find_vars(expr):
+    if (isinstance(expr, IndexExpr)):
+        return [z for x in expr.indices for z in find_vars(x)]
+    if (isinstance(expr, int)):
+        return []
+    elif (isinstance(expr, float)):
+        return []
+    if (isinstance(expr, IntConst)):
+        return []
+    elif (isinstance(expr, FloatConst)):
+        return []
+    elif (isinstance(expr, BoolConst)):
+        return []
+    elif (isinstance(expr, Ref)):
+        return [expr.name]
+    elif (isinstance(expr, BinOp)):
+        left = find_vars(expr.left)
+        right = find_vars(expr.right)
+        return left + right
+    elif (isinstance(expr, CmpOp)):
+        left = find_vars(expr.left)
+        right = find_vars(expr.right)
+        return left + right
+    elif (isinstance(expr, UnOp)):
+        return find_vars(expr.e)
+    elif (isinstance(expr, Mfunc)):
+        return find_vars(expr.e)
+    else:
+        raise Exception(f"Unknown type for {expr}, {type(expr)}")
+
+def eval_expr(expr, scope, dummify=False):
+    if (isinstance(expr, sympy.Basic)):
+        return expr
+    elif (isinstance(expr, int)):
+        return expr
+    elif (isinstance(expr, float)):
+        return expr
+    if (isinstance(expr, IntConst)):
+        return expr.val
+    elif (isinstance(expr, FloatConst)):
+        return expr.val
+    elif (isinstance(expr, BoolConst)):
+        return expr.val
+    elif (isinstance(expr, str)):
+        ref_val = scope_lookup(expr, scope)
+        return eval_expr(ref_val, scope, dummify=dummify)
+    elif (isinstance(expr, Ref)):
+        ref_val = scope_lookup(expr.name, scope)
+        return eval_expr(ref_val, scope, dummify=dummify)
+    elif (isinstance(expr, BinOp)):
+        left = eval_expr(expr.left, scope, dummify=dummify)
+        right = eval_expr(expr.right, scope, dummify=dummify)
+        return op_table[expr.op](left, right)
+    elif (isinstance(expr, CmpOp)):
+        left = eval_expr(expr.left, scope, dummify=dummify)
+        right = eval_expr(expr.right, scope, dummify=dummify)
+        return op_table[expr.op](left, right)
+    elif (isinstance(expr, UnOp)):
+        e = eval_expr(expr.e, scope, dummify=dummify)
+        return op_table[expr.op](e)
+    elif (isinstance(expr, Mfunc)):
+        e = eval_expr(expr.e, scope, dummify=dummify)
+        return op_table[expr.op](e)
+    elif (isinstance(expr, RangeVar)):
+        if (not dummify):
+            raise Exception(f"Range variable {expr} cannot be evaluated directly, please specify a specific variable  or pass in dummify=True")
+        else:
+            return sympy.Symbol(expr.var)
+    else:
+        raise Exception(f"unsupported expr type {type(expr)}")
+
+
+def eval_remote_call(r_call_with_scope, **kwargs):
+    r_call = r_call_with_scope.remote_call
+    compute = r_call.compute
+    scope = r_call_with_scope.scope.copy()
+    scope.update(kwargs)
+    pyarg_list = []
+    pyarg_symbols = []
+    for i, _arg in enumerate(r_call.args):
+        pyarg_symbols.append(str(i))
+        if (isinstance(_arg, IndexExpr)):
+            matrix, indices = eval_index_expr(_arg, scope)
+            arg = lp.RemoteRead(0, matrix, *indices)
+        else:
+            arg = eval_expr(_arg, scope)
+
+        pyarg_list.append(arg)
+
+    num_args = len(pyarg_list)
+    num_outputs = len(r_call.output)
+    if (r_call.kwargs is None):
+        r_call_kwargs = {}
+    else:
+        r_call_kwargs = r_call.kwargs
+
+    compute_instr  = lp.RemoteCall(0, compute, pyarg_list, num_outputs, pyarg_symbols, **r_call_kwargs)
+    outputs = []
+
+    for i, output in enumerate(r_call.output):
+        assert isinstance(output, IndexExpr)
+        matrix, indices = eval_index_expr(output, scope)
+        print("Out indices ", indices)
+        op = lp.RemoteWrite(i + num_args, matrix, compute_instr.results[i], i, *indices)
+        outputs.append(op)
+    read_instrs =  [x for x in pyarg_list if isinstance(x, lp.RemoteRead)]
+    write_instrs = outputs
+    return lp.InstructionBlock(read_instrs + [compute_instr] + write_instrs)
+
+def qr_null(A, tol=None):
+    """Computes the null space of A using a rank-revealing QR decomposition"""
+    Q, R, P = qr(A.T, mode='full', pivoting=True)
+    tol = np.finfo(R.dtype).eps if tol is None else tol
+    rnk = min(A.shape) - np.abs(np.diag(R))[::-1].searchsorted(tol)
+    return Q[:, rnk:].conj()
+
+def is_linear(expr, vars):
+
+    if (expr.has(sympy.log)):
+        return False 
+
+    if (expr.has(sympy.ceiling)):
+        return False 
+
+    if (expr.has(sympy.floor)):
+        return False 
+
+    if (expr.has(sympy.Pow)):
+        return False 
+    return True
+    '''
+    for x in vars:
+        for y in vars:
+            try:
+                if not sympy.Eq(sympy.diff(expr, x, y), 0):
+                    return False
+            except TypeError:
+                return False
+    return True
+    '''
+
+def is_constant(expr):
+    if (isinstance(expr, Number)): return True
+    return expr.is_constant()
+
+def extract_constant(expr):
+    consts = [term for term in expr.args if not term.free_symbols]
+    if (len(consts) == 0):
+        return sympy.Integer(0)
+    const = expr.func(*consts)
+    return const
+
+
+
+
+
+def enumerate_possibilities(idxs, rhs, var_names, scope):
+    var_limits = []
+    for var in var_names:
+        range_var = scope_lookup(str(var), scope)
+        assert isinstance(range_var, RangeVar)
+        start = eval_expr(range_var.start, scope, dummify=True)
+        end = eval_expr(range_var.end, scope, dummify=True)
+        step = eval_expr(range_var.step, scope, dummify=True)
+        var_limits.append((start,end,step))
+
+
+    def check_cond(conds, var_values):
+        ''' Check if any of conds evaluated to False
+            returns (True, True) if all conds evaluated to True
+            returns (True, False) if any of conds evaluated to False
+            returns (False, None) if  no conds have evaluated to False and 
+            not all conditions have been evaluated (i.e there are still free variables)
+            '''
+
+        resolved = 0
+        for cond in conds:
+            subbed = scope_sub(cond, self.scope).subs(var_values)
+            if (isinstance(subbed, boolalg.BooleanAtom)):
+                resolved += 1
+                if (not bool(subbed)):
+                    return (True, False)
+        if (resolved == len(conds)):
+            return (True, True)
+        else:
+            return (False, None)
+
+    def brute_force_limits(sol, scope, var_names, var_limits, conds):
+        simple_var = None
+        simple_var_idx = None
+        print("in brute force")
+        var_limits = [(eval_expr(low, scope), eval_expr(high, scope), eval_expr(step, scope)) for (low, high, step) in var_limits]
+        lows = []
+        highs = []
+        for (i,(var_name, (low,high,step))) in enumerate(zip(var_names, var_limits)):
+            if (not isinstance(low, int)):
+                low = low.subs(scope)
+            if (not isinstance(high, int)):
+                high = high.subs(scope)
+            if (not isinstance(step, int)):
+                step = step.subs(scope)
+            lows.append(low)
+            highs.append(high)
+            if is_constant(low) and is_constant(high) and is_constant(step):
+                simple_var = var_name
+                simple_var_idx = i
+                print("svar", simple_var, low, high)
+                break
+        if (simple_var is None):
+            raise Exception("NO simple var in loop lows: {0}, highs: {1} ".format(lows, highs))
+        limits = var_limits[simple_var_idx]
+        solutions = []
+        if ((sol[0].is_constant()) and (sol[0] < limits[0] or sol[0] >= limits[1])):
+                return []
+        simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
+        print("limits", limits)
+        for val in range(limits[0], limits[1], limits[2]):
+            var_values = var_values.copy()
+            var_values[str(simple_var)] = int(sol[0].subs({simple_var: val}).subs(var_values))
+            if(var_values[str(simple_var)] != val):
+                continue
+            limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
+            if (len(limits_left) > 0):
+                var_names_recurse = [x for x in var_names if x != simple_var]
+                solutions += brute_force_limits(sol[1:], var_values, var_names_recurse, limits_left, conds)
+            else:
+                solutions.append(var_values)
+        return [dict(zip(var_names, sol)) for sol in solutions]
+    if (len(var_names) == 0): return []
+    # brute force solve in_ref vs out_ref
+    linear_eqns = [idx - val for idx,val in
+                   zip(idxs, rhs)]
+    #TODO sort var_names by least constrainted
+    solve_vars  = []
+    simple_var = None
+    simple_var_idx = None
+    #print("var names", var_names)
+    #print("var limits", var_limits)
+    assert len(var_names) == len(var_limits)
+    for (i,(var_name, (low,high,step))) in enumerate(zip(var_names, var_limits)):
+        if (is_constant(low) and is_constant(high) and is_constant(step)):
+            simple_var = var_name
+            simple_var_idx = i
+            #print("simple var ", simple_var, low, high)
+            break
+
+    if (simple_var is None):
+        raise Exception("NO simple var in loop: limits={0}, inref={1}, outref={2}".format(list(zip(var_names, var_limits)), in_ref, out_expr))
+    solve_vars = [simple_var] + [x for x in var_names if x != simple_var]
+    #var_limits.insert(0, var_limits.pop(simple_var_idx))
+    for i,x in enumerate(var_names):
+        if (isinstance(x, str)):
+            solve_vars[i] = sympy.Symbol(x)
+
+    nonlinear = False
+    linear_eqns_fixed = []
+    non_lin_idxs = []
+    nl_map = {}
+    for i, eq in enumerate(linear_eqns):
+        curr_nl = (not is_linear(eq, solve_vars))
+        nonlinear = nonlinear or curr_nl
+        if (curr_nl):
+            placeholder = sympy.Symbol('__nl{0}__'.format(i))
+            non_lin_idxs.append(len(solve_vars))
+            solve_vars.append(placeholder)
+            linear_eqns_fixed.append(placeholder)
+            nl_map[placeholder] = eq
+        else:
+            linear_eqns_fixed.append(eq)
+    t = time.time()
+    sols = list(sympy.linsolve(linear_eqns_fixed, solve_vars))
+    print("Linear sols", sols, "solve_vars", solve_vars)
+    e = time.time()
+    good_sols = sols
+    if (nonlinear):
+       # print(f"Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_idxs is {non_lin_idxs}")
+        good_sols = []
+        for j, sol in enumerate(sols):
+            lin_subs = {}
+            sol = list(sol)
+            for i, var in enumerate(sol):
+                if (i in non_lin_idxs):
+                    continue
+                lin_subs[solve_vars[i]] = var
+            bad_sol = False
+            for i in non_lin_idxs:
+                assert sol[i] == 0
+                before = sol[i]
+                nl_var = solve_vars[i].subs(nl_map)
+                nl_sub = nl_var.subs(lin_subs)
+                solve_vars[i] = nl_sub
+                del sol[i]
+                if (is_constant(nl_sub) and nl_sub != 0):
+                    bad_sol = True
+                    break
+
+            if (not bad_sol):
+                good_sols.append(sol)
+        sols = good_sols
+    if (len(sols) > 0):
+        print("Non LINEAR SOLS are ", dict(zip(solve_vars, sols[0])))
+    return [(0,0,0)]
+    print("all varnames", var_names)
+    conds = []
+    #return [dict(zip(var_names, sol)) for sol in sols]
+    # three cases
+    # case 1 len(sols) == 0 -> no solution
+    # case 2 exact (single) solution and solution is integer
+    # case 3 parametric form -> enumerate
+    if (len(sols) == 0):
+        return []
+    elif(len(sols) == 1):
+        sol = sols[0]
+        if (np.all([x.is_constant() for x in sol]) and
+                np.all([x.is_Integer == True for x in sol])):
+            solutions = [dict(zip([str(x) for x in solve_vars], sol))]
+        else:
+            limits = var_limits[simple_var_idx]
+            #print("enumerating through", simple_var)
+            #print("simple_var_limits", limits)
+            solutions = []
+            #print("simple_var, sol", simple_var, sol)
+            simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
+            if ((not sol[0].is_Symbol) and (sol[0] < limits[0] or sol[0] >= limits[1])):
+                return []
+            for val in range(limits[0], limits[1], limits[2]):
+                var_values = {}
+                print('val', simple_var_func(val))
+                var_values[str(simple_var)] = int(simple_var_func(val))
+                if(var_values[str(simple_var)] != val):
+                    continue
+                limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
+                if (len(limits_left) > 0):
+                    var_names_recurse = [x for x in var_names if x != simple_var]
+                    scope = scope.copy()
+                    scope.update(var_values)
+                    #print("Length var names recurse ", len(var_names_recurse))
+                    #print("Length limits ", len(limits_left))
+                    solutions += brute_force_limits(sol[1:], scope, var_names_recurse, limits_left, conds)
+                else:
+                    solutions.append(var_values)
+
+    else:
+        raise Exception("Linear equaitons should have 0, 1 or infinite solutions: {0}".format(sols))
+    ret_solutions = []
+    conds = []
+    for sol in solutions:
+        bad_sol = False
+        resolved, val = check_cond(conds, sol)
+        if (not resolved):
+            raise Exception("Unresolved conditional conds={0}, var_values={1}".format(sol, conds))
+
+        bad_sol = (bad_sol) or (not val)
+
+        for (var_name, (low,high,step)) in zip(var_names, var_limits):
+            if (not (isinstance(low, Number))):
+                low = low.subs(sol)
+            if (not (isinstance(high, Number))):
+                high = high.subs(sol)
+            if sol[str(var_name)] < low or sol[str(var_name)] >= high:
+                bad_sol = True
+
+        if (not bad_sol):
+            ret_solutions.append(sol)
+    e = time.time()
+    ret = utils.remove_duplicates(ret_solutions)
+    return ret
+
+
+def dependency_solve(solve_vars, linear_lhs, linear_rhs, nonlinear_lhs, nonlinear_rhs, orig_scope, mod_scope, tol=1e-8):
+
+    ''' Solve lhs(x) = rhs  for x
+        if lhs is nonlinear/undetermined
+         use orig_scope for program enumeration
+    '''
+    A = sympy.Matrix(linear_lhs)
+    b = sympy.Matrix(linear_rhs)
+    assert(len(b.shape) == 1 or b.shape[1] == 1)
+    rank_left = A.shape[1]
+    sols = []
+    sol_stack = [(A, b, mod_scope.copy(),  solve_vars.copy(), {})]
+    while (len(sol_stack) > 0):
+        A_local, b_local, local_mod_scope, local_solve_vars, partial_sol = sol_stack.pop(0)
+        if (np.product(A_local.shape) == 0):
+            sols.append(partial_sol)
+            continue
+        x = sympy.linsolve((A_local, b_local), [sympy.Symbol(x) for x in solve_vars])
+        # if not 0 -> 1
+        assert len(x) == 1
+        x = list(x)[0]
+        if (len(x) == 0): continue
+        bad_sol = False
+        uq = np.all([is_constant(_) for _ in x])
+
+        if (uq):
+            assert np.all([is_constant(_) for _ in x])
+            for svar,val in zip(local_solve_vars, x):
+                if (int(val) != val):
+                    bad_sol = True
+                    break
+                partial_sol[str(svar)] = int(val)
+            if (bad_sol): continue
+            sols.append(partial_sol)
+        else:
+            to_remove = []
+            cols = []
+            for i, (svar, val) in enumerate(zip(local_solve_vars, x)):
+                if is_constant(val):
+                    partial_sol[str(svar)] = int(val)
+                    local_mod_scope[str(svar)] = int(val)
+                    to_remove.append(str(svar))
+                else:
+                    cols.append(A_local[:, i])
+
+            A_local = sympy.Matrix.vstack(*cols)
+            for r in to_remove:
+                local_solve_vars.remove(r)
+            print("partial sol", partial_sol)
+
+            # rank deficient solution
+            range_obj = None
+            simple_var = None
+            simple_idx = None
+            min_range = float('inf')
+
+            for i,s in enumerate(local_solve_vars):
+                range_var = scope_lookup(str(s), orig_scope)
+                print("range_var", range_var)
+                print("val", s)
+                assert isinstance(range_var, RangeVar)
+                start = eval_expr(range_var.start, local_mod_scope)
+                end = eval_expr(range_var.end, local_mod_scope)
+                step = eval_expr(range_var.step, local_mod_scope)
+                print(start, end, step)
+                try:
+                    start = int(start)
+                    end = int(end)
+                    step = int(step)
+                    print("start, end, step", start, end, step)
+                    if (((end - start)/step) < min_range):
+                        range_obj = range(int(start), int(end), int(step))
+                        simple_var = s
+                        simple_idx = i
+                        local_solve_vars.remove(s)
+                except ValueError:
+                    pass
+
+            print("Enumerating through..", simple_var)
+            #print("Found simple var range ",  range_obj)
+            if (range_obj is None): raise Exception("No valid range found")
+            assert simple_var is not None
+            assert simple_idx is not None
+            nlr_switches = [0 for _ in nonlinear_lhs]
+            for r in range_obj:
+                partial_sol_local = partial_sol.copy()
+                partial_sol_local[str(simple_var)] = r
+                A_new = A_local.copy()
+                b_new = b_local.copy()
+                for i, nlr in enumerate(nonlinear_lhs):
+                    print("nlr before", nlr)
+                    nlr = nlr.subs(partial_sol_local)
+                    print("nlr after", nlr)
+                    if (nlr_switches[i] == 0):
+                        still_nlr = not is_linear(nlr, solve_vars)
+                        # False -> -1
+                        # True -> 1
+                        nlr_switches[i] = int(still_nlr)*2 - 1
+                    if (nlr_switches[i] == -1):
+                        new_row = []
+                        for var in local_solve_vars:
+                            new_row.append(nlr.coeff(var))
+                        new_row.insert(0, simple_idx)
+                        new_row_rhs  = sympy.Matrix([nonlinear_rhs[i]])
+                        sympy.Matrix.vstack(b_local, new_row_rhs)
+                        A_new = sympy.Matrix.vstack(A_new, sympy.Matrix(new_row).T)
+                        b_new = sympy.Matrix.vstack(b_new, new_row_rhs)
+
+                new_solve_vars = local_solve_vars.copy()
+                b_new  = b_new - r*A_new[:, simple_idx]
+                print("old_shape", A_new.shape)
+                A_new = sympy.Matrix.hstack(A_new[:, :simple_idx], A_new[:, simple_idx+1:])
+                print("new_shape", A_new.shape)
+                local_mod_scope_copy = local_mod_scope.copy()
+                local_mod_scope_copy[str(simple_var)] = r
+                sol_stack.append((A_new, b_new, local_mod_scope_copy, new_solve_vars, partial_sol_local))
+    inbound_sols = []
+    for sol in sols:
+        for k,v in sol.items():
+            range_var = scope_lookup(str(k), orig_scope)
+            assert isinstance(range_var, RangeVar)
+            local_mod_scope = orig_scope.copy()
+            local_mod_scope.update(sol)
+            start = eval_expr(range_var.start, local_mod_scope)
+            end = eval_expr(range_var.end, local_mod_scope)
+            step = eval_expr(range_var.step, local_mod_scope)
+            start = int(start)
+            end = int(end)
+            step = int(step)
+
+            assert (isinstance(start, Number) and isinstance(end, Number) and isinstance(step, Number))
+            assert int(start) == start and int(end) == end and int(step) == step
+            start = int(start)
+            end = int(end)
+            step = int(step)
+            range_obj = range(start, end, step)
+            if v not in range_obj:
+                bad_sol = True
+                break
+        for lhs, rhs in zip(nonlinear_lhs, nonlinear_rhs):
+            if (lhs.subs(sol) != rhs):
+                bad_sol = True
+                break
+        if (bad_sol):
+            sols.remove(sol)
+    return utils.remove_duplicates(sols)
+
+def find_children(r_call, program, **kwargs):
+    ''' Given a specific r_call and arguments to evaluate it completely
+        return all other program locations that read from the output of r_call
+    '''
+    ib = eval_remote_call(r_call, **kwargs)
+    children = []
+    for inst in ib.instrs:
+        if (not isinstance(inst, lp.RemoteWrite)): continue
+        assert(isinstance(inst, lp.RemoteWrite))
+        rhs = inst.bidxs
+        for p_idx in program.keys():
+            print("current p_idx", p_idx)
+            r_call_abstract_with_scope = program[p_idx]
+            r_call_abstract = r_call_abstract_with_scope.remote_call
+            scope = r_call_abstract_with_scope.scope.copy()
+            scope_orig = r_call_abstract_with_scope.scope.copy()
+            for i, _arg in enumerate(r_call_abstract.args):
+                if (not isinstance(_arg, IndexExpr)): continue
+                assert(isinstance(_arg, IndexExpr))
+                vars_for_arg = list(set(find_vars(_arg)))
+                for v in vars_for_arg:
+                    if not(isinstance(scope_lookup(v, scope_orig), RangeVar)):
+                        vars_for_arg.remove(v)
+
+                for v in vars_for_arg:
+                    scope[str(v)] = sympy.Symbol(v)
+
+                matrix, indices = eval_index_expr(_arg, scope)
+                if (matrix != inst.matrix): continue
+                # If the matrices are equal then they must
+                # have same number of index variables
+                assert len(rhs) == len(indices)
+                loop_data = []
+                types = [x.type for x in _arg.indices]
+                linear_lhs = []
+                linear_rhs = []
+                nonlinear_lhs = []
+                nonlinear_rhs = []
+                local_children = enumerate_possibilities(indices, rhs, vars_for_arg, scope_orig)
+                #print("children for ", inst,  "are", local_children, p_idx)
+                children += local_children
+                #print("Linear LHS", linear_lhs)
+                #print("Linear RHS", linear_rhs)
+                #print("NonLinear LHS", nonlinear_lhs)
+                #print("NonLinear RHS", nonlinear_rhs)
+    return utils.remove_duplicates(children)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 if __name__ == "__main__":
     N = 32
@@ -1013,7 +1485,6 @@ if __name__ == "__main__":
 
     operator_expr = program.get_expr(c2[0][0])
     inst_block = operator_expr.eval_operator(c2[0][1])
-    print(inst_block)
 
 
 
