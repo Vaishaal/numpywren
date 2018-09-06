@@ -1030,369 +1030,241 @@ def extract_constant(expr):
     const = expr.func(*consts)
     return const
 
-
-
-
-
-def enumerate_possibilities(idxs, rhs, var_names, scope):
-    var_limits = []
-    for var in var_names:
-        range_var = scope_lookup(str(var), scope)
-        assert isinstance(range_var, RangeVar)
-        start = eval_expr(range_var.start, scope, dummify=True)
-        end = eval_expr(range_var.end, scope, dummify=True)
-        step = eval_expr(range_var.step, scope, dummify=True)
-        var_limits.append((start,end,step))
-
-
-    def check_cond(conds, var_values):
-        ''' Check if any of conds evaluated to False
-            returns (True, True) if all conds evaluated to True
-            returns (True, False) if any of conds evaluated to False
-            returns (False, None) if  no conds have evaluated to False and 
-            not all conditions have been evaluated (i.e there are still free variables)
-            '''
-
-        resolved = 0
-        for cond in conds:
-            subbed = scope_sub(cond, self.scope).subs(var_values)
-            if (isinstance(subbed, boolalg.BooleanAtom)):
-                resolved += 1
-                if (not bool(subbed)):
-                    return (True, False)
-        if (resolved == len(conds)):
-            return (True, True)
-        else:
-            return (False, None)
-
-    def brute_force_limits(sol, scope, var_names, var_limits, conds):
-        simple_var = None
-        simple_var_idx = None
-        print("in brute force")
-        var_limits = [(eval_expr(low, scope), eval_expr(high, scope), eval_expr(step, scope)) for (low, high, step) in var_limits]
-        lows = []
-        highs = []
-        for (i,(var_name, (low,high,step))) in enumerate(zip(var_names, var_limits)):
-            if (not isinstance(low, int)):
-                low = low.subs(scope)
-            if (not isinstance(high, int)):
-                high = high.subs(scope)
-            if (not isinstance(step, int)):
-                step = step.subs(scope)
-            lows.append(low)
-            highs.append(high)
-            if is_constant(low) and is_constant(high) and is_constant(step):
-                simple_var = var_name
-                simple_var_idx = i
-                print("svar", simple_var, low, high)
-                break
-        if (simple_var is None):
-            raise Exception("NO simple var in loop lows: {0}, highs: {1} ".format(lows, highs))
-        limits = var_limits[simple_var_idx]
-        solutions = []
-        if ((sol[0].is_constant()) and (sol[0] < limits[0] or sol[0] >= limits[1])):
-                return []
-        simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
-        print("limits", limits)
-        for val in range(limits[0], limits[1], limits[2]):
-            var_values = var_values.copy()
-            var_values[str(simple_var)] = int(sol[0].subs({simple_var: val}).subs(var_values))
-            if(var_values[str(simple_var)] != val):
-                continue
-            limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
-            if (len(limits_left) > 0):
-                var_names_recurse = [x for x in var_names if x != simple_var]
-                solutions += brute_force_limits(sol[1:], var_values, var_names_recurse, limits_left, conds)
-            else:
-                solutions.append(var_values)
-        return [dict(zip(var_names, sol)) for sol in solutions]
-    if (len(var_names) == 0): return []
-    # brute force solve in_ref vs out_ref
-    linear_eqns = [idx - val for idx,val in
-                   zip(idxs, rhs)]
-    #TODO sort var_names by least constrainted
-    solve_vars  = []
-    simple_var = None
-    simple_var_idx = None
-    #print("var names", var_names)
-    #print("var limits", var_limits)
-    assert len(var_names) == len(var_limits)
-    for (i,(var_name, (low,high,step))) in enumerate(zip(var_names, var_limits)):
-        if (is_constant(low) and is_constant(high) and is_constant(step)):
-            simple_var = var_name
-            simple_var_idx = i
-            #print("simple var ", simple_var, low, high)
-            break
-
-    if (simple_var is None):
-        raise Exception("NO simple var in loop: limits={0}, inref={1}, outref={2}".format(list(zip(var_names, var_limits)), in_ref, out_expr))
-    solve_vars = [simple_var] + [x for x in var_names if x != simple_var]
-    #var_limits.insert(0, var_limits.pop(simple_var_idx))
-    for i,x in enumerate(var_names):
-        if (isinstance(x, str)):
-            solve_vars[i] = sympy.Symbol(x)
-
-    nonlinear = False
-    linear_eqns_fixed = []
-    non_lin_idxs = []
-    nl_map = {}
-    for i, eq in enumerate(linear_eqns):
-        curr_nl = (not is_linear(eq, solve_vars))
-        nonlinear = nonlinear or curr_nl
-        if (curr_nl):
-            placeholder = sympy.Symbol('__nl{0}__'.format(i))
-            non_lin_idxs.append(len(solve_vars))
-            solve_vars.append(placeholder)
-            linear_eqns_fixed.append(placeholder)
-            nl_map[placeholder] = eq
-        else:
-            linear_eqns_fixed.append(eq)
-    t = time.time()
-    sols = list(sympy.linsolve(linear_eqns_fixed, solve_vars))
-    print("Linear sols", sols, "solve_vars", solve_vars)
-    e = time.time()
-    good_sols = sols
-    if (nonlinear):
-       # print(f"Non linear solution to eqns: {linear_eqns_fixed} is {sols}, solve vars: {solve_vars}, nl_idxs is {non_lin_idxs}")
-        good_sols = []
-        for j, sol in enumerate(sols):
-            lin_subs = {}
-            sol = list(sol)
-            for i, var in enumerate(sol):
-                if (i in non_lin_idxs):
-                    continue
-                lin_subs[solve_vars[i]] = var
-            bad_sol = False
-            for i in non_lin_idxs:
-                assert sol[i] == 0
-                before = sol[i]
-                nl_var = solve_vars[i].subs(nl_map)
-                nl_sub = nl_var.subs(lin_subs)
-                solve_vars[i] = nl_sub
-                del sol[i]
-                if (is_constant(nl_sub) and nl_sub != 0):
-                    bad_sol = True
-                    break
-
-            if (not bad_sol):
-                good_sols.append(sol)
-        sols = good_sols
-    if (len(sols) > 0):
-        print("Non LINEAR SOLS are ", dict(zip(solve_vars, sols[0])))
-    return [(0,0,0)]
-    print("all varnames", var_names)
-    conds = []
-    #return [dict(zip(var_names, sol)) for sol in sols]
-    # three cases
-    # case 1 len(sols) == 0 -> no solution
-    # case 2 exact (single) solution and solution is integer
-    # case 3 parametric form -> enumerate
-    if (len(sols) == 0):
-        return []
-    elif(len(sols) == 1):
-        sol = sols[0]
-        if (np.all([x.is_constant() for x in sol]) and
-                np.all([x.is_Integer == True for x in sol])):
-            solutions = [dict(zip([str(x) for x in solve_vars], sol))]
-        else:
-            limits = var_limits[simple_var_idx]
-            #print("enumerating through", simple_var)
-            #print("simple_var_limits", limits)
-            solutions = []
-            #print("simple_var, sol", simple_var, sol)
-            simple_var_func = sympy.lambdify(simple_var, sol[0], "numpy")
-            if ((not sol[0].is_Symbol) and (sol[0] < limits[0] or sol[0] >= limits[1])):
-                return []
-            for val in range(limits[0], limits[1], limits[2]):
-                var_values = {}
-                print('val', simple_var_func(val))
-                var_values[str(simple_var)] = int(simple_var_func(val))
-                if(var_values[str(simple_var)] != val):
-                    continue
-                limits_left = [x for (i,x) in enumerate(var_limits) if i != simple_var_idx]
-                if (len(limits_left) > 0):
-                    var_names_recurse = [x for x in var_names if x != simple_var]
-                    scope = scope.copy()
-                    scope.update(var_values)
-                    #print("Length var names recurse ", len(var_names_recurse))
-                    #print("Length limits ", len(limits_left))
-                    solutions += brute_force_limits(sol[1:], scope, var_names_recurse, limits_left, conds)
-                else:
-                    solutions.append(var_values)
-
-    else:
-        raise Exception("Linear equaitons should have 0, 1 or infinite solutions: {0}".format(sols))
-    ret_solutions = []
-    conds = []
-    for sol in solutions:
-        bad_sol = False
-        resolved, val = check_cond(conds, sol)
-        if (not resolved):
-            raise Exception("Unresolved conditional conds={0}, var_values={1}".format(sol, conds))
-
-        bad_sol = (bad_sol) or (not val)
-
-        for (var_name, (low,high,step)) in zip(var_names, var_limits):
-            if (not (isinstance(low, Number))):
-                low = low.subs(sol)
-            if (not (isinstance(high, Number))):
-                high = high.subs(sol)
-            if sol[str(var_name)] < low or sol[str(var_name)] >= high:
-                bad_sol = True
-
-        if (not bad_sol):
-            ret_solutions.append(sol)
-    e = time.time()
-    ret = utils.remove_duplicates(ret_solutions)
-    return ret
-
-
-def dependency_solve(solve_vars, linear_lhs, linear_rhs, nonlinear_lhs, nonlinear_rhs, orig_scope, mod_scope, tol=1e-8):
-
-    ''' Solve lhs(x) = rhs  for x
-        if lhs is nonlinear/undetermined
-         use orig_scope for program enumeration
+def _resort_var_names_by_limits(sol, solve_vars, limits):
     '''
-    A = sympy.Matrix(linear_lhs)
-    b = sympy.Matrix(linear_rhs)
-    assert(len(b.shape) == 1 or b.shape[1] == 1)
-    rank_left = A.shape[1]
-    sols = []
-    sol_stack = [(A, b, mod_scope.copy(),  solve_vars.copy(), {})]
-    while (len(sol_stack) > 0):
-        A_local, b_local, local_mod_scope, local_solve_vars, partial_sol = sol_stack.pop(0)
-        if (np.product(A_local.shape) == 0):
-            sols.append(partial_sol)
-            continue
-        x = sympy.linsolve((A_local, b_local), [sympy.Symbol(x) for x in solve_vars])
-        # if not 0 -> 1
-        assert len(x) == 1
-        x = list(x)[0]
-        if (len(x) == 0): continue
-        bad_sol = False
-        uq = np.all([is_constant(_) for _ in x])
-
-        if (uq):
-            assert np.all([is_constant(_) for _ in x])
-            for svar,val in zip(local_solve_vars, x):
-                if (int(val) != val):
-                    bad_sol = True
-                    break
-                partial_sol[str(svar)] = int(val)
-            if (bad_sol): continue
-            sols.append(partial_sol)
+        sol - dictionary
+        var_names - list of strings
+        limits - sympy lambda functions
+    '''
+    int_bounded_vars = {}
+    const = False
+    for v in var_names:
+        start,end,step = limits[v]
+        start = start(**sol)
+        end = end(**sol)
+        step = step(**sol)
+        if (is_constant(start) and is_constant(end) and is_constant(step)):
+            assert start.is_integer
+            assert end.is_integer
+            assert step.is_integer
+            const = True
+            int_bounded_vars[v] = float((end - start)/step)
         else:
-            to_remove = []
-            cols = []
-            for i, (svar, val) in enumerate(zip(local_solve_vars, x)):
-                if is_constant(val):
-                    partial_sol[str(svar)] = int(val)
-                    local_mod_scope[str(svar)] = int(val)
-                    to_remove.append(str(svar))
+            reg_vars.append(v)
+    # if there are multiple bounded vars sort by least constrainted
+    var_names_sorted_with_valid_range  = sorted(int_bounded_vars.keys(), key=lambda x: int_bounded_vars[x])
+    var_names_sorted = var_names_sorted_with_valid_range + reg_vars
+    return var_names_sorted, const
+
+
+
+
+
+
+
+
+
+def recursive_solver(A, C, b0, b1, solve_vars, var_limits):
+    ''' Recursively solve set of linear + nonlinear equations
+        @param A - is a list of sympy linear equations
+        @param C - is a list of sympy nonlinear equations
+        @param b0 - is a list of concrete values for linear equations
+        @param b1 - is a list of concrete values for nonlinear equations
+        @param solve_vars - is an ordered list of sympy variables currently solving for
+        @param var_limits - dictionary from var_names to sympy functions expressing limits
+    '''
+    solutions = []
+    PARAMETRIC = False
+    if len(A) == 0:
+        print("Warning: There are no linear equations to solve,\
+              this will be a brute force enumeration")
+        solution_candidate = None
+    else:
+        # A is nonempty
+        x = sympy.linsolve(A, b0, solve_vars)
+        if (len(x) != 0):
+            x = list(x)[0]
+            constant_sol = np.all([is_constant(var) for var in x])
+            integral_sol = np.all([var.is_integer for var in x])
+            if constant_sol and not integral_sol:
+                # failure case 0 we get a constant fractional/decimal solution
+                return []
+            invalid_constants = np.all([is_constant(var) and (not var.integer) for var in x])
+            if (invalid_constants):
+                # failure case 1 we get a parametric solution with
+                # fractional/decimal parts
+                return []
+            if (constant_sol):
+                solutions.append(x)
+            else:
+                assert not constant_sol
+                sol_dict = dict(zip(var_names, x))
+                solve_vars, constant_range = _resort_var_names_by_limits(sol, solve_vars, limits)
+                # at least one variable should have constant range
+                assert constant_range
+                new_x = sympy.linsolve(A, b0, solve_vars)
+                assert(len(new_x) == 1)
+                x = list(new_x)[0]
+                solutions.append(x)
+    if len(C) > 0:
+        assert len(solutions) == 1
+        x = solutions[0]
+        # in this case got a valid solution
+        # from above so we try to use to make our
+        # space more linear
+        new_C = []
+        new_A = []
+        new_b0 = []
+        new_b1 = []
+        for i in range(len(C)):
+            res = C[i].subs(x)
+            if (is_constant(res) and res != b1):
+                return []
+            if (is_linear(res)):
+                new_A.append(C[i])
+                new_b0.append(b1[i])
+            else:
+                new_C.append(C[i])
+                new_b1.append(b1[i])
+
+        if len(new_A) > 0:
+            assert len(new_A) + len(new_C) == len(C)
+            return recursive_solver(A + newA, new_C, b + new_b0, new_b1)
+
+        assert len(solutions) == 1
+        enumerate_var = solve_vars[0]
+        print(f"enumerating over {enumerate_var}")
+        start_f, end_f, step_f = limits[enumerate_var]
+        start = start_f(*x)
+        end = end_f(*x)
+        step = step_f(*x)
+        for i in range(start, end, step):
+            new_A = []
+            new_C = []
+            new_b0 = []
+            new_b1 = []
+            for eq, val in zip(A, b0):
+                new_eq = eq.subs({enumerate_var: i})
+                new_A.append(new_eq)
+                new_B.append(val)
+            new_C = C.copy()
+            for eq, val in zip(C, b1):
+                new_eq = eq.subs({var: i})
+                if (is_linear(new_eq)):
+                    new_A.append(new_eq)
+                    new_b0.append(new_eq)
                 else:
-                    cols.append(A_local[:, i])
+                    new_C.append(new_eq)
+                    new_b1.append(new_eq)
+            assert len(new_C) + len(new_A) == len(A) + len(C)
+        results += recursive_solver(new_A, new_C, new_b0, new_b1, solve_vars, limits)
 
-            A_local = sympy.Matrix.vstack(*cols)
-            for r in to_remove:
-                local_solve_vars.remove(r)
-            print("partial sol", partial_sol)
 
-            # rank deficient solution
-            range_obj = None
-            simple_var = None
-            simple_idx = None
-            min_range = float('inf')
 
-            for i,s in enumerate(local_solve_vars):
-                range_var = scope_lookup(str(s), orig_scope)
-                print("range_var", range_var)
-                print("val", s)
-                assert isinstance(range_var, RangeVar)
-                start = eval_expr(range_var.start, local_mod_scope)
-                end = eval_expr(range_var.end, local_mod_scope)
-                step = eval_expr(range_var.step, local_mod_scope)
-                print(start, end, step)
-                try:
-                    start = int(start)
-                    end = int(end)
-                    step = int(step)
-                    print("start, end, step", start, end, step)
-                    if (((end - start)/step) < min_range):
-                        range_obj = range(int(start), int(end), int(step))
-                        simple_var = s
-                        simple_idx = i
-                        local_solve_vars.remove(s)
-                except ValueError:
-                    pass
 
-            print("Enumerating through..", simple_var)
-            #print("Found simple var range ",  range_obj)
-            if (range_obj is None): raise Exception("No valid range found")
-            assert simple_var is not None
-            assert simple_idx is not None
-            nlr_switches = [0 for _ in nonlinear_lhs]
-            for r in range_obj:
-                partial_sol_local = partial_sol.copy()
-                partial_sol_local[str(simple_var)] = r
-                A_new = A_local.copy()
-                b_new = b_local.copy()
-                for i, nlr in enumerate(nonlinear_lhs):
-                    print("nlr before", nlr)
-                    nlr = nlr.subs(partial_sol_local)
-                    print("nlr after", nlr)
-                    if (nlr_switches[i] == 0):
-                        still_nlr = not is_linear(nlr, solve_vars)
-                        # False -> -1
-                        # True -> 1
-                        nlr_switches[i] = int(still_nlr)*2 - 1
-                    if (nlr_switches[i] == -1):
-                        new_row = []
-                        for var in local_solve_vars:
-                            new_row.append(nlr.coeff(var))
-                        new_row.insert(0, simple_idx)
-                        new_row_rhs  = sympy.Matrix([nonlinear_rhs[i]])
-                        sympy.Matrix.vstack(b_local, new_row_rhs)
-                        A_new = sympy.Matrix.vstack(A_new, sympy.Matrix(new_row).T)
-                        b_new = sympy.Matrix.vstack(b_new, new_row_rhs)
+def template_match(page, offset, abstract_page, abstract_offset, scope):
+    ''' Look for possible template matches from abstract_page[abstract_offset] to page[offset] in scope '''
 
-                new_solve_vars = local_solve_vars.copy()
-                b_new  = b_new - r*A_new[:, simple_idx]
-                print("old_shape", A_new.shape)
-                A_new = sympy.Matrix.hstack(A_new[:, :simple_idx], A_new[:, simple_idx+1:])
-                print("new_shape", A_new.shape)
-                local_mod_scope_copy = local_mod_scope.copy()
-                local_mod_scope_copy[str(simple_var)] = r
-                sol_stack.append((A_new, b_new, local_mod_scope_copy, new_solve_vars, partial_sol_local))
-    inbound_sols = []
-    for sol in sols:
-        for k,v in sol.items():
-            range_var = scope_lookup(str(k), orig_scope)
-            assert isinstance(range_var, RangeVar)
-            local_mod_scope = orig_scope.copy()
-            local_mod_scope.update(sol)
-            start = eval_expr(range_var.start, local_mod_scope)
-            end = eval_expr(range_var.end, local_mod_scope)
-            step = eval_expr(range_var.step, local_mod_scope)
-            start = int(start)
-            end = int(end)
-            step = int(step)
+    assert abstract_page == page
+    assert len(offset) == len(abstract_offset)
+    vars_for_arg = list(set(find_vars(abstract_offset)))
+    A = []
+    b0 =[]
+    C = []
+    b1 = []
+    for eq,val in zip(abstract_offset, offset):
+        if issubclass(eq.type, LinearIntType):
+            A.append(eq)
+            b0.append(val)
+        else:
+            C.append(eq)
+            b1.append(val)
+    print("linear equations")
+    print(A,b0)
+    print("non linear equations")
+    print(C,b1)
+    return 0
+    # Form set of equations Z with abstract offset as LHS and offset as RHS
+    # b = RHS
+    # Partition Z into A and C where A is a list of *linear* equations and C is a list of *nonlinear* equations. b0 and b1 are the respective rhs.
+    # call recursive_solver(A, C, b0, b1, var_names, var_limits):
+        # if A is nonempty:
+            # Solve x = A \ b0
+            # if x is empty -> Return immediately
+            # if x is integral -> Move on
+            # if x is parametric ->
+                # use partial solution to sort the columns of A such that the least
+                # constrained variable is first
+                # Resolve x = A \ b0
+        # if C is nonempty:
+            # new_C = []
+            # new_A = []
+            # new_b0 = []
+            # new_b1 = []
+            # for i in range(len(C))
+                # res = C[i](x)
+                # if (res is constant and res != b1):
+                    # return []
+                # if (res is linear):
+                    # new_A.append(C[i])
+                    # new_b0.append(b1[i])
+                # else
+                    # new_C.append(C[i])
+                    # new_b1.append(b1[i])
 
-            assert (isinstance(start, Number) and isinstance(end, Number) and isinstance(step, Number))
-            assert int(start) == start and int(end) == end and int(step) == step
-            start = int(start)
-            end = int(end)
-            step = int(step)
-            range_obj = range(start, end, step)
-            if v not in range_obj:
-                bad_sol = True
-                break
-        for lhs, rhs in zip(nonlinear_lhs, nonlinear_rhs):
-            if (lhs.subs(sol) != rhs):
-                bad_sol = True
-                break
-        if (bad_sol):
-            sols.remove(sol)
-    return utils.remove_duplicates(sols)
+            # if len(new_A) > 0:
+                # assert len(new_A) + len(new_C) == len(C)
+                # newAs, newBs = zip(*new_linear)
+                # return solve([A; newAs], new_C, [b; new_b0], new_b1)
+        # if we are here there were *no new* linear equations added so we can start enumerating
+        # var, start, end, step = find_least_constrained_var(A, b0)
+        # results = []
+        # for i in range(start,end,step)
+            # new_A = []
+            # new_C = []
+            # new_b0 = []
+            # new_b1 = []
+            # for eq, val in zip(A,b0):
+                # new_eq = eq.subs({var: i})
+                # new_A.append(new_eq) 
+                # new_B.append(val)
+            # new_C = C.copy()
+            # for eq, val in zip(C,b1):
+                # new_eq = eq.subs({var: i})
+                # if (is_linear(new_eq)):
+                    # new_A.append(new_eq) 
+                    # new_b0.append(new_eq) 
+                # else:
+                    # new_C.append(new_eq)
+                    # new_b1.append(new_eq)
+            # assert len(new_C) + len(new_A) == len(A) + len(C)
+            # now arguments are ready for recursive call.
+            # results += recursive_solver(new_A, new_C, new_b0, new_b1)
+
+def find_parents(r_call, program, **kwargs):
+    ''' Given a specific r_call and arguments to evaluate it completely
+        return the program locations that writes to the input of r_call
+    '''
+    ib = eval_remote_call(r_call, **kwargs)
+    parents = []
+    for inst in ib.instrs:
+        if (not isinstance(inst, lp.RemoteWrite)): continue
+        assert(isinstance(inst, lp.RemoteWrite))
+        page = inst.matrix
+        offset = inst.indices
+        for p_idx in program.keys():
+            r_call_abstract_with_scope = program[p_idx]
+            r_call_abstract = r_call_abstract_with_scope.remote_call
+            scope = r_call_abstract_with_scope.scope.copy()
+            scope_orig = r_call_abstract_with_scope.scope.copy()
+            for i, output in enumerate(r_call_abstract.outputs):
+                if (not isinstance(output, IndexExpr)): continue
+                abstract_page, abstract_offset = eval_index_expr(output, scope)
+                local_parents = template_match(page, offset, abstract_page, abstract_offset)
+                if (len(local_parents) > 1):
+                    raise Exception("Invalid Program Graph, LambdaPackPrograms must be SSA")
+                parents += local_parents
+    return utils.remove_duplicates(parents)
 
 def find_children(r_call, program, **kwargs):
     ''' Given a specific r_call and arguments to evaluate it completely
@@ -1403,44 +1275,18 @@ def find_children(r_call, program, **kwargs):
     for inst in ib.instrs:
         if (not isinstance(inst, lp.RemoteWrite)): continue
         assert(isinstance(inst, lp.RemoteWrite))
-        rhs = inst.bidxs
+        page = inst.matrix
+        offset = inst.indices
         for p_idx in program.keys():
-            print("current p_idx", p_idx)
             r_call_abstract_with_scope = program[p_idx]
             r_call_abstract = r_call_abstract_with_scope.remote_call
             scope = r_call_abstract_with_scope.scope.copy()
             scope_orig = r_call_abstract_with_scope.scope.copy()
-            for i, _arg in enumerate(r_call_abstract.args):
-                if (not isinstance(_arg, IndexExpr)): continue
-                assert(isinstance(_arg, IndexExpr))
-                vars_for_arg = list(set(find_vars(_arg)))
-                for v in vars_for_arg:
-                    if not(isinstance(scope_lookup(v, scope_orig), RangeVar)):
-                        vars_for_arg.remove(v)
-
-                for v in vars_for_arg:
-                    scope[str(v)] = sympy.Symbol(v)
-
-                matrix, indices = eval_index_expr(_arg, scope)
-                if (matrix != inst.matrix): continue
-                # If the matrices are equal then they must
-                # have same number of index variables
-                assert len(rhs) == len(indices)
-                loop_data = []
-                types = [x.type for x in _arg.indices]
-                linear_lhs = []
-                linear_rhs = []
-                nonlinear_lhs = []
-                nonlinear_rhs = []
-                local_children = enumerate_possibilities(indices, rhs, vars_for_arg, scope_orig)
-                #print("children for ", inst,  "are", local_children, p_idx)
-                children += local_children
-                #print("Linear LHS", linear_lhs)
-                #print("Linear RHS", linear_rhs)
-                #print("NonLinear LHS", nonlinear_lhs)
-                #print("NonLinear RHS", nonlinear_rhs)
+            for i, arg in enumerate(r_call_abstract.args):
+                if (not isinstance(arg, IndexExpr)): continue
+                abstract_page, abstract_offset = eval_index_expr(arg, scope)
+                children += template_match(page, offset, abstract_page, abstract_offset)
     return utils.remove_duplicates(children)
-
 
 
 
