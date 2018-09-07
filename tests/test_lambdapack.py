@@ -5,24 +5,32 @@ from numpywren.matrix_init import shard_matrix
 import time
 from timeit import default_timer as timer
 
-def SimpleTestLinear(A:BigMatrix):
+def SimpleTestLinear(A:BigMatrix, B:BigMatrix):
     for i in range(100):
-        for j in range(i, 100):
+        for j in range(i+1, 100):
             A[j, i] = identity(A[i,j])
+
+    for z in range(100):
+        for k in range(100):
+            B[z,k] = identity(A[z,k])
+
+def SimpleTestLinear2(A:BigMatrix, B:BigMatrix):
+    for i in range(100):
+        for j in range(i+1, 100):
+            A[j+1, i+j] = identity(A[i,j])
+
+    for z in range(100):
+        for k in range(100):
+            B[z,k] = identity(A[z,k])
 
 def SimpleTestNonLinear(A:BigMatrix, B: BigMatrix, N:int):
     for i in range(N):
-        N_tree = ceiling(log(N - i))/log(2)
-        for level in range(0,ceiling(log(N - i))/log(2)):
-            for k in range(i, N, 2**(level+1)):
-                A[N_tree - level - 1, i, k] = add(A[N_tree - level , i, k], A[N_tree - level, i, k + 2**(level)])
+        N_tree = ceiling(log(N - i)/log(2))
+        for level in range(0,ceiling(log(N - i)/log(2))):
+            for k in range(0, N, 2**(level+1)):
+                A[N_tree - level - 1, i, k] = add(A[N_tree - level, i, k], A[N_tree - level, i, k + 2**(level)])
 
         B[i] = identity(A[1, i, 0])
-
-
-
-
-'''
 
 
 def TSQR_BinTree(A:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, N:int):
@@ -60,7 +68,6 @@ def QR(Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int, truncate:in
 
         for k in range(i+1, N):
             Rs[i, k, 0]  = identity(S[i, k, i+1, 0])
-'''
 
 
 size = 64
@@ -84,11 +91,14 @@ Rs = BigMatrix("Rs", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, 
 Ss = BigMatrix("Ss", shape=(N, N, N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, shard_size, shard_size), write_header=True, parent_fn=parent_fn, safe=False)
 #tsqr = frontend.lpcompile(TSQR_BinTree)
 N_blocks = X_sharded.num_blocks(0)
-program_compiled = frontend.lpcompile(SimpleTestLinear)(Vs)
+program_compiled_linear = frontend.lpcompile(SimpleTestLinear)(Vs, Ts)
+program_compiled_nonlinear = frontend.lpcompile(SimpleTestNonLinear)(Vs, Ts, 100)
+program_compiled_QR = frontend.lpcompile(QR)(Vs, Ts, Rs, Ss, 4, 0)
 
 #print(pc)
 #print(frontend.eval_remote_call(program_compiled[0], level=0, j=0))
 start = timer()
-print("children ", frontend.find_children(program_compiled[0], program_compiled, level=0, j=0, i=0))
+print("children linear", frontend.find_children(program_compiled_linear[0], program_compiled_linear, level=0, j=4, i=3))
 end = timer()
 print(f"{end - start}")
+print("children nonlinear", frontend.find_children(program_compiled_nonlinear[0], program_compiled_nonlinear, level=1, k=8, i=0))
