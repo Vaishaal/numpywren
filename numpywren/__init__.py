@@ -9,7 +9,6 @@ import logging
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 logger = logging.getLogger('numpywren')
 ch = logging.StreamHandler()
-print(logging.INFO)
 try:
     conf = config.default()
     log_level = conf['logging']['level']
@@ -31,10 +30,10 @@ logging.getLogger('boto').setLevel(logging.CRITICAL)
 logging.getLogger('botocore').setLevel(logging.CRITICAL)
 logging.getLogger('boto3').setLevel(logging.CRITICAL)
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
-#logging.getLogger('multyvac.dependency-analyzer').setLevel(logging.CRITICAL)
+logging.getLogger('multyvac.dependency-analyzer').setLevel(logging.CRITICAL)
 f_stream = open("/tmp/numpywren.log", "w+")
 logging.basicConfig(stream=f_stream, level=logging.DEBUG)
-#logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG)
 
 
 

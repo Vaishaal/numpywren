@@ -2,19 +2,21 @@ import concurrent.futures as fs
 import io
 import itertools
 import os
+import hashlib
 import time
+import string
+import numpy as np
 
 import boto3
 import cloudpickle
 import numpy as np
-import hashlib
+import pywren
+
 from .matrix import BigMatrix
 from . import matrix
 from .matrix_utils import generate_key_name_local_matrix, constant_zeros, MmapArray
 from . import matrix_utils
 import numpywren as npw
-import numpy as np
-import pywren
 
 
 def local_numpy_init(X_local, shard_sizes, n_jobs=1, symmetric=False, exists=False, executor=None, write_header=False, bucket=matrix.DEFAULT_BUCKET, overwrite=True):

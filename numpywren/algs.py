@@ -1,17 +1,12 @@
-from numpywren import compiler
-from numpywren.matrix import BigMatrix
-import numpy as np
-from numpywren.matrix_init import shard_matrix
-import time
-from timeit import default_timer as timer
+from numpywren.matrix import BigMatrix 
 
-def SimpleTestLinear(A:BigMatrix, B:BigMatrix):
-    for i in range(100):
-        for j in range(i+1, 100):
+def SimpleTestLinear(A:BigMatrix, B:BigMatrix, N:int):
+    for i in range(N):
+        for j in range(i+1, N):
             A[j, i] = identity(A[i,j])
 
-    for z in range(100):
-        for k in range(100):
+    for z in range(N):
+        for k in range(N):
             B[z,k] = identity(A[z,k])
 
 def SimpleTestLinear2(A:BigMatrix, B:BigMatrix):
@@ -93,39 +88,17 @@ def QR(I:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int
         for k in range(i+1, N):
             Rs[i, k, 0]  = identity(S[i, k, i+1, 0])
 
+def cholesky(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
+    # handle first loop differently
+    O[0,0] = chol(I[0,0])
+    for j in range(1,N - truncate):
+        O[j,0] = trsm(O[0,0], I[j,0])
+        for k in range(1,j+1):
+            S[1,j,k] = syrk(I[j,k], O[j,0], O[k,0])
 
-size = 64
-shard_size = 16
-N = 64
-shard_size = 16
-shard_sizes = (shard_size, shard_size)
-X = np.random.randn(size, size)
-X_sharded= BigMatrix("tsqr_test_X", shape=X.shape, shard_sizes=shard_sizes, write_header=False)
-b_fac = 2
-async def parent_fn(self, loop, *block_idxs):
-    if (block_idxs[-1] == 0 and block_idxs[-2] == 0):
-        return await X_sharded.get_block_async(None, *block_idxs[:-2])
-num_tree_levels = max(int(np.ceil(np.log2(X_sharded.num_blocks(0))/np.log2(b_fac))), 1)
-R_sharded= BigMatrix("tsqr_test_R", shape=(num_tree_levels*shard_size, X_sharded.shape[0]), shard_sizes=shard_sizes, write_header=False, safe=False)
-V_sharded= BigMatrix("tsqr_test_V", shape=(num_tree_levels*shard_size*b_fac, X_sharded.shape[0]), shard_sizes=(shard_size*b_fac, shard_size), write_header=False, safe=False)
-T_sharded= BigMatrix("tsqr_test_T", shape=(num_tree_levels*shard_size*b_fac, X_sharded.shape[0]), shard_sizes=(shard_size*b_fac, shard_size), write_header=False, safe=False)
-I = BigMatrix("I", shape=(N, N), shard_sizes=(shard_size, shard_size), write_header=True, safe=False)
-Vs = BigMatrix("Vs", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
-Ts = BigMatrix("Ts", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
-Rs = BigMatrix("Rs", shape=(num_tree_levels, N, N), shard_sizes=(1, shard_size, shard_size), write_header=True, safe=False)
-Ss = BigMatrix("Ss", shape=(N, N, N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, shard_size, shard_size), write_header=True, parent_fn=parent_fn, safe=False)
-#tsqr = frontend.lpcompile(TSQR_BinTree)
-N_blocks = X_sharded.num_blocks(0)
-program_compiled_linear = compiler.lpcompile(SimpleTestLinear)(Vs, Ts)
-program_compiled_nonlinear = compiler.lpcompile(SimpleTestNonLinear)(Vs, Ts, 100)
-program_compiled_QR = compiler.lpcompile(QR)(I, Vs, Ts, Rs, Ss, 16, 0)
-
-start = timer()
-#print("children linear", compiler.find_children(program_compiled_linear[0], program_compiled_linear, level=0, j=4, i=3))
-#print("children nonlinear", compiler.find_children(program_compiled_nonlinear[0], program_compiled_nonlinear, level=1, k=8, i=0))
-#print("children qr", compiler.find_children(program_compiled_QR[1], program_compiled_QR, i=0, j=0, level=0))
-print("children", compiler.find_children(program_compiled_QR[9], program_compiled_QR, k=2, j=3, i=1))
-print("parents", compiler.find_parents(program_compiled_QR[6], program_compiled_QR, i=2, j=3))
-#print("parents", compiler.find_parents(program_compiled_QR[2], program_compiled_QR, i=0, j=0, level=2))
-end = timer()
-print(end - start)
+    for i in range(1,N - truncate):
+        O[i,i] = chol(S[i,i,i])
+        for j in range(i+1,N - truncate):
+            O[j,i] = trsm(O[i,i], S[i,j,i])
+            for k in range(i+1,j+1):
+                S[i+1,j,k] = syrk(S[i,j,k], O[j,i], O[k,i])
