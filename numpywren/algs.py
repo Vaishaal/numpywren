@@ -9,13 +9,13 @@ def SimpleTestLinear(A:BigMatrix, B:BigMatrix, N:int):
         for k in range(N):
             B[z,k] = identity(A[z,k])
 
-def SimpleTestLinear2(A:BigMatrix, B:BigMatrix):
-    for i in range(100):
-        for j in range(i+1, 100):
+def SimpleTestLinear2(A:BigMatrix, B:BigMatrix, N:int):
+    for i in range(N):
+        for j in range(i+1, N):
             A[j+1, i+j] = identity(A[i,j])
 
-    for z in range(100):
-        for k in range(100):
+    for z in range(N):
+        for k in range(N):
             B[z,k] = identity(A[z,k])
 
 def SimpleTestNonLinear(A:BigMatrix, B: BigMatrix, N:int):
@@ -27,8 +27,11 @@ def SimpleTestNonLinear(A:BigMatrix, B: BigMatrix, N:int):
 
         B[i] = identity(A[1, i, 0])
 
-def TSQR_BinTree(A:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, N:int):
-    for level in range(0, ceiling(log(N)/log(2))):
+def TSQR(A:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, N:int):
+    for j in range(0, N):
+        Vs[0, j], Ts[0, j], Rs[0, j] = qr_factor(A[j])
+
+    for level in range(1, ceiling(log(N)/log(2))):
         for j in range(0, N, 2**(level + 1)):
             Vs[level+1, j], Ts[level+1, j], Rs[level+1, j] = qr_factor(Rs[level, j], Rs[level, j + 2**(level)])
 
@@ -88,7 +91,7 @@ def QR(I:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int
         for k in range(i+1, N):
             Rs[i, k, 0]  = identity(S[i, k, i+1, 0])
 
-def cholesky(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
+def CHOLESKY(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
     # handle first loop differently
     O[0,0] = chol(I[0,0])
     for j in range(1,N - truncate):

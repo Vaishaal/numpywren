@@ -17,6 +17,7 @@ from operator import *
 from numpywren import lambdapack as lp
 from scipy.linalg import qr
 import sympy
+from sympy import Symbol
 from numbers import Number
 import copy
 
@@ -160,6 +161,17 @@ def is_constant(expr):
     if (isinstance(expr, Number)): return True
     return expr.is_constant()
 
+def is_integer(e):
+    typ = type(e)
+    if typ == int:
+        return True
+    elif typ == float:
+        return int(e) == e
+    elif isinstance(e, sympy.Basic):
+        return e.is_integer
+    else:
+        raise Exception("Unknown type: {0}".format(typ))
+
 def extract_vars(expr):
     if (isinstance(expr, Number)): return []
     return tuple(expr.free_symbols)
@@ -208,6 +220,8 @@ def symbolic_linsolve(A, b, solve_vars):
         eqs.append(a - b)
     if np.all([x == 0 for x in eqs]):
         return []
+    if (len(solve_vars) == 0):
+        return []
     return list(sympy.linsolve(eqs, solve_vars))
 
 
@@ -239,7 +253,7 @@ def resplit_equations(A, C, b0, b1, solve_vars, sub_dict):
 def copy_scope(scope):
     new_scope = scope.copy()
     if "__parent__" in new_scope:
-        new_scope["__parent__"] = scope["__parent__"].copy()
+        new_scope["__parent__"] = copy_scope(new_scope["__parent__"])
     return new_scope
 
 
@@ -264,6 +278,7 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
     else:
         # A is nonempty
         x = symbolic_linsolve(A, b0, solve_vars)
+
         if (len(x) != 0):
             x = list(x)[0]
             sol_dict = dict(zip([str(x) for x in solve_vars], x))
@@ -313,7 +328,8 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
             return res
     assert len(solutions) == 1
     sol = solutions.pop(0)
-    enumerate_var = solve_vars[0]
+    vars_left = [v for v in solve_vars if not is_constant(sol[str(v)])]
+    enumerate_var = vars_left[0]
     start_f, end_f, step_f = var_limits[enumerate_var]
     t = time.time()
     start = start_f(**sol)
@@ -349,15 +365,24 @@ def prune_solutions(solutions, var_limits):
         for k,v in sol.items():
             start,end,step = var_limits[sympy.Symbol(k)]
             start,end,step = start(**sol), end(**sol), step(**sol)
-            if (v not in range(start, end, step)):
+            if (not (is_integer(start) and is_integer(end) and is_integer(step))):
                 bad_sol = True
+            elif (v not in range(start, end, step)):
+                bad_sol = True
+
         if (not bad_sol):
             valid_solutions.append(sol)
     return valid_solutions
 
 
-
-
+def integerify_solutions(solutions):
+    new_sols = []
+    for p_idx, sol in solutions:
+        new_sol = {}
+        for k, v in sol.items():
+            new_sol[k] = int(v)
+        new_sols.append((p_idx, new_sol))
+    return new_sols
 
 
 
@@ -438,6 +463,14 @@ def template_match(page, offset, abstract_page, abstract_offset, offset_types, s
     assert abstract_page == page
     assert len(offset) == len(abstract_offset) == len(offset_types)
     vars_for_arg = list(set([z for x in abstract_offset for z in extract_vars(x)]))
+    all_range_vars = extract_range_vars(scope)
+    for k in all_range_vars:
+        k = Symbol(k)
+        if k not in vars_for_arg:
+            abstract_offset = abstract_offset +  (k,)
+            offset = offset + (k,)
+            offset_types.append(LinearIntType)
+            vars_for_arg.append(k)
     A = []
     b0 =[]
     C = []
@@ -449,6 +482,7 @@ def template_match(page, offset, abstract_page, abstract_offset, offset_types, s
         else:
             C.append(sympy.sympify(eq))
             b1.append(val)
+
     var_limits = {}
     var_limits_symbols = {}
     for var in vars_for_arg:
@@ -463,6 +497,7 @@ def template_match(page, offset, abstract_page, abstract_offset, offset_types, s
         step_fn = lambdify(step_val)
         var_limits[var] = (start_fn, end_fn, step_fn)
         var_limits_symbols[var] = (start_val, end_val, step_val)
+
     sols = recursive_solver(A, C, b0, b1, vars_for_arg, var_limits, {})
     sols = prune_solutions(sols, var_limits)
     return sols
@@ -493,7 +528,7 @@ def find_parents(r_call, program, **kwargs):
                 if (len(local_parents) > 1):
                     raise Exception("Invalid Program Graph, LambdaPackPrograms must be SSA")
                 parents += [(p_idx, x) for x in local_parents]
-    return utils.remove_duplicates(parents)
+    return integerify_solutions(utils.remove_duplicates(parents))
 
 def find_children(r_call, program, **kwargs):
     ''' Given a specific r_call and arguments to evaluate it completely
@@ -517,7 +552,7 @@ def find_children(r_call, program, **kwargs):
                 offset_types = [x.type for x in arg.indices]
                 local_children = template_match(page, offset, abstract_page, abstract_offset, offset_types, scope)
                 children += [(p_idx, x) for x in local_children]
-    return utils.remove_duplicates(children)
+    return integerify_solutions(utils.remove_duplicates(children))
 
 def extract_range_vars(scope):
     range_vars = {}
@@ -538,13 +573,20 @@ def is_const_range_var(range_var, scope):
     start = eval_expr(start, scope, dummify=True)
     end = eval_expr(end, scope, dummify=True)
     step = eval_expr(step, scope, dummify=True)
-    return (type(start) == int) and (type(end) == int) and  (type(step) == int)
+    ret_val = is_integer(start)  and is_integer(end) and is_integer(step)
+    return ret_val
 
 def delete_from_scope(scope, var):
     if var in scope:
         del scope[var]
     if "__parent__" in scope:
         delete_from_scope(scope["__parent__"], var)
+
+def replace_in_scope(scope, var, val):
+    if var in scope:
+        scope[var] = val
+    if "__parent__" in scope:
+        replace_in_scope(scope["__parent__"], var, val)
 
 def recursive_range_walk(scope):
     ''' Recursively walks scope and returns the set of all range vars '''
@@ -559,13 +601,13 @@ def recursive_range_walk(scope):
     r_vals = []
     for i in range(start,end,step):
         scope_recurse = copy_scope(scope)
-        delete_from_scope(scope_recurse, str(const_range_var))
-        scope_recurse[str(const_range_var)] = i
+        replace_in_scope(scope_recurse, str(const_range_var), i)
         range_vars = extract_range_vars(scope_recurse)
         vals = recursive_range_walk(scope_recurse)
         [x.update({const_range_var: i}) for x in vals]
         r_vals += vals
     return r_vals
+
 
 
 
@@ -580,10 +622,11 @@ def walk_program(program):
     states = []
     for p_idx in program.keys():
         r_call_abstract_with_scope = program[p_idx]
+        scope = r_call_abstract_with_scope
         scope = copy_scope(r_call_abstract_with_scope.scope)
         range_vars = recursive_range_walk(scope)
         states += [(p_idx, x) for x in range_vars]
-    return states
+    return integerify_solutions(states)
 
 
 
