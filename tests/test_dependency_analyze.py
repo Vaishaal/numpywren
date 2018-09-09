@@ -90,5 +90,5 @@ def test_gemm():
 
 
 if __name__ == "__main__":
-    test_simple_nonlinear()
+    test_qr()
 

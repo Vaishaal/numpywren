@@ -135,6 +135,9 @@ def eval_remote_call(r_call_with_scope, **kwargs):
 
 
 def is_linear(expr, vars):
+    if (is_constant(expr)):
+        return True
+
     if (expr.has(sympy.log)):
         return False
 
@@ -159,8 +162,10 @@ def is_linear(expr, vars):
     '''
 
 def is_constant(expr):
-    if (isinstance(expr, Number)): return True
-    return expr.is_constant()
+    typ = type(expr)
+    if (typ == float): return True
+    if (typ == int): return True
+    return len(expr.free_symbols) == 0
 
 def is_integer(e):
     typ = type(e)
@@ -229,7 +234,10 @@ def symbolic_linsolve(A, bs, solve_vars):
         for i,eq in enumerate(eqs):
             if (is_constant(eq)):
                 eqs[i] = sympy.Integer(eq)
-        return list(sympy.linsolve(eqs, solve_vars))
+        res = list(sympy.linsolve(eqs, solve_vars))
+        return res
+
+
 
 def resplit_equations(A, A_funcs, C, C_funcs, b0, b1, solve_vars, sub_dict):
     ''' Split A, C into linear and non linear equations
@@ -297,6 +305,7 @@ def recursive_solver(A, A_funcs, C, C_funcs, b0, b1, solve_vars, var_limits, par
                     assert not is_integer(v)
                 else:
                     sol_dict[k] = v
+
             constant_sol = np.all([is_constant(var) for var in sol_dict.values()])
             integral_sol = np.all([var.is_integer for var in sol_dict.values()])
             if constant_sol and not integral_sol:
@@ -371,12 +380,15 @@ def recursive_solver(A, A_funcs, C, C_funcs, b0, b1, solve_vars, var_limits, par
     return solutions
 
 
+
 def prune_solutions(solutions, var_limits):
     valid_solutions = []
+    var_limits = {str(k):v for (k,v) in var_limits.items()}
     for sol in solutions:
         bad_sol = False
         for k,v in sol.items():
-            start,end,step = var_limits[sympy.Symbol(k)]
+            v = float(v)
+            start,end,step = var_limits[k]
             start,end,step = start(**sol), end(**sol), step(**sol)
             if (not (is_integer(start) and is_integer(end) and is_integer(step))):
                 bad_sol = True
@@ -386,7 +398,6 @@ def prune_solutions(solutions, var_limits):
         if (not bad_sol):
             valid_solutions.append(sol)
     return valid_solutions
-
 
 def integerify_solutions(solutions):
     new_sols = []
@@ -401,7 +412,7 @@ def integerify_solutions(solutions):
 
 def lambdify(expr):
     symbols = extract_vars(expr)
-    _f = sympy.lambdify(symbols, expr, 'sympy', dummify=False)
+    _f = sympy.lambdify(symbols, expr, ("math", "sympy"), dummify=False)
     def f(**kwargs):
         if (len(kwargs) < len(symbols)):
             raise Exception("Insufficient Args")
