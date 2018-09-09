@@ -198,9 +198,9 @@ def _resort_var_names_by_limits(sol, solve_vars, limits):
         end = end(**sol)
         step = step(**sol)
         if (is_constant(start) and is_constant(end) and is_constant(step)):
-            assert isinstance(start, Number) or start.is_integer
-            assert isinstance(end, Number) or end.is_integer
-            assert isinstance(step, Number) or step.is_integer
+            #assert isinstance(start, Number) or start.is_integer
+            #assert isinstance(end, Number) or end.is_integer
+            #assert isinstance(step, Number) or step.is_integer
             const = True
             int_bounded_vars[v] = float((end - start)/step)
         else:
@@ -214,15 +214,18 @@ def _resort_var_names_by_limits(sol, solve_vars, limits):
 
 
 
-def symbolic_linsolve(A, b, solve_vars):
+def symbolic_linsolve(A, bs, solve_vars):
     eqs = []
-    for a,b in zip(A,b):
+    for a,b in zip(A,bs):
         eqs.append(a - b)
-    if np.all([x == 0 for x in eqs]):
+    all_true = np.all([x == 0 for x in eqs])
+    all_constant = np.all([is_constant(a) and is_constant(b) for a,b in zip(A,bs)])
+    if (all_true and all_constant):
+        return [{}]
+    elif (all_constant):
         return []
-    if (len(solve_vars) == 0):
-        return []
-    return list(sympy.linsolve(eqs, solve_vars))
+    else:
+        return list(sympy.linsolve(eqs, solve_vars))
 
 
 def resplit_equations(A, C, b0, b1, solve_vars, sub_dict):
@@ -278,23 +281,26 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
     else:
         # A is nonempty
         x = symbolic_linsolve(A, b0, solve_vars)
-
         if (len(x) != 0):
             x = list(x)[0]
             sol_dict = dict(zip([str(x) for x in solve_vars], x))
-            sol_dict.update(partial_sol)
-            constant_sol = np.all([is_constant(var) for var in x])
-            integral_sol = np.all([var.is_integer for var in x])
+            for k,v in partial_sol.items():
+                if str(k) in sol_dict:
+                    assert not is_integer(v)
+                else:
+                    sol_dict[k] = v
+            constant_sol = np.all([is_constant(var) for var in sol_dict.values()])
+            integral_sol = np.all([var.is_integer for var in sol_dict.values()])
             if constant_sol and not integral_sol:
                 # failure case 0 we get a constant fractional/decimal solution
                 return []
-            invalid_constants = np.all([is_constant(var) and (not var.is_integer) for var in x])
-            if (invalid_constants):
+            invalid_constants = np.any([is_constant(var) and (not var.is_integer) for var in sol_dict.values()])
+            if (invalid_constants and len(solve_vars) > 0):
                 # failure case 1 we get a parametric solution with
                 # fractional/decimal parts
                 return []
             if (constant_sol):
-                return [sol_dict]
+                solutions.append(sol_dict)
             else:
                 assert not constant_sol
                 solve_vars, constant_range = _resort_var_names_by_limits(sol_dict, solve_vars, var_limits)
@@ -310,11 +316,8 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
             return []
     if len(C) > 0:
         assert len(solutions) == 1
-
         A, C, b0, b1, changed = resplit_equations(A, C, b0, b1, solve_vars, solutions[0])
-
         if (changed):
-
             constant_vars = [v for v in solve_vars if is_constant(solutions[0][str(v)])]
             constant_sol = {}
             var_limits_recurse = var_limits.copy()
@@ -328,6 +331,9 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
             return res
     assert len(solutions) == 1
     sol = solutions.pop(0)
+    constant_sol = np.all([is_constant(v) for k,v in sol.items()])
+    if (constant_sol):
+        return [sol]
     vars_left = [v for v in solve_vars if not is_constant(sol[str(v)])]
     enumerate_var = vars_left[0]
     start_f, end_f, step_f = var_limits[enumerate_var]
@@ -348,13 +354,12 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
             solve_vars_recurse.remove(v)
         if (len(solve_vars_recurse) > 0):
             recurse_sols = recursive_solver(A, C, b0, b1, solve_vars_recurse, var_limits_recurse, sol_i)
-            [x.update(sol_i) for x in recurse_sols]
-            [x.update(partial_sol) for x in recurse_sols]
+            #[x.update(sol_i) for x in recurse_sols]
+            #[x.update(partial_sol) for x in recurse_sols]
             solutions += recurse_sols
         else:
             sol_i.update(partial_sol)
             solutions.append(sol_i)
-
     return solutions
 
 
@@ -459,7 +464,6 @@ def template_match(page, offset, abstract_page, abstract_offset, offset_types, s
             # assert len(new_C) + len(new_A) == len(A) + len(C)
             # now arguments are ready for recursive call.
             # results += recursive_solver(new_A, new_C, new_b0, new_b1)
-
     assert abstract_page == page
     assert len(offset) == len(abstract_offset) == len(offset_types)
     vars_for_arg = list(set([z for x in abstract_offset for z in extract_vars(x)]))
@@ -499,6 +503,16 @@ def template_match(page, offset, abstract_page, abstract_offset, offset_types, s
         var_limits_symbols[var] = (start_val, end_val, step_val)
 
     sols = recursive_solver(A, C, b0, b1, vars_for_arg, var_limits, {})
+    if (False):
+        print("A", A)
+        print("b0", b0)
+        print("C", C)
+        print("b1", b1)
+        print("sols", sols)
+        print("abstract offset", abstract_offset)
+    for sol in sols:
+        for k,v in sol.items():
+            assert is_integer(v)
     sols = prune_solutions(sols, var_limits)
     return sols
 
