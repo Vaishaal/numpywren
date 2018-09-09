@@ -28,7 +28,7 @@ def test_qr():
     M = 256
     program = lpcompile(QR)(A,V,T,R,S,M,0)
     assert len(find_starters(program, input_matrices=["I"])) == M
-    assert len(find_terminators(program, output_matrices=["Rs"]) == 129920
+    assert len(find_terminators(program, output_matrices=["Rs"])) == 129920
 
 def test_gemm():
     A = dummy_matrix(num_dims=2)

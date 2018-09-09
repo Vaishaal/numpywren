@@ -56,8 +56,13 @@ def QR(I:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int
             S[j, k, 1, N_tree_full] = qr_leaf(Vs[j, 0, N_tree_full], Ts[j, 0, N_tree_full], I[j,k])
 
     for k in range(1, N):
+        for j in range(0, N, 2):
+            S[j, k, 1, N_tree_full - 1], S[j + 2, k, 1, 0]  = qr_trailing_update(Vs[j, 1, N_tree_full - 1], Ts[j, 1, N_tree_full - 1], S[j, k, 1, N_tree_full], S[j + 2, k, 1, N_tree_full])
+
+
+    for k in range(1, N):
         for level in range(1, N_tree_full):
-            for j in range(0, N, 2**(level)):
+            for j in range(0, N, 2**(level + 1)):
                 S[j, k, 1, N_tree_full - 1 - level], S[j + 2**level, k, 1, 0]  = qr_trailing_update(Vs[j, 1, N_tree_full - 1 - level], Ts[j, 1, N_tree_full - 1 - level], S[j, k, 1, N_tree_full - level], S[j + 2**level, k, 1, N_tree_full - level])
 
     for k in range(1, N):

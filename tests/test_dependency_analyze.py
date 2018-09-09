@@ -69,7 +69,7 @@ def test_qr():
     T = dummy_matrix(num_dims=2)
     R = dummy_matrix(num_dims=2)
     S = dummy_matrix(num_dims=4)
-    program = lpcompile(QR)(A,V,T,R,S,512,0)
+    program = lpcompile(QR)(A,V,T,R,S,4,0)
     t = time.time()
     find_children(program[0], program, j=0)
     e = time.time()
