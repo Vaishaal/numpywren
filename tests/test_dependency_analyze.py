@@ -23,20 +23,11 @@ def verify_program(program):
         scope = r_call_abstract_with_scope.scope.copy()
         children = find_children(program[p_idx], program, **loop_vars)
         for p_idx_child, child_vars in children:
-            #print(child_vars)
-            #print("current_node", current_node)
-            #print("current_child", (p_idx_child, child_vars))
             child_parents = find_parents(program[p_idx_child], program, **child_vars)
-            #print("child_parents", child_parents)
-
             assert current_node in child_parents
         parents = find_parents(program[p_idx], program, **loop_vars)
         for p_idx_parent, parent_vars in parents:
             parent_children = find_children(program[p_idx_parent], program, **parent_vars)
-            #print("current_node", current_node)
-            #print("parent_children", parent_children)
-            #print("current_parent", (p_idx_parent, parent_vars))
-            #print("parents", parents)
             assert current_node in parent_children
 
 def test_simple_linear():
@@ -78,10 +69,26 @@ def test_qr():
     T = dummy_matrix(num_dims=2)
     R = dummy_matrix(num_dims=2)
     S = dummy_matrix(num_dims=4)
-    program = lpcompile(QR)(A,V,T,R,S,4,0)
+    program = lpcompile(QR)(A,V,T,R,S,512,0)
+    t = time.time()
+    find_children(program[0], program, j=0)
+    e = time.time()
+    print(e - t)
+
+    #verify_program(program)
+
+def test_gemm():
+    A = dummy_matrix(num_dims=2)
+    B = dummy_matrix(num_dims=2)
+    M = 4
+    N = 4
+    K = 4
+    Temp = dummy_matrix(num_dims=4)
+    Out = dummy_matrix(num_dims=3)
+    program = lpcompile(GEMM)(A,B,M,N,K,Temp,Out)
     verify_program(program)
 
 
 if __name__ == "__main__":
-    test_cholesky()
+    test_simple_nonlinear()
 

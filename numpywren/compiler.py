@@ -21,6 +21,7 @@ from sympy import Symbol
 from numbers import Number
 import copy
 
+
 def lpcompile(function):
     function_ast = ast.parse(inspect.getsource(function)).body[0]
     logging.debug("Python AST:\n{}\n".format(astor.dump(function_ast)))
@@ -225,10 +226,12 @@ def symbolic_linsolve(A, bs, solve_vars):
     elif (all_constant):
         return []
     else:
+        for i,eq in enumerate(eqs):
+            if (is_constant(eq)):
+                eqs[i] = sympy.Integer(eq)
         return list(sympy.linsolve(eqs, solve_vars))
 
-
-def resplit_equations(A, C, b0, b1, solve_vars, sub_dict):
+def resplit_equations(A, A_funcs, C, C_funcs, b0, b1, solve_vars, sub_dict):
     ''' Split A, C into linear and non linear equations
         affter using sub_dict
     '''
@@ -236,22 +239,27 @@ def resplit_equations(A, C, b0, b1, solve_vars, sub_dict):
     new_C = []
     new_b0 = []
     new_b1 = []
+    new_A_funcs = []
+    new_C_funcs = []
     changed = False
-    for eq, val in zip(A, b0):
-        new_eq = eq.subs(sub_dict)
+    for eq, eq_func, val in zip(A, A_funcs, b0):
+        new_eq = eq_func(**sub_dict)
         new_A.append(new_eq)
+        new_A_funcs.append(eq_func)
         new_b0.append(val)
-    for eq, val in zip(C, b1):
-        new_eq = eq.subs(sub_dict)
+    for eq, eq_func, val in zip(C, C_funcs, b1):
+        new_eq = eq_func(**sub_dict)
         if (is_linear(new_eq, solve_vars)):
             changed = True
             new_A.append(new_eq)
             new_b0.append(val)
+            new_A_funcs.append(eq_func)
         else:
             new_C.append(new_eq)
+            new_C_funcs.append(eq_func)
             new_b1.append(val)
     assert len(new_C) <= len(C)
-    return new_A, new_C, new_b0, new_b1, changed
+    return new_A, new_A_funcs, new_C, new_C_funcs, new_b0, new_b1, changed
 
 def copy_scope(scope):
     new_scope = scope.copy()
@@ -263,7 +271,7 @@ def copy_scope(scope):
 
 
 
-def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
+def recursive_solver(A, A_funcs, C, C_funcs, b0, b1, solve_vars, var_limits, partial_sol):
     ''' Recursively solve set of linear + nonlinear equations
         @param A - is a list of sympy linear equations
         @param C - is a list of sympy nonlinear equations
@@ -316,7 +324,7 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
             return []
     if len(C) > 0:
         assert len(solutions) == 1
-        A, C, b0, b1, changed = resplit_equations(A, C, b0, b1, solve_vars, solutions[0])
+        A, A_funcs, C, C_funcs, b0, b1, changed = resplit_equations(A, A_funcs, C, C_funcs, b0, b1, solve_vars, solutions[0])
         if (changed):
             constant_vars = [v for v in solve_vars if is_constant(solutions[0][str(v)])]
             constant_sol = {}
@@ -326,7 +334,7 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
                 del var_limits_recurse[v]
                 solve_vars_recurse.remove(v)
                 constant_sol[str(v)] = solutions[0][str(v)]
-            res = recursive_solver(A, C, b0, b1, solve_vars_recurse, var_limits_recurse, constant_sol)
+            res = recursive_solver(A, A_funcs, C, C_funcs, b0, b1, solve_vars_recurse, var_limits_recurse, constant_sol)
             [x.update(partial_sol) for x in res]
             return res
     assert len(solutions) == 1
@@ -345,7 +353,7 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
     for i in range(start, end, step):
         sol_i = sol.copy()
         sol_i[str(enumerate_var)] = sympy.Integer(i)
-        A, C, b0, b1, changed  = resplit_equations(A, C, b0, b1, solve_vars, sol_i)
+        A, A_funcs, C, C_funcs, b0, b1, changed  = resplit_equations(A, A_funcs, C, C_funcs, b0, b1, solve_vars, sol_i)
         constant_vars = [v for v in solve_vars if is_constant(sol_i[str(v)])]
         solve_vars_recurse = solve_vars.copy()
         var_limits_recurse = var_limits.copy()
@@ -353,7 +361,7 @@ def recursive_solver(A, C, b0, b1, solve_vars, var_limits, partial_sol):
             del var_limits_recurse[v]
             solve_vars_recurse.remove(v)
         if (len(solve_vars_recurse) > 0):
-            recurse_sols = recursive_solver(A, C, b0, b1, solve_vars_recurse, var_limits_recurse, sol_i)
+            recurse_sols = recursive_solver(A, A_funcs, C, C_funcs, b0, b1, solve_vars_recurse, var_limits_recurse, sol_i)
             #[x.update(sol_i) for x in recurse_sols]
             #[x.update(partial_sol) for x in recurse_sols]
             solutions += recurse_sols
@@ -502,7 +510,9 @@ def template_match(page, offset, abstract_page, abstract_offset, offset_types, s
         var_limits[var] = (start_fn, end_fn, step_fn)
         var_limits_symbols[var] = (start_val, end_val, step_val)
 
-    sols = recursive_solver(A, C, b0, b1, vars_for_arg, var_limits, {})
+    A_funcs = [lambdify(x) for x in A]
+    C_funcs = [lambdify(x) for x in C]
+    sols = recursive_solver(A, A_funcs, C, C_funcs, b0, b1, vars_for_arg, var_limits, {})
     if (False):
         print("A", A)
         print("b0", b0)
