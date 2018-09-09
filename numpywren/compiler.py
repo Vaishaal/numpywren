@@ -305,7 +305,6 @@ def recursive_solver(A, A_funcs, C, C_funcs, b0, b1, solve_vars, var_limits, par
                     assert not is_integer(v)
                 else:
                     sol_dict[k] = v
-
             constant_sol = np.all([is_constant(var) for var in sol_dict.values()])
             integral_sol = np.all([var.is_integer for var in sol_dict.values()])
             if constant_sol and not integral_sol:
@@ -642,6 +641,51 @@ def recursive_range_walk(scope):
         [x.update({const_range_var: i}) for x in vals]
         r_vals += vals
     return r_vals
+
+
+
+def find_starters(program, input_matrices):
+    starters = []
+    for p_idx in program.keys():
+        r_call_abstract_with_scope = program[p_idx]
+        scope = r_call_abstract_with_scope.scope
+        r_call_abstract = r_call_abstract_with_scope.remote_call
+        input_remote_call = True
+        for i, arg in enumerate(r_call_abstract.args):
+            if (not isinstance(arg, IndexExpr)): continue
+            abstract_page, abstract_offset = eval_index_expr(arg, scope, dummify=True)
+            if (arg.matrix_name not in input_matrices):
+                input_remote_call = False
+                break
+        if (input_remote_call):
+            # input call is something that reads *only* from input matrices
+            r_vals = recursive_range_walk(scope)
+            starters += [(p_idx, x) for x in r_vals]
+    return starters
+
+def find_terminators(program, output_matrices):
+    terminators = []
+    for p_idx in program.keys():
+        r_call_abstract_with_scope = program[p_idx]
+        scope = r_call_abstract_with_scope.scope
+        r_call_abstract = r_call_abstract_with_scope.remote_call
+        output_remote_call = False
+        for i, out in enumerate(r_call_abstract.output):
+            if (not isinstance(out, IndexExpr)): continue
+            abstract_page, abstract_offset = eval_index_expr(out, scope, dummify=True)
+            if (out.matrix_name in output_matrices):
+                output_remote_call = True
+                break
+        if (output_remote_call):
+            # input call is something that reads *only* from input matrices
+            r_vals = recursive_range_walk(scope)
+            terminators += [(p_idx, x) for x in r_vals]
+    return terminators
+
+
+
+
+
 
 
 

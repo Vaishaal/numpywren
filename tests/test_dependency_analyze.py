@@ -73,9 +73,7 @@ def test_qr():
     t = time.time()
     find_children(program[0], program, j=0)
     e = time.time()
-    print(e - t)
-
-    #verify_program(program)
+    verify_program(program)
 
 def test_gemm():
     A = dummy_matrix(num_dims=2)
