@@ -148,8 +148,6 @@ class LambdaPackExecutor(object):
                    continue
                 else:
                     raise Exception("Unknown status: {0}".format(node_status))
-                if next_operator is not None:
-                    operator_refs.append(next_operator)
             except fs._base.TimeoutError as e:
                 #self.program.decr_up(1)
                 raise
@@ -271,16 +269,12 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     p_key = "{0}/{1}/{2}".format("lambdapack", program.hash, p_key)
     client = boto3.client('s3', region_name=program.control_plane.region)
     backoff = 1
-    while(True):
-       try:
-         new_loop = asyncio.new_event_loop()
-         res = new_loop.run_until_complete(asyncio.ensure_future(program.begin_write(), loop=new_loop))
-         client.put_object(Bucket=METADATABUCKET, Key=p_key, Body=profile_bytes)
-         break
-       except botocore.exceptions.ClientError:
-         time.sleep(backoff)
-         backoff *= 2
-         pass
+    try:
+      new_loop = asyncio.new_event_loop()
+      res = new_loop.run_until_complete(asyncio.ensure_future(program.begin_write(), loop=new_loop))
+      client.put_object(Bucket=METADATABUCKET, Key=p_key, Body=profile_bytes)
+    except botocore.exceptions.ClientError:
+      pass
     program.decr_up(1)
     print(program.program_status())
     return {"up_time": [lambda_start, lambda_stop],
@@ -343,6 +337,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, pip
             if ((current_time - start_time) > timeout):
                 print("Hit timeout...returning now")
                 shared_state["done_workers"] += 1
+                loop.stop()
                 return
             await asyncio.sleep(0)
             # go from high priority -> low priority

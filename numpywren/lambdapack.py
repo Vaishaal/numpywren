@@ -812,7 +812,7 @@ class LambdaPackProgram(object):
               # redis transaction should be atomic
               tp = fs.ThreadPoolExecutor(1)
               val_future = tp.submit(conditional_increment, self.control_plane.client, child_edge_sum_key, my_child_edge)
-              done, not_done = fs.wait([val_future], timeout=60)
+              done, not_done = fs.wait([val_future], timeout=10)
               if len(done) == 0:
                 raise Exception("Redis Atomic Set and Sum timed out!")
               val = val_future.result()
