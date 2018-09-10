@@ -43,8 +43,6 @@ def lpcompile_for_execution(function, inputs, outputs):
         remote_calls = _f(*args, **kwargs)
         starters = find_starters(remote_calls, inputs)
         num_terminators = len(find_terminators(remote_calls, outputs))
-        print("terminators", find_terminators(remote_calls, outputs))
-        print("program", walk_program(remote_calls))
         return CompiledLambdaPackProgram(remote_calls, starters, num_terminators, inputs, outputs)
     return f
 
