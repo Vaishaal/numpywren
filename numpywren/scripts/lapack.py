@@ -67,7 +67,7 @@ def export_function(function, full_name, num_shards, num_threads, blas):
     else:
         subprocess.check_output(f"cd /tmp/; /tmp/condaruntime/bin/f2py -c /tmp/lapack/SRC/{function_full} -m {function} -L/tmp/condaruntime/lib/ -lmkl_rt", shell=True)
     out_name = f"{function}.cpython-36m-x86_64-linux-gnu.so"
-    print("bucket", bucket)
+    print("bucketpotato", bucket)
     tp = fs.ThreadPoolExecutor(num_threads)
     futures = []
     with open(f"/tmp/{out_name}", 'rb') as f:

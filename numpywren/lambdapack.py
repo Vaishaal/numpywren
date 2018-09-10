@@ -519,10 +519,19 @@ class LambdaPackProgram(object):
       put(self.control_plane.client, self._node_key(expr_id, var_values), status.value)
       return status
 
-    def set_profiling_info(self, inst_block, expr_idx, var_values):
+    def dump_profiling_info(self, inst_block, expr_idx, var_values):
         byte_string = dill.dumps(inst_block)
-        client = boto3.client('s3', region_name=self.control_plane.region)
-        client.put_object(Bucket=self.bucket, Key="lambdapack/{0}/{1}_{2}".format(self.hash, expr_idx, var_values), Body=byte_string)
+        return byte_string
+
+    async def begin_write(self, loop=None):
+      if (loop == None):
+        loop = asyncio.get_event_loop()
+      key = "{0}.write".format(self.hash)
+
+    async def begin_read(self, loop=None):
+      if (loop == None):
+        loop = asyncio.get_event_loop()
+      key = "{0}.read".format(self.hash)
 
     def post_op(self, expr_idx, var_values, ret_code, inst_block, tb=None):
         # need clean post op logic to handle
@@ -540,8 +549,8 @@ class LambdaPackProgram(object):
           node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
-          if (node_status == NS.FINISHED):
-            return
+          #if (node_status == NS.FINISHED):
+            # return
           self.set_node_status(expr_idx, var_values, NS.POST_OP)
           if (ret_code == PS.EXCEPTION and tb != None):
             self.handle_exception(" EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
@@ -589,7 +598,7 @@ class LambdaPackProgram(object):
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
           self.incr_progress()
-          self.set_profiling_info(inst_block, expr_idx, var_values)
+          profiling_info = self.dump_profiling_info(inst_block, expr_idx, var_values)
           e = time.time()
           print(f"Post op for {expr_idx, var_values}, took {e - t} seconds")
           terminator = self.program.is_terminator(expr_idx)
@@ -605,10 +614,11 @@ class LambdaPackProgram(object):
             print("Num finished terminators", val,  "num terminators total", self.program.num_terminators)
             if (val == self.program.num_terminators):
               self.return_success()
-          return next_operator
+          return next_operator, profiling_info
         except Exception as e:
             tb = traceback.format_exc()
             traceback.print_exc()
+            raise
             self.handle_exception("POST OP EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
 
     def start(self):
