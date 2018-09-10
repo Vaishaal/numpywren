@@ -41,59 +41,53 @@ def QR(I:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int
     # starting code
     N_tree_full = ceiling(log(N)/log(2))
     for j in range(0, N):
-        Vs[j, 0, N_tree_full], Ts[j, 0, N_tree_full], Rs[j, 0, N_tree_full] = qr_factor(I[0,j])
-
-    for j in range(0, N, 2):
-        Vs[j, 0, N_tree_full - 1], Ts[j,0, N_tree_full - 1], Rs[j, 0, N_tree_full - 1] = qr_factor(Rs[j, 0, N_tree_full], Rs[j + 2, 0, N_tree_full])
-
-    for level in range(1, N_tree_full):
+        #0
+        Vs[j, 0, N_tree_full], Ts[j, 0, N_tree_full], Rs[j, 0, N_tree_full] = qr_factor(I[j, 0])
+    for level in range(0, N_tree_full):
         for j in range(0, N, 2**(level + 1)):
+            #1
             Vs[j, 0, N_tree_full - level - 1], Ts[j, 0, N_tree_full - level - 1], Rs[j, 0, N_tree_full - level - 1] = qr_factor(Rs[j, 0, N_tree_full - level], Rs[j + 2**(level), 0, N_tree_full - level])
 
     # flat trailing matrix update
     for j in range(0, N):
         for k in range(1, N):
+            #2
             S[j, k, 1, N_tree_full] = qr_leaf(Vs[j, 0, N_tree_full], Ts[j, 0, N_tree_full], I[j,k])
 
-    for k in range(1, N):
-        for j in range(0, N, 2):
-            S[j, k, 1, N_tree_full - 1], S[j + 2, k, 1, 0]  = qr_trailing_update(Vs[j, 1, N_tree_full - 1], Ts[j, 1, N_tree_full - 1], S[j, k, 1, N_tree_full], S[j + 2, k, 1, N_tree_full])
-
 
     for k in range(1, N):
-        for level in range(1, N_tree_full):
+        for level in range(0, N_tree_full):
             for j in range(0, N, 2**(level + 1)):
-                S[j, k, 1, N_tree_full - 1 - level], S[j + 2**level, k, 1, 0]  = qr_trailing_update(Vs[j, 1, N_tree_full - 1 - level], Ts[j, 1, N_tree_full - 1 - level], S[j, k, 1, N_tree_full - level], S[j + 2**level, k, 1, N_tree_full - level])
+                #3
+                S[j, k, 1, N_tree_full - 1 - level], S[j + 2**level, k, 1, 0]  = qr_trailing_update(Vs[j, 0, N_tree_full - 1 - level], Ts[j, 0, N_tree_full - 1 - level], S[j, k, 1, N_tree_full - level], S[j + 2**level, k, 1, N_tree_full - level])
 
     for k in range(1, N):
+        #4
         Rs[0, k, 0]  = identity(S[0, k, 1, 0])
-
     # rest
     for i in range(1, N):
         N_tree = ceiling(log(N - i)/log(2))
         for j in range(i, N):
+            #5
             Vs[j, i, N_tree], Ts[j, i, N_tree], Rs[j, i, N_tree] = qr_factor(S[j, i, i, 0])
-
-        for j in range(0, N, 2):
-            Vs[j, i, N_tree - 1], Ts[j, i, N_tree - 1], Rs[j, i, N_tree - 1] = qr_factor(Rs[j, i, N_tree], Rs[j + 2, i, N_tree])
-
-        for level in range(1, N_tree):
-            for j in range(0, N, 2**(level + 1)):
+        for level in range(0, N_tree):
+            for j in range(i, N, 2**(level + 1)):
+                #6
                 Vs[j, i, N_tree - level - 1], Ts[j, i, N_tree - level - 1], Rs[j, i, N_tree - level - 1] = qr_factor(Rs[j, i, N_tree - level], Rs[j + 2**(level), i, N_tree - level])
         # flat trailing matrix update
         for j in range(i, N):
             for k in range(i+1, N):
+                #7
                 S[j, k, i+1, N_tree] = qr_leaf(Vs[j, i, N_tree], Ts[j, i, N_tree], S[j, k, i, 0])
 
         for k in range(i+1, N):
-            for j in range(0, N, 2):
-                S[j, k, i+1, N_tree - 1], S[j + 2, k, i+1, 0]  = qr_trailing_update(Vs[j, i, N_tree - 1], Ts[j, i, N_tree - 1], S[j, k, i+1, N_tree], S[j + 2, k, i +1, N_tree])
-
-            for level in range(1, N_tree):
-                for j in range(0, N, 2**(level + 1)):
+            for level in range(0, N_tree):
+                for j in range(i, N, 2**(level + 1)):
+                    #8
                     S[j, k, i+1, N_tree - 1 - level], S[j + 2**level, k, i+1, 0]  = qr_trailing_update(Vs[j, i, N_tree - 1 - level], Ts[j, i, N_tree - 1 - level], S[j, k, i+1, N_tree - level], S[j + 2**level, k, i +1, N_tree - level])
 
         for k in range(i+1, N):
+            #9
             Rs[i, k, 0]  = identity(S[i, k, i+1, 0])
 
 def CHOLESKY(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):

@@ -254,6 +254,7 @@ class RemoteRead(RemoteInstruction):
               while (True):
                 try:
                   self.result = await asyncio.wait_for(self.matrix.get_block_async(loop, *self.bidxs), self.MAX_READ_TIME)
+                  print("read shape", self.result.shape)
                   break
                 except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError):
                   await asyncio.sleep(backoff)
@@ -306,6 +307,7 @@ class RemoteWrite(RemoteInstruction):
             #print(f"Writing to {self.matrix} at {self.bidxs}")
             while (True):
               try:
+                print("Writing to ", self.bidxs)
                 self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_loc[self.data_idx], loop, *self.bidxs), self.MAX_WRITE_TIME)
                 break
               except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError) as e:
