@@ -205,7 +205,7 @@ def test_qr():
 
 def test_qr_lambda():
     N = 16
-    shard_size = 4
+    shard_size = 8
     shard_sizes = (shard_size, shard_size)
     X = np.random.randn(N, N)
     X_sharded = BigMatrix("QR_input_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
@@ -238,10 +238,11 @@ def test_qr_lambda():
 
 
 if __name__ == "__main__":
+    #test_cholesky()
     #test_tsqr()
     #test_qr()
     #test_cholesky_lambda()
-    #test_tsqr_lambda()
+    test_tsqr_lambda()
     #test_gemm_lambda()
     #test_qr_lambda()
     pass

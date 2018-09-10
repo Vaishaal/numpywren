@@ -1,6 +1,7 @@
 import os
 import sys
 import random
+import fcntl
 
 
 NUM_SO_SHARDS = 100
@@ -18,6 +19,8 @@ def add_matrices(*args, **kwargs):
 
 def get_shared_so(so_name):
     out_str = f"/tmp/{so_name}.{SO_TAIL}"
+    lock = open("/tmp/so_lock", "a")
+    fcntl.lockf(lock, fcntl.LOCK_EX)
     if (os.path.exists(out_str)):
         return
     shard = random.randint(0,NUM_SO_SHARDS)
@@ -29,8 +32,10 @@ def get_shared_so(so_name):
     if (not os.path.isfile(f"/tmp/{so_name}")):
         with open(out_str, "wb+") as f:
             client = boto3.client('s3')
-            bstream = client.get_object(Bucket="top500test", Key=f"lapack/{so_name}.{SO_TAIL}_{shard_str}")["Body"].read()
+            bstream = client.get_object(Bucket="numpywrenpublic", Key=f"lapack/{so_name}.{SO_TAIL}_{shard_str}")["Body"].read()
             f.write(bstream)
+    fcntl.lockf(lock, fcntl.LOCK_UN)
+    lock.close()
 
 
 def banded_to_bidiagonal(x):
@@ -106,6 +111,14 @@ def qr_factor(*blocks, **kwargs):
     print("="*20)
     return v,t,r
 
+def _qr_flops(*blocks):
+    ins = np.vstack(blocks)
+    m = ins.shape[0]
+    n = ins.shape[1]
+    return 2*m*n*n - (2*n**3)/3
+
+qr_factor.flops = _qr_flops
+
 def lq_factor(*blocks, **kwargs):
     ins = np.vstack(blocks)
     v,t,r = fast_qr(ins.T)
@@ -118,6 +131,16 @@ def qr_leaf(V, T, S0, *args, **kwargs):
     print("QR LEAF OUTPUT", val)
     return val
 
+def _qr_leaf_flops(V, T, S0):
+    c0 = V.shape[0] * S0.shape[0] * S0.shape[1]
+    c1 = T.shape[0] * V.shape[0] * S0.shape[1]
+    c2 = V.shape[0] * T.shape[0] * T.shape[1]
+    return c0 + c1 + c2
+
+qr_leaf.flops = _qr_leaf_flops
+
+
+
 
 def lq_leaf(V, T, S0, *args, **kwargs):
     # S(I - VTV)
@@ -129,7 +152,7 @@ def identity(X, *args, **kwargs):
 def trsm_sub(L, S, x):
     return scipy.linalg.solve_triangular(L, x - S)
 
-def qr_trailing_update(V, T, S0, S1=None, *args, **kwargs):
+def qr_trailing_update(V, T, S0, S1, *args, **kwargs):
     if (S1 is None):
         return qr_leaf(V, T, S0), np.zeros(S0.shape)
     V = V[-S0.shape[0]:]
@@ -137,6 +160,15 @@ def qr_trailing_update(V, T, S0, S1=None, *args, **kwargs):
     S01 = S0 - W
     S11 = S1 - V.dot(W)
     return S01, S11
+
+def _qr_trailing_flops(V, T, S0, S1):
+    M, N = V.shape
+    c0 = M * S1.shape[0] * S1.shape[1]
+    c1 = T.shape[0]*T.shape[1]*S0.shape[1]
+    return 2*c1 + c0 + T.shape[0]*T.shape[1]
+
+qr_trailing_update.flops = _qr_trailing_flops
+
 
 def lq_trailing_update(V, T, S0, S1=None, *args, **kwargs):
     if (S1 is None):
@@ -152,8 +184,21 @@ def lq_trailing_update(V, T, S0, S1=None, *args, **kwargs):
 def syrk(s, x, y, *args, **kwargs):
     return s - x.dot(y.T)
 
+def _syrk_flops(s, x, y):
+    m = x.shape[0]
+    n = x.shape[1]
+    z = y.shape[1]
+    return 2*m*n*z + m*z
+
+syrk.flops  = _syrk_flops
+
 def chol(x, *args, **kwargs):
     return np.linalg.cholesky(x)
+
+def _chol_flops(x):
+    return (x.shape[0]**3)/3
+
+chol.flops = _chol_flops
 
 def mul(x, y, *args, **kwargs):
     return x * y
@@ -168,9 +213,23 @@ def gemm(A, B, *args, **kwargs):
         B = B.T
     return A.dot(B)
 
+def _gemm_flops(A,B):
+    m,n = A.shape
+    k = B.shape[1]
+    return 2*m*n*k
+
+gemm.flops = _gemm_flops
+
 
 def trsm(x, y, lower=False, right=True, *args, **kwargs):
     return scipy.linalg.blas.dtrsm(1.0, x.T, y, lower=lower, side=int(right))
+
+def _trsm_flops(x, y):
+    if (len(y.shape) == 0):
+        return x.shape[0]*x.shape[1]
+    else:
+        return x.shape[0]*x.shape[1]*y.shape[1]
+
 
 if __name__ == "__main__":
     x = np.random.randn(4,4)

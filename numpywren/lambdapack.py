@@ -382,8 +382,16 @@ class RemoteCall(RemoteInstruction):
 
 
     def get_flops(self):
+      pyarg_list = []
+      for arg in self.argv_instr:
+        if (isinstance(arg, RemoteRead)):
+          pyarg_list.append(arg.result)
+        elif (isinstance(arg, float)):
+          pyarg_list.append(arg)
       if getattr(self.compute, "flops", None) is not None:
-        return self.compute.flops(*argv_instr)
+        f_count = self.compute.flops(*pyarg_list)
+        print("FLOPS", f_count)
+        return f_count
       else:
         return 0
 

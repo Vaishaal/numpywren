@@ -54,7 +54,8 @@ def download_lapack(force):
 @click.option('--blas', is_flag=True)
 def export_function(function, full_name, num_shards, num_threads, blas):
     config = npw.config.default()
-    bucket = config['s3']['bucket']
+    #bucket = config['s3']['bucket']
+    bucket = "numpywrenpublic"
     client = boto3.client('s3')
     if (not full_name):
         function_full = function + ".f"

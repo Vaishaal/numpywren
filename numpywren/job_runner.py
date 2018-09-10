@@ -117,7 +117,6 @@ class LambdaPackExecutor(object):
                         self.program.incr_read(read_size)
                         self.program.incr_write(write_size)
                         sys.stdout.flush()
-
                         instr.run = True
                         instr.cache = None
                         instr.executor = None
