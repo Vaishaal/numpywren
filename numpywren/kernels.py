@@ -182,6 +182,8 @@ def lq_trailing_update(V, T, S0, S1=None, *args, **kwargs):
 
 
 def syrk(s, x, y, *args, **kwargs):
+    if (np.allclose(x, 0) or np.allclose(y, 0)):
+        return s
     return s - x.dot(y.T)
 
 def _syrk_flops(s, x, y):
@@ -222,6 +224,11 @@ gemm.flops = _gemm_flops
 
 
 def trsm(x, y, lower=False, right=True, *args, **kwargs):
+    if np.allclose(y, 0):
+        print("==="*10)
+        print("RETURNING ZEROS")
+        print("==="*10)
+        return np.zeros((x.shape[1], y.shape[0]))
     return scipy.linalg.blas.dtrsm(1.0, x.T, y, lower=lower, side=int(right))
 
 def _trsm_flops(x, y):

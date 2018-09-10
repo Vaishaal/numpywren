@@ -292,9 +292,7 @@ class RemoteWrite(RemoteInstruction):
         self.write_size = np.product(self.matrix.shard_sizes)*np.dtype(self.matrix.dtype).itemsize
 
     #@profile
-    async def __call__(self, prev=None):
-        if (prev != None):
-          await prev
+    async def __call__(self, skip_empty=False):
         t = time.time()
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
@@ -304,11 +302,18 @@ class RemoteWrite(RemoteInstruction):
               # write to the cache
               self.cache[cache_key] = self.data_loc[self.data_idx]
             backoff = 0.2
+            sparse_write = False
             #print(f"Writing to {self.matrix} at {self.bidxs}")
             while (True):
               try:
                 print("Writing to ", self.bidxs)
-                self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_loc[self.data_idx], loop, *self.bidxs), self.MAX_WRITE_TIME)
+                all_zero = np.allclose(self.data_loc[self.data_idx], 0)
+                if (all_zero and skip_empty):
+                  print(f"Skipping sparse write to {self.bidxs}")
+                  sparse_write = True
+                  pass
+                else:
+                  self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_loc[self.data_idx], loop, *self.bidxs), self.MAX_WRITE_TIME)
                 break
               except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError) as e:
                   await asyncio.sleep(backoff)
@@ -471,11 +476,12 @@ class LambdaPackProgram(object):
        on stateless computing substrates
        Maintains global state information
     '''
-    def __init__(self, program, config, num_priorities=1, eager=False):
+    def __init__(self, program, config, num_priorities=1, eager=False, block_sparse=False):
         self.config = config
         self.config = config
         self.bucket = matrix.DEFAULT_BUCKET
         self.program = program
+        self.block_sparse = block_sparse
         self.max_priority = num_priorities - 1
         self.eager = eager
         cpid = control_plane.get_control_plane_id(config=config)

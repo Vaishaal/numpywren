@@ -93,7 +93,6 @@ class LambdaPackExecutor(object):
                self.program.handle_exception("EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
                raise
 
-
             if (len(instrs) != len(set(instrs))):
                 raise Exception("Duplicate instruction in instruction stream")
             try:
@@ -108,8 +107,8 @@ class LambdaPackExecutor(object):
                                      " REF: {0}, time: {1}, pid: {2}".format((expr_idx, var_values), time.time(), os.getpid()))
                             raise Exception(e_str)
                         instr.start_time = time.time()
-                        if (isinstance(instr, lp.RemoteReturn)):
-                           res = await instr(self.program.control_plane.client, self.program.hash)
+                        if (isinstance(instr, lp.RemoteWrite)):
+                           res = await instr(self.program.block_sparse)
                         else:
                            res = await instr()
                         instr.end_time = time.time()

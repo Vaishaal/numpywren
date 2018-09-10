@@ -14,7 +14,8 @@ import time
 
 
 def cholesky(X, truncate=0):
-    S = BigMatrix("Cholesky.Intermediate({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), bucket=X.bucket, write_header=True)
+    S = BigMatrix("Cholesky.Intermediate({0})".format(X.key), shape=(X.num_blocks(1)+1, X.shape[0], X.shape[0]), shard_sizes=(1, X.shard_sizes[0], X.shard_sizes[0]), bucket=X.bucket, write_header=True, parent_fn=constant_zeros)
+    S.free()
     O = BigMatrix("Cholesky({0})".format(X.key), shape=(X.shape[0], X.shape[0]), shard_sizes=(X.shard_sizes[0], X.shard_sizes[0]), write_header=True, parent_fn=constant_zeros)
     t = time.time()
     p0= lpcompile_for_execution(CHOLESKY, inputs=["I"], outputs=["O"])
