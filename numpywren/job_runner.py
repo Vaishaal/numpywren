@@ -81,6 +81,7 @@ class LambdaPackExecutor(object):
                node_status = self.program.get_node_status(expr_idx, var_values)
                inst_block = self.program.program.eval_expr(expr_idx, var_values)
                inst_block.start_time = time.time()
+               print(f"Running JOB={(expr_idx, var_values)}")
                instrs = inst_block.instrs
                next_operator = None
             except:

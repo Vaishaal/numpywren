@@ -10,7 +10,7 @@ import boto3
 import numpy as np
 import scipy.linalg
 
-def add(*args, **kwargs):
+def add_matrices(*args, **kwargs):
     out = np.zeros(args[0].shape)
     for a in args:
         out += a

@@ -237,7 +237,8 @@ class RemoteRead(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         t = time.time()
-        print("reading...", self.bidxs)
+        print("TRYING TO READ ...", self.bidxs)
+        print("===========")
         if (self.result is None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
             if (self.cache != None and cache_key in self.cache):
@@ -249,11 +250,10 @@ class RemoteRead(RemoteInstruction):
             else:
               t = time.time()
               backoff = 0.2
-              #print(f"Reading from {self.matrix} at {self.bidxs}")
+              print(f"Reading from {self.matrix} at {self.bidxs}")
               while (True):
                 try:
                   self.result = await asyncio.wait_for(self.matrix.get_block_async(loop, *self.bidxs), self.MAX_READ_TIME)
-                  print("Read ", self.result)
                   break
                 except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError):
                   await asyncio.sleep(backoff)
@@ -519,6 +519,7 @@ class LambdaPackProgram(object):
         try:
           post_op_start = time.time()
           children = self.program.find_children(expr_idx, var_values)
+          print("children", children)
           node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
@@ -541,6 +542,7 @@ class LambdaPackProgram(object):
               val = val_future.result()
               print(child[1])
               parents = self.program.find_parents(child[0], child[1])
+              print("child parents", parents)
               num_child_parents = len(parents)
               if ((val == num_child_parents) and self.get_node_status(*child) != NS.FINISHED):
                 self.set_node_status(*child, NS.READY)

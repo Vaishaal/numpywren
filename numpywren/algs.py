@@ -112,7 +112,7 @@ def CHOLESKY(O:BigMatrix, I:BigMatrix, S:BigMatrix,  N:int, truncate:int):
                 S[i+1,j,k] = syrk(S[i,j,k], O[j,i], O[k,i])
 
 def GEMM(A:BigMatrix, B:BigMatrix, M:int, N:int, K:int, Temp:BigMatrix, Out:BigMatrix):
-    tree_depth = ceiling(log(K)/log(2))
+    tree_depth = ceiling(log(K)/log(4))
     for i in range(0, M):
         for j in range(0, N):
             for k in range(0, K):
@@ -121,9 +121,12 @@ def GEMM(A:BigMatrix, B:BigMatrix, M:int, N:int, K:int, Temp:BigMatrix, Out:BigM
     for i in range(0, M):
         for j in range(0, N):
             for level in range(0, tree_depth):
-                for k in range(0,K,2**(level+1)):
-                    Temp[i, j, k, level] = add(Temp[i, j, k, level], Temp[i, j, k + 2**(level), level])
-            Out[i, j] = identity(Temp[i, j, 0, tree_depth - 1])
+                for k in range(0,K,4**(level+1)):
+                    Temp[i, j, k, level+1] = add_matrices(Temp[i, j, k, level], Temp[i, j, k + 4**(level), level], Temp[i, j, k + 2 * 4**(level), level], Temp[i, j, k + 3 * 4**(level), level])
+
+    for  i in range(0, M):
+        for j in range(0, N):
+            Out[i, j] = identity(Temp[i, j, 0, tree_depth])
 
 
 
