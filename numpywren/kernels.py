@@ -130,18 +130,12 @@ def trsm_sub(L, S, x):
     return scipy.linalg.solve_triangular(L, x - S)
 
 def qr_trailing_update(V, T, S0, S1=None, *args, **kwargs):
-    print("="*10)
-    print("QR TRAILING IN ", S0, S1)
-    print("V", V)
-    print("T", T)
     if (S1 is None):
         return qr_leaf(V, T, S0), np.zeros(S0.shape)
     V = V[-S0.shape[0]:]
     W = T.T @ (S0 + V.T @ S1)
     S01 = S0 - W
     S11 = S1 - V.dot(W)
-    print("QR TRAILING OUT", S01, S11)
-    print("="*10)
     return S01, S11
 
 def lq_trailing_update(V, T, S0, S1=None, *args, **kwargs):

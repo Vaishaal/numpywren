@@ -323,6 +323,7 @@ class RemoteWrite(RemoteInstruction):
 
     def clear(self):
         self.result = None
+        self.data_loc = None
 
     def __str__(self):
         bidxs_str = ""
@@ -373,6 +374,12 @@ class RemoteCall(RemoteInstruction):
         e = time.time()
         print(f"Compute {self.compute} took {e - t} seconds")
         return res
+
+    def clear(self):
+      self.results = [None for x in self.results]
+      self.argv_instr = [None for x in self.argv_instr]
+
+
 
     def get_flops(self):
       if getattr(self.compute, "flops", None) is not None:
