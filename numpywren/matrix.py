@@ -286,6 +286,8 @@ class BigMatrix(object):
         if (loop == None):
             loop = asyncio.get_event_loop()
         if (len(block_idx) != len(self.shape)):
+            print("block_idx", block_idx)
+            print("shape", self.shape)
             raise Exception("Get block query does not match shape {0} vs {1}".format(block_idx, self.shape))
         key = self.__shard_idx_to_key__(block_idx)
         exists = await key_exists_async(self.bucket, key, loop)

@@ -37,6 +37,43 @@ def lpcompile(function):
         return backend_generator.remote_calls
     return f
 
+def lpcompile_for_execution(function, inputs, outputs):
+    _f = lpcompile(function)
+    def f(*args, **kwargs):
+        remote_calls = _f(*args, **kwargs)
+        starters = find_starters(remote_calls, inputs)
+        num_terminators = len(find_terminators(remote_calls, outputs))
+        return CompiledLambdaPackProgram(remote_calls, starters, num_terminators, inputs, outputs)
+    return f
+
+class CompiledLambdaPackProgram(object):
+    def __init__(self, remote_calls, starters, num_terminators, inputs, outputs):
+        self.remote_calls = remote_calls
+        self.starters = starters
+        self.num_terminators = num_terminators
+        self.inputs = inputs
+        self.outputs = outputs
+
+    def find_children(self, i, value_map):
+        return find_children(self.remote_calls, i, value_map)
+
+    def find_parents(self, i, value_map):
+        return find_parents(self.remote_calls, i, value_map)
+
+    def is_terminator(self, i):
+        return writes_to(self.remote_calls, i, self.outputs)
+
+    def eval_expr(self, i, value_map):
+        r_call = self.remote_calls[i]
+        ib = eval_remote_call(r_call, value_map)
+        return ib
+
+
+
+
+
+
+
 def scope_lookup(var, scope):
     if (var in scope):
         return scope[var]
@@ -97,11 +134,11 @@ def eval_expr(expr, scope, dummify=False):
         raise Exception(f"unsupported expr type {type(expr)}")
 
 
-def eval_remote_call(r_call_with_scope, **kwargs):
+def eval_remote_call(r_call_with_scope, value_map):
     r_call = r_call_with_scope.remote_call
     compute = r_call.compute
     scope = copy_scope(r_call_with_scope.scope)
-    scope.update(kwargs)
+    scope.update(value_map)
     pyarg_list = []
     pyarg_symbols = []
     for i, _arg in enumerate(r_call.args):
@@ -127,7 +164,7 @@ def eval_remote_call(r_call_with_scope, **kwargs):
     for i, output in enumerate(r_call.output):
         assert isinstance(output, IndexExpr)
         matrix, indices = eval_index_expr(output, scope)
-        op = lp.RemoteWrite(i + num_args, matrix, compute_instr.results[i], i, *indices)
+        op = lp.RemoteWrite(i + num_args, matrix, compute_instr.results, i, *indices)
         outputs.append(op)
     read_instrs =  [x for x in pyarg_list if isinstance(x, lp.RemoteRead)]
     write_instrs = outputs
@@ -538,11 +575,12 @@ def template_match(page, offset, abstract_page, abstract_offset, offset_types, s
 
 
 
-def find_parents(r_call, program, **kwargs):
+def find_parents(program, idx, value_map):
     ''' Given a specific r_call and arguments to evaluate it completely
         return the program locations that writes to the input of r_call
     '''
-    ib = eval_remote_call(r_call, **kwargs)
+    r_call = program[idx]
+    ib = eval_remote_call(r_call, value_map)
     parents = []
     for inst in ib.instrs:
         if (not isinstance(inst, lp.RemoteRead)): continue
@@ -560,15 +598,17 @@ def find_parents(r_call, program, **kwargs):
                 offset_types = [x.type for x in output.indices]
                 local_parents = template_match(page, offset, abstract_page, abstract_offset, offset_types, scope)
                 if (len(local_parents) > 1):
+                    # No single IndexExpr should have multiple parents
                     raise Exception("Invalid Program Graph, LambdaPackPrograms must be SSA")
                 parents += [(p_idx, x) for x in local_parents]
     return integerify_solutions(utils.remove_duplicates(parents))
 
-def find_children(r_call, program, **kwargs):
+def find_children(program, idx, value_map):
     ''' Given a specific r_call and arguments to evaluate it completely
         return all other program locations that read from the output of r_call
     '''
-    ib = eval_remote_call(r_call, **kwargs)
+    r_call = program[idx]
+    ib = eval_remote_call(r_call, value_map)
     children = []
     for inst in ib.instrs:
         if (not isinstance(inst, lp.RemoteWrite)): continue
@@ -650,14 +690,7 @@ def find_starters(program, input_matrices):
         r_call_abstract_with_scope = program[p_idx]
         scope = r_call_abstract_with_scope.scope
         r_call_abstract = r_call_abstract_with_scope.remote_call
-        input_remote_call = True
-        for i, arg in enumerate(r_call_abstract.args):
-            if (not isinstance(arg, IndexExpr)): continue
-            abstract_page, abstract_offset = eval_index_expr(arg, scope, dummify=True)
-            if (arg.matrix_name not in input_matrices):
-                input_remote_call = False
-                break
-        if (input_remote_call):
+        if (only_reads_from(program, p_idx, input_matrices)):
             # input call is something that reads *only* from input matrices
             r_vals = recursive_range_walk(scope)
             starters += [(p_idx, x) for x in r_vals]
@@ -665,22 +698,50 @@ def find_starters(program, input_matrices):
 
 def find_terminators(program, output_matrices):
     terminators = []
+    output_matrices = set(output_matrices)
     for p_idx in program.keys():
         r_call_abstract_with_scope = program[p_idx]
         scope = r_call_abstract_with_scope.scope
         r_call_abstract = r_call_abstract_with_scope.remote_call
-        output_remote_call = False
-        for i, out in enumerate(r_call_abstract.output):
-            if (not isinstance(out, IndexExpr)): continue
-            abstract_page, abstract_offset = eval_index_expr(out, scope, dummify=True)
-            if (out.matrix_name in output_matrices):
-                output_remote_call = True
-                break
-        if (output_remote_call):
+        if (writes_to(program, p_idx, output_matrices)):
             # input call is something that reads *only* from input matrices
             r_vals = recursive_range_walk(scope)
             terminators += [(p_idx, x) for x in r_vals]
     return terminators
+
+def writes_to(program, idx, refs):
+    '''
+    Returns true if program[idx] writes to any
+    of the symbols in refs
+    '''
+    r_call_abstract_with_scope = program[idx]
+    scope = r_call_abstract_with_scope.scope
+    r_call_abstract = r_call_abstract_with_scope.remote_call
+    return_val = False
+    for i, out in enumerate(r_call_abstract.output):
+        if (not isinstance(out, IndexExpr)): continue
+        abstract_page, abstract_offset = eval_index_expr(out, scope, dummify=True)
+        if (out.matrix_name in refs):
+            return_val = True
+            break
+    return return_val
+
+def only_reads_from(program, idx, refs):
+    '''
+    Returns true if program[idx] only takes inputs
+    from the symbols in refs
+    '''
+    r_call_abstract_with_scope = program[idx]
+    scope = r_call_abstract_with_scope.scope
+    r_call_abstract = r_call_abstract_with_scope.remote_call
+    return_val = True
+    for i, arg in enumerate(r_call_abstract.args):
+        if (not isinstance(arg, IndexExpr)): continue
+        abstract_page, abstract_offset = eval_index_expr(arg, scope, dummify=True)
+        if (arg.matrix_name not in refs):
+            return_val = False
+            break
+    return return_val
 
 
 

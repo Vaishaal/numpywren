@@ -36,6 +36,7 @@ class CholeskyTest(unittest.TestCase):
         program.start()
         executor = fs.ProcessPoolExecutor(1)
         print("starting program")
+        program.start()
         future = executor.submit(job_runner.lambdapack_run, program)
         program.wait()
         program.free()

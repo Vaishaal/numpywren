@@ -34,7 +34,7 @@ def get_shared_so(so_name):
 
 
 def banded_to_bidiagonal(x):
-    get_shared_so("dgbbrd.cpython-36m-x86_64-linux-gnu.so")
+    get_shared_so("dgbbrd.so")
     sys.path.insert(0, "/tmp/")
     import dgbbrd
     shard_size = x[0].shape[0]

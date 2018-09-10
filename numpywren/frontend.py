@@ -128,7 +128,7 @@ class BigMatrixType(LambdaPackType):
     pass
 
 RangeVar = namedtuple("RangeVar", ["var", "start", "end", "step"])
-RemoteCallWithContext = namedtuple("RemoteCall", ["remote_call", "scope"])
+RemoteCallAbstractWithContext = namedtuple("RemoteCallAbstractWithContext", ["remote_call", "scope"])
 
 ## Exprs ##
 class BinOp(ast.AST, Expression):
@@ -182,10 +182,7 @@ class Return(ast.AST):
 class FuncDef(ast.AST):
     _fields = ['name', 'args', 'body', 'arg_types']
 
-class BigMatrixBlock(ast.AST):
-    _fields = ['name', 'bigm', 'bidx', 'type']
-
-class RemoteCall(ast.AST):
+class RemoteCallAbstract(ast.AST):
     _fields = ['compute', 'output', 'args', 'kwargs', 'type']
 
 class Reduction(ast.AST):
@@ -346,7 +343,7 @@ class LambdaPackParse(ast.NodeVisitor):
                     node_func_obj = eval(func.name)
                     if (callable(node_func_obj)):
                         args = [self.visit(x) for x in node.args]
-                        return RemoteCall(node_func_obj, None, args, None, None)
+                        return RemoteCallAbstract(node_func_obj, None, args, None, None)
                 except NameError:
                     pass
         raise Exception("unsupported function {0}".format(func.name))
@@ -369,9 +366,9 @@ class LambdaPackParse(ast.NodeVisitor):
                     raise exceptions.LambdaPackParsingException("multiple variable declarations forbidden")
                 self.decl_dict[lhs.name] = rhs
             return assign
-        elif isinstance(rhs, RemoteCall):
+        elif isinstance(rhs, RemoteCallAbstract):
             lhs = self.visit(node.targets[0])
-            return RemoteCall(rhs.compute, lhs, rhs.args, rhs.kwargs, rhs.type)
+            return RemoteCallAbstract(rhs.compute, lhs, rhs.args, rhs.kwargs, rhs.type)
         else:
             raise NotImplementedError("Only assignments of expressions and remote calls supported")
 
@@ -686,7 +683,7 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         out_type = unify([low_type, high_type, step_type])
         return Slice(low, high, step, out_type)
 
-    def visit_RemoteCall(self, node):
+    def visit_RemoteCallAbstract(self, node):
         args = [self.visit(x) for x in node.args]
         if (isinstance(node.output, list)):
             outs = [self.visit(x) for x in node.output]
@@ -698,7 +695,7 @@ class LambdaPackTypeCheck(ast.NodeVisitor):
         else:
             kwargs = None
 
-        return RemoteCall(node.compute, outs, args, kwargs, type)
+        return RemoteCallAbstract(node.compute, outs, args, kwargs, type)
 
     def visit_Mfunc(self, node):
         vals = self.visit(node.e)
@@ -778,10 +775,10 @@ class BackendGenerate(ast.NodeVisitor):
         body = [self.visit(x) for x in node.body]
         assert(len(node.args) == len(self.arg_values))
 
-    def visit_RemoteCall(self, node):
+    def visit_RemoteCallAbstract(self, node):
         reads = [self.visit(x) for x in node.args]
         writes = [self.visit(x) for x in node.output]
-        self.remote_calls[self.max_calls] = RemoteCallWithContext(node, self.current_scope)
+        self.remote_calls[self.max_calls] = RemoteCallAbstractWithContext(node, self.current_scope)
         self.max_calls += 1
         return node
 

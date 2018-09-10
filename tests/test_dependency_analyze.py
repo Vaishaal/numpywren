@@ -21,13 +21,13 @@ def verify_program(program):
         r_call_abstract_with_scope = program[p_idx]
         current_node = (p_idx, loop_vars)
         scope = r_call_abstract_with_scope.scope.copy()
-        children = find_children(program[p_idx], program, **loop_vars)
+        children = find_children(program, p_idx, loop_vars)
         for p_idx_child, child_vars in children:
-            child_parents = find_parents(program[p_idx_child], program, **child_vars)
+            child_parents = find_parents(program, p_idx_child, child_vars)
             assert current_node in child_parents
-        parents = find_parents(program[p_idx], program, **loop_vars)
+        parents = find_parents(program, p_idx, loop_vars)
         for p_idx_parent, parent_vars in parents:
-            parent_children = find_children(program[p_idx_parent], program, **parent_vars)
+            parent_children = find_children(program, p_idx_parent, parent_vars)
             assert current_node in parent_children
 
 def test_simple_linear():
@@ -70,9 +70,6 @@ def test_qr():
     R = dummy_matrix(num_dims=2)
     S = dummy_matrix(num_dims=4)
     program = lpcompile(QR)(A,V,T,R,S,4,0)
-    t = time.time()
-    find_children(program[0], program, j=0)
-    e = time.time()
     verify_program(program)
 
 def test_gemm():

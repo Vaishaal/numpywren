@@ -237,6 +237,7 @@ class RemoteRead(RemoteInstruction):
         loop = asyncio.get_event_loop()
         self.start_time = time.time()
         t = time.time()
+        print("reading...", self.bidxs)
         if (self.result is None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
             if (self.cache != None and cache_key in self.cache):
@@ -252,6 +253,7 @@ class RemoteRead(RemoteInstruction):
               while (True):
                 try:
                   self.result = await asyncio.wait_for(self.matrix.get_block_async(loop, *self.bidxs), self.MAX_READ_TIME)
+                  print("Read ", self.result)
                   break
                 except (asyncio.TimeoutError, aiohttp.client_exceptions.ClientPayloadError, fs._base.CancelledError, botocore.exceptions.ClientError):
                   await asyncio.sleep(backoff)
@@ -516,7 +518,7 @@ class LambdaPackProgram(object):
         t = time.time()
         try:
           post_op_start = time.time()
-          children = self.program.get_children(expr_idx, var_values)
+          children = self.program.find_children(expr_idx, var_values)
           node_status = self.get_node_status(expr_idx, var_values)
           # if we had 2 racing tasks and one finished no need to go through rigamarole
           # of re-enqueeuing children
@@ -528,7 +530,6 @@ class LambdaPackProgram(object):
           ready_children = []
           #print(f"ALL CHILDREN {children}")
           for child in children:
-              operator_expr = self.program.get_expr(child[0])
               my_child_edge = self._edge_key(expr_idx, var_values, *child)
               child_edge_sum_key = self._node_edge_sum_key(*child)
               # redis transaction should be atomic
@@ -538,13 +539,9 @@ class LambdaPackProgram(object):
               if len(done) == 0:
                 raise Exception("Redis Atomic Set and Sum timed out!")
               val = val_future.result()
-              if (operator_expr == self.program.return_expr):
-                num_child_parents = self.program.num_terminators
-              else:
-                parents = self.program.get_parents(child[0], child[1])
-                #print(f"child {child}, parents {parents}, me {(expr_idx, var_values)}")
-                num_child_parents = len(parents)
-
+              print(child[1])
+              parents = self.program.find_parents(child[0], child[1])
+              num_child_parents = len(parents)
               if ((val == num_child_parents) and self.get_node_status(*child) != NS.FINISHED):
                 self.set_node_status(*child, NS.READY)
                 ready_children.append(child)
@@ -576,6 +573,19 @@ class LambdaPackProgram(object):
           self.set_profiling_info(inst_block, expr_idx, var_values)
           e = time.time()
           print(f"Post op for {expr_idx, var_values}, took {e - t} seconds")
+          terminator = self.program.is_terminator(expr_idx)
+          if (terminator):
+            return_key = self.hash + "_return"
+            return_edge = self._edge_key(expr_idx, var_values, return_key, {})
+            tp = fs.ThreadPoolExecutor(1)
+            val_future = tp.submit(conditional_increment, self.control_plane.client, return_key, return_edge)
+            done, not_done = fs.wait([val_future], timeout=60)
+            if len(done) == 0:
+              raise Exception("Redis Atomic Set and Sum timed out!")
+            val = val_future.result()
+            print("Num finished terminators", val,  "num terminators total", self.program.num_terminators)
+            if (val == self.program.num_terminators):
+              self.return_success()
           return next_operator
         except Exception as e:
             tb = traceback.format_exc()
@@ -592,11 +602,18 @@ class LambdaPackProgram(object):
           queue.send_message(MessageBody=json.dumps([starter[0], {str(key): val for key, val in starter[1].items()}]))
         return 0
 
+
     def stop(self):
         client = boto3.client('s3')
         client.put_object(Key="lambdapack/" + self.hash + "/EXCEPTION.DRIVER.CANCELLED", Bucket=self.bucket, Body="cancelled by driver")
         e = PS.EXCEPTION.value
         put(self.control_plane.client, self.hash, e)
+
+    def return_success(self):
+      print("RETURNING....")
+      put(self.control_plane.client, self.hash, PS.SUCCESS.value)
+
+
 
     def handle_exception(self, error, tb, expr_idx, var_values):
         client = boto3.client('s3')

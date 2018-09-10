@@ -29,9 +29,9 @@ def SimpleTestNonLinear(A:BigMatrix, B: BigMatrix, N:int):
 
 def TSQR(A:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, N:int):
     for j in range(0, N):
-        Vs[0, j], Ts[0, j], Rs[0, j] = qr_factor(A[j])
+        Vs[0, j], Ts[0, j], Rs[0, j] = qr_factor(A[j, 0])
 
-    for level in range(1, ceiling(log(N)/log(2))):
+    for level in range(0, ceiling(log(N)/log(2))):
         for j in range(0, N, 2**(level + 1)):
             Vs[level+1, j], Ts[level+1, j], Rs[level+1, j] = qr_factor(Rs[level, j], Rs[level, j + 2**(level)])
 

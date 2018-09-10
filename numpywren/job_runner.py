@@ -77,13 +77,9 @@ class LambdaPackExecutor(object):
         operator_refs_to_ret = []
         for expr_idx, var_values in operator_refs:
             try:
-               expr = self.program.program.get_expr(expr_idx)
-               logger.debug("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
-               #print("STARTING INSTRUCTION {0}, {1}, {2}".format(expr_idx, var_values,  expr))
                t = time.time()
                node_status = self.program.get_node_status(expr_idx, var_values)
-               operator_expr = self.program.program.get_expr(expr_idx)
-               inst_block = operator_expr.eval_operator(var_values, hash=self.program.hash)
+               inst_block = self.program.program.eval_expr(expr_idx, var_values)
                inst_block.start_time = time.time()
                instrs = inst_block.instrs
                next_operator = None
@@ -192,7 +188,7 @@ async def check_failure(loop, program, failure_key):
       await asyncio.sleep(5)
 
 
-def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
+def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=0, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
     program.incr_up(1)
     lambda_start = time.time()
     loop = asyncio.new_event_loop()
