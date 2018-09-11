@@ -113,6 +113,7 @@ class LambdaPackExecutor(object):
                            res = await instr()
                         instr.end_time = time.time()
                         flops = int(instr.get_flops())
+                        instr.flops = flops
                         read_size = instr.read_size
                         write_size = instr.write_size
                         self.program.incr_flops(flops)
@@ -195,12 +196,12 @@ async def check_failure(loop, program, failure_key):
       await asyncio.sleep(5)
 
 
-def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=0, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
+def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=0, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
     program.incr_up(1)
     lambda_start = time.time()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    computer = fs.ThreadPoolExecutor(1)
+    computer = fs.ThreadPoolExecutor(compute_threads)
     if (cache_size > 0):
         cache = LRUCache(max_items=cache_size)
     else:
@@ -227,12 +228,12 @@ def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"])}
 
-def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15):
+def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
     program.incr_up(1)
     lambda_start = time.time()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    computer = fs.ThreadPoolExecutor(1)
+    computer = fs.ThreadPoolExecutor(compute_threads)
     program.control_plane.cache()
     tot_messages = []
     if (cache_size > 0):

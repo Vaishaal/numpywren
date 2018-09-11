@@ -35,6 +35,89 @@ def TSQR(A:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, N:int):
         for j in range(0, N, 2**(level + 1)):
             Vs[level+1, j], Ts[level+1, j], Rs[level+1, j] = qr_factor(Rs[level, j], Rs[level, j + 2**(level)])
 
+def BDFAC(I:BigMatrix, VsL:BigMatrix, TsL:BigMatrix, Rs:BigMatrix, SL:BigMatrix, VsR:BigMatrix, TsR:BigMatrix, SR:BigMatrix, Ls:BigMatrix, N:int, truncate:int):
+    b_fac = 2
+    # starting code
+    N_tree_full = ceiling(log(N)/log(2))
+    for j in range(0, N):
+        #0
+        VsL[j, 0, N_tree_full], TsL[j, 0, N_tree_full], Rs[j, 0, N_tree_full] = qr_factor(I[j, 0])
+    for level in range(0, N_tree_full):
+        for j in range(0, N, 2**(level + 1)):
+            #1
+            VsL[j, 0, N_tree_full - level - 1], TsL[j, 0, N_tree_full - level - 1], Rs[j, 0, N_tree_full - level - 1] = qr_factor(Rs[j, 0, N_tree_full - level], Rs[j + 2**(level), 0, N_tree_full - level])
+
+    # flat trailing matrix update
+    for j in range(0, N):
+        for k in range(1, N):
+            #2
+            SL[j, k, 1, N_tree_full] = qr_leaf(VsL[j, 0, N_tree_full], TsL[j, 0, N_tree_full], I[j,k])
+
+
+    for k in range(1, N):
+        for level in range(0, N_tree_full):
+            for j in range(0, N, 2**(level + 1)):
+                #3
+                SL[j, k, 1, N_tree_full - 1 - level], SL[j + 2**level, k, 1, 0]  = qr_trailing_update(Vs[j, 0, N_tree_full - 1 - level], Ts[j, 0, N_tree_full - 1 - level], SL[j, k, 1, N_tree_full - level], SL[j + 2**level, k, 1, N_tree_full - level])
+
+    for k in range(1, N):
+        #4
+        RsL[0, k, 0]  = identity(SL[0, k, 1, 0])
+
+    # end of first QR
+    # start first LQ
+
+    for j in range(1, N):
+        #0
+        VsR[0, j,  N_tree_full], TsR[0, j, N_tree_full], Ls[j, 0, N_tree_full] = lq_factor(SL[0, j])
+
+    for level in range(0, N_tree_full):
+        for j in range(0, N, 2**(level + 1)):
+            #1
+            VsR[0, j, N_tree_full - level - 1], TsR[0, j, N_tree_full - level - 1], Ls[0, j, N_tree_full - level - 1] = lq_factor(Ls[0, j, N_tree_full - level], Ls[0, j + 2**(level), N_tree_full - level])
+
+    # flat trailing matrix update
+    for j in range(1, N):
+        for k in range(1, N):
+            #2
+            SR[k, j, 1, N_tree_full] = lq_leaf(VsR[0, j, N_tree_full], TsR[0, j, N_tree_full], SL[k, j])
+
+
+    for k in range(1, N):
+        for level in range(0, N_tree_full):
+            for j in range(0, N, 2**(level + 1)):
+                #3
+                SL[j, k, 1, N_tree_full - 1 - level], SL[j + 2**level, k, 1, 0]  = qr_trailing_update(Vs[j, 0, N_tree_full - 1 - level], Ts[j, 0, N_tree_full - 1 - level], SL[j, k, 1, N_tree_full - level], SL[j + 2**level, k, 1, N_tree_full - level])
+
+    for k in range(1, N):
+        #4
+        Rsi[0, k, 0]  = identity(SL[0, k, 1, 0])
+    # rest
+    for i in range(1, N):
+        N_tree = ceiling(log(N - i)/log(2))
+        for j in range(i, N):
+            #5
+            Vs[j, i, N_tree], Ts[j, i, N_tree], Rs[j, i, N_tree] = qr_factor(S[j, i, i, 0])
+        for level in range(0, N_tree):
+            for j in range(i, N, 2**(level + 1)):
+                #6
+                Vs[j, i, N_tree - level - 1], Ts[j, i, N_tree - level - 1], Rs[j, i, N_tree - level - 1] = qr_factor(Rs[j, i, N_tree - level], Rs[j + 2**(level), i, N_tree - level])
+        # flat trailing matrix update
+        for j in range(i, N):
+            for k in range(i+1, N):
+                #7
+                S[j, k, i+1, N_tree] = qr_leaf(Vs[j, i, N_tree], Ts[j, i, N_tree], S[j, k, i, 0])
+
+        for k in range(i+1, N):
+            for level in range(0, N_tree):
+                for j in range(i, N, 2**(level + 1)):
+                    #8
+                    S[j, k, i+1, N_tree - 1 - level], S[j + 2**level, k, i+1, 0]  = qr_trailing_update(Vs[j, i, N_tree - 1 - level], Ts[j, i, N_tree - 1 - level], S[j, k, i+1, N_tree - level], S[j + 2**level, k, i +1, N_tree - level])
+
+        for k in range(i+1, N):
+            #9
+            Rs[i, k, 0]  = identity(S[i, k, i+1, 0])
+
 
 def QR(I:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int, truncate:int):
     b_fac = 2
