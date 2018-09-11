@@ -34,27 +34,29 @@ def get_shared_so(so_name):
 
 
 def banded_to_bidiagonal(x):
-    get_shared_so("dgbbrd.cpython-36m-x86_64-linux-gnu.so")
-    sys.path.insert(0, "/tmp/")
-    import dgbbrd
     shard_size = x[0].shape[0]
-    x_size = shard_size * (len(x) - 1) + x[-1].shape[0]
-    band_size = shard_size - 1
-    num_packed_rows = 2 * band_size + 1
+    x_size = shard_size * ((len(x) + 1) // 2 - 1) + x[-1].shape[0]
+    band_size = shard_size
+    num_packed_rows = band_size + 1
     packed_x = np.zeros([num_packed_rows, x_size])
-    import time
-    start = time.time()
     for i, block in enumerate(x):
         for j in range(block.shape[0]):
-            packed_x[num_packed_rows - j - shard_size:num_packed_rows - j, i * shard_size + j] = block[:, j]
-        print(i, time.time() - start)
-    diag_out = np.zeros([x_size])
-    offdiag_out = np.zeros([x_size - 1])
-    work = np.zeros([2 * x_size])
-    print("A")
-    start = time.time()
-    dgbbrd.dgbbrd(vect="N", m=x_size, n=x_size, ncc=0, kl=band_size, ku=band_size, ab=packed_x, ldab=num_packed_rows, d=diag_out, e=offdiag_out, q=None, ldq=1, pt=None, ldpt=1, c=None, ldc=1, work=work, info=0)
-    print(time.time() - start)
+            block_col = shard_size * ((i + 1) // 2)
+            if i % 2 == 0:
+                packed_x[num_packed_rows - j - 1:, block_col + j] = block[0:j + 1, j]
+            else:
+                packed_x[:num_packed_rows - j - 1, block_col + j] = block[j:, j]
+    with open("/tmp/bidiag_input", "wb") as f:
+        f.write(np.array(x_size).astype(np.int32).tostring(order='F'))
+        f.write(np.array(shard_size).astype(np.int32).tostring(order='F'))
+        f.write(packed_x.tostring(order='F'))
+    os.system("/tmp/banded_to_bidiag")
+    with open("/tmp/bidiag_output", "rb") as f:
+        matrix_out = np.fromstring(f.read(), dtype=np.float64)
+        diag_out = matrix_out[:x_size]
+        offdiag_out = matrix_out[x_size:-1]
+        print(matrix_out)
+        print(matrix_out.shape)
     return diag_out, offdiag_out
 
 def slow_qr(x):
