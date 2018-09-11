@@ -58,10 +58,10 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     logger.addHandler(ch)
     logger.info("Logging to {0}".format(log_file))
     if standalone:
-        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_ACCESS_KEY_ID"], "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
+        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"].strip(), "AWS_SECRET_ACCESS_KEY": os.environ["AWS_ACCESS_KEY_ID"].strip(), "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
         config = wc.default()
         config['runtime']['s3_bucket'] = 'numpywrenpublic'
-        key = "pywren.runtime/pywren_runtime-3.6-numpywren-standalone.tar.gz"
+        key = "pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz"
         config['runtime']['s3_key'] = key
         pwex = pywren.standalone_executor(config=config)
     else:
@@ -73,14 +73,14 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         print(config)
         pwex = pywren.default_executor(config=config)
 
+    X = np.random.randn(problem_size, 1)
+    Y = np.random.randn(1, 4096)
+    shard_sizes = [shard_size, 1]
     if (not matrix_exists):
-        X = np.random.randn(problem_size, 1)
-        Y = np.random.randn(1, shard_size)
-        shard_sizes = [shard_size, 1]
         X_sharded = BigMatrix("tsqr_test_x_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi")
         shard_matrix(X_sharded, X)
         shard_sizes = [1, shard_size]
-        Y_sharded = BigMatrix("tsqr_test_y_{0}_{1}".format(problem_size, shard_size), shape=Y.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi")
+        Y_sharded = BigMatrix("tsqr_test_y_{0}_{1}".format(1, 4096), shape=Y.shape, shard_sizes=(1, 4096), write_header=True, autosqueeze=False, bucket="numpywrennsdi")
         shard_matrix(Y_sharded, Y)
         print("Generating input matrix...")
         t = time.time()
@@ -92,7 +92,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
 
     else:
         X_sharded = BigMatrix("tsqr_test_x_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi")
-        Y_sharded = BigMatrix("tsqr_test_y_{0}_{1}".format(problem_size, shard_size), shape=Y.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi")
+        Y_sharded = BigMatrix("tsqr_test_y_{0}_{1}".format(1, 4096), shape=Y.shape, shard_sizes=(1, 4096), write_header=True, autosqueeze=False, bucket="numpywrennsdi")
         key_name = binops.generate_key_name_binop(X_sharded, Y_sharded, "gemm")
         A = BigMatrix(key_name,bucket="numpywrennsdi")
     A.lambdav = problem_size*10
