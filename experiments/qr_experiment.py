@@ -36,7 +36,7 @@ def parse_int(x):
 
 ''' NSDI qr effectiveness experiments '''
 
-def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify, matrix_exists, read_limit, write_limit):
+def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify, matrix_exists, read_limit, write_limit, compute_threads_per_worker):
     # set up logging
     invoke_executor = fs.ThreadPoolExecutor(1)
     logger = logging.getLogger()
@@ -58,10 +58,10 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     logger.addHandler(ch)
     logger.info("Logging to {0}".format(log_file))
     if standalone:
-        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_ACCESS_KEY_ID"], "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
+        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"].strip() , "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"].strip(), "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
         config = wc.default()
         config['runtime']['s3_bucket'] = 'numpywrenpublic'
-        key = "pywren.runtime/pywren_runtime-3.6-numpywren-standalone.tar.gz"
+        key = "pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz"
         config['runtime']['s3_key'] = key
         pwex = pywren.standalone_executor(config=config)
     else:
@@ -162,7 +162,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     t = time.time()
     logger.info("Starting with {0} cores".format(start_cores))
     invoker = fs.ThreadPoolExecutor(1)
-    all_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=extra_env))
+    all_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(start_cores), extra_env=extra_env))
     #print(all_future_futures.result())
     all_futures = [all_future_futures]
     # print([f.result() for f in all_futures])
@@ -287,7 +287,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
                 if (time_since_launch > launch_granularity and up_workers < np.ceil(waiting*0.5/pipeline_width) and up_workers < max_cores):
                     cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
-                    new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=extra_env))
+                    new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(cores_to_launch), extra_env=extra_env))
                     last_run_time = time.time()
                     # check if we OOM-erred
                    # [x.result() for x in all_futures]
@@ -296,7 +296,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
                 if (time_since_launch > (0.85*timeout)):
                     cores_to_launch = max_cores
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
-                    new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(cores_to_launch), extra_env=extra_env))
+                    new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(cores_to_launch), extra_env=extra_env))
                     last_run_time = time.time()
                     # check if we OOM-erred
                    # [x.result() for x in all_futures]
@@ -349,8 +349,9 @@ if __name__ == "__main__":
     parser.add_argument('--autoscale_policy', type=str, default="constant_timeout")
     parser.add_argument('--log_granularity', type=int, default=5)
     parser.add_argument('--launch_granularity', type=int, default=60)
+    parser.add_argument('--compute_threads_per_worker', type=int, default=1)
     parser.add_argument('--trial', type=int, default=0)
-    parser.add_argument('--num_priorities', type=int, default=1) 
+    parser.add_argument('--num_priorities', type=int, default=1)
     parser.add_argument('--lru', action='store_true')
     parser.add_argument('--eager', action='store_true')
     parser.add_argument('--standalone', action='store_true')
@@ -358,7 +359,7 @@ if __name__ == "__main__":
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--matrix_exists', action='store_true')
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.num_priorities, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify, args.matrix_exists, args.write_limit, args.read_limit)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.num_priorities, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify, args.matrix_exists, args.write_limit, args.read_limit, args.compute_threads_per_worker)
 
 
 
