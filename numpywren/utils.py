@@ -1,3 +1,8 @@
+import boto3
+
+BACKOFF = 1
+MAX_TRIES = 100
+
 def convert_to_slice(l):
     if l is None:
         return slice(None, None, None)
@@ -54,3 +59,18 @@ def chunk(l, n):
     if n == 0: return []
     for i in range(0, len(l), n):
         yield l[i:i + n]
+
+def get_object_with_backoff(s3_client, bucket, key, max_tries=MAX_TRIES, backoff=BACKOFF, **extra_get_args):
+    num_tries = 0
+    while (num_tries < max_tries):
+        try:
+            obj_bytes = s3_client.get_object(Bucket=bucket, Key=key, **extra_get_args)["Body"].read()
+            break
+        except:
+            time.sleep(backoff)
+            backoff *= 2
+            num_tries += 1
+            obj_bytes = None
+    if (obj_bytes is None):
+        raise Exception("S3 Download Failed")
+    return obj_bytes 
