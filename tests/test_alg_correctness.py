@@ -240,10 +240,10 @@ def test_qr_lambda():
 if __name__ == "__main__":
     #test_cholesky()
     #test_tsqr()
-    #test_qr()
+    test_qr()
     #test_cholesky_lambda()
     #test_tsqr_lambda()
     #test_gemm_lambda()
-    test_qr_lambda()
+    #test_qr_lambda()
     pass
 

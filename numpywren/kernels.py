@@ -2,14 +2,16 @@ import os
 import sys
 import random
 import fcntl
+import boto3
+import numpy as np
+import scipy.linalg
+from . import utils
+
 
 
 NUM_SO_SHARDS = 100
 SO_TAIL = f"cpython-36m-x86_64-linux-gnu.so"
 
-import boto3
-import numpy as np
-import scipy.linalg
 
 def add_matrices(*args, **kwargs):
     out = np.zeros(args[0].shape)
@@ -29,11 +31,10 @@ def get_shared_so(so_name):
     else:
         shard_str = ""
     print(f"Fetching lapack/{so_name}.{SO_TAIL}_{shard_str}")
-    if (not os.path.isfile(f"/tmp/{so_name}")):
-        with open(out_str, "wb+") as f:
-            client = boto3.client('s3')
-            bstream = client.get_object(Bucket="numpywrenpublic", Key=f"lapack/{so_name}.{SO_TAIL}_{shard_str}")["Body"].read()
-            f.write(bstream)
+    client = boto3.client('s3')
+    bstream = utils.get_object_with_backoff(client, bucket="numpywrenpublic", key=f"lapack/{so_name}.{SO_TAIL}_{shard_str}")
+    with open(out_str, "wb+") as f:
+        f.write(bstream)
     fcntl.lockf(lock, fcntl.LOCK_UN)
     lock.close()
 
@@ -135,7 +136,7 @@ def _qr_leaf_flops(V, T, S0):
     c0 = V.shape[0] * S0.shape[0] * S0.shape[1]
     c1 = T.shape[0] * V.shape[0] * S0.shape[1]
     c2 = V.shape[0] * T.shape[0] * T.shape[1]
-    return c0 + c1 + c2
+    return c0 + c1 + c2 + S0.shape[0]*S0.shape[1]
 
 qr_leaf.flops = _qr_leaf_flops
 
