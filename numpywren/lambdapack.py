@@ -603,6 +603,10 @@ class LambdaPackProgram(object):
           inst_block.clear()
           post_op_end = time.time()
           post_op_time = post_op_end - post_op_start
+          inst_block.post_op_start = post_op_start
+          inst_block.post_op_end = post_op_end
+          inst_block.expr_idx = expr_idx
+          inst_block.var_values = var_values
           self.incr_progress()
           profiling_info = self.dump_profiling_info(inst_block, expr_idx, var_values)
           e = time.time()

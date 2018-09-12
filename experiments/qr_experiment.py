@@ -162,10 +162,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     t = time.time()
     logger.info("Starting with {0} cores".format(start_cores))
     invoker = fs.ThreadPoolExecutor(1)
-    all_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(start_cores), extra_env=extra_env))
-    #print(all_future_futures.result())
-    all_futures = [all_future_futures]
-    # print([f.result() for f in all_futures])
+    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(start_cores), extra_env=extra_env)
     start_time = time.time()
     last_run_time = start_time
     print(program.program_status())
@@ -287,7 +284,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
                 if (time_since_launch > launch_granularity and up_workers < np.ceil(waiting*0.5/pipeline_width) and up_workers < max_cores):
                     cores_to_launch = int(min(np.ceil(waiting/pipeline_width) - up_workers, max_cores - up_workers))
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
-                    new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(cores_to_launch), extra_env=extra_env))
+                    new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(cores_to_launch), extra_env=extra_env)
                     last_run_time = time.time()
                     # check if we OOM-erred
                    # [x.result() for x in all_futures]
@@ -296,11 +293,9 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
                 if (time_since_launch > (0.85*timeout)):
                     cores_to_launch = max_cores
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
-                    new_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(cores_to_launch), extra_env=extra_env))
+                    new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(cores_to_launch), extra_env=extra_env)
                     last_run_time = time.time()
-                    # check if we OOM-erred
-                   # [x.result() for x in all_futures]
-                    all_futures.append(new_future_futures)
+                    all_futures.append(new_futures)
             else:
                 raise Exception("unknown autoscale policy")
             exp["time_steps"] += 1

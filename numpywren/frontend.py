@@ -363,7 +363,8 @@ class LambdaPackParse(ast.NodeVisitor):
                 del self.decl_dict[lhs.name]
             else:
                 if (lhs.name) in self.decl_dict:
-                    raise exceptions.LambdaPackParsingException("multiple variable declarations forbidden")
+                    print(f"multiple variable declarations forbidden , {lhs.name}={rhs}")
+                    raise exceptions.LambdaPackParsingException(f"multiple variable declarations forbidden")
                 self.decl_dict[lhs.name] = rhs
             return assign
         elif isinstance(rhs, RemoteCallAbstract):

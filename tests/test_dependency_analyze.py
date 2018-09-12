@@ -83,7 +83,22 @@ def test_gemm():
     program = lpcompile(GEMM)(A,B,M,N,K,Temp,Out)
     verify_program(program)
 
+def test_bdfac():
+    A = dummy_matrix(num_dims=2)
+    V = dummy_matrix(num_dims=3)
+    T = dummy_matrix(num_dims=3)
+    R = dummy_matrix(num_dims=4)
+    S = dummy_matrix(num_dims=4)
+    VR = dummy_matrix(num_dims=3)
+    TR = dummy_matrix(num_dims=3)
+    L = dummy_matrix(num_dims=4)
+    SR = dummy_matrix(num_dims=4)
+    program = lpcompile(BDFAC)(A,V,T,R,S,VR,TR,SR,L,2,0)
+    #print(find_parents(program, 13, {'j': 2, 'k': 2, 'i': 1}))
+    verify_program(program)
+
+
 
 if __name__ == "__main__":
-    test_qr()
+    test_bdfac()
 
