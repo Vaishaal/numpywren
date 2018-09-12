@@ -114,17 +114,23 @@ def eval_expr(expr, scope, dummify=False):
     elif (isinstance_fast(expr, BinOp)):
         left = eval_expr(expr.left, scope, dummify=dummify)
         right = eval_expr(expr.right, scope, dummify=dummify)
-        return op_table[expr.op](left, right)
+        val = op_table[expr.op](left, right)
+        if (val == sympy.zoo): raise Exception("Infinite value in eval BinOp")
+        return val
     elif (isinstance_fast(expr, CmpOp)):
         left = eval_expr(expr.left, scope, dummify=dummify)
         right = eval_expr(expr.right, scope, dummify=dummify)
         return op_table[expr.op](left, right)
     elif (isinstance_fast(expr, UnOp)):
         e = eval_expr(expr.e, scope, dummify=dummify)
-        return op_table[expr.op](e)
+        val = op_table[expr.op](e)
+        if (val == sympy.zoo): raise Exception("Infinite value in eval UnOp")
+        return val
     elif (isinstance_fast(expr, Mfunc)):
         e = eval_expr(expr.e, scope, dummify=dummify)
-        return op_table[expr.op](e)
+        val = op_table[expr.op](e)
+        if (val == sympy.zoo): raise Exception("Infinite value in eval Mfunc")
+        return val
     elif (isinstance_fast(expr, RangeVar)):
         if (not dummify):
             raise Exception(f"Range variable {expr} cannot be evaluated directly, please specify a specific variable  or pass in dummify=True")
