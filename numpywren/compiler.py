@@ -334,6 +334,8 @@ def recursive_solver(A, A_funcs, C, C_funcs, b0, b1, solve_vars, var_limits, par
     else:
         # A is nonempty
         x = symbolic_linsolve(A, b0, solve_vars)
+        level = sympy.Symbol('level')
+        j = sympy.Symbol('j')
         if (len(x) != 0):
             x = list(x)[0]
             sol_dict = dict(zip([str(x) for x in solve_vars], x))
@@ -382,6 +384,12 @@ def recursive_solver(A, A_funcs, C, C_funcs, b0, b1, solve_vars, var_limits, par
             res = recursive_solver(A, A_funcs, C, C_funcs, b0, b1, solve_vars_recurse, var_limits_recurse, constant_sol)
             [x.update(partial_sol) for x in res]
             return res
+        else:
+            for v in solve_vars:
+               solutions[0][str(v)] = v
+            solve_vars, constant_range = _resort_var_names_by_limits(solutions[0], solve_vars, var_limits)
+            assert constant_range
+
     assert len(solutions) == 1
     sol = solutions.pop(0)
     constant_sol = np.all([is_constant(v) for k,v in sol.items()])
@@ -448,7 +456,7 @@ def integerify_solutions(solutions):
 
 def lambdify(expr):
     symbols = extract_vars(expr)
-    _f = sympy.lambdify(symbols, expr, ("math", "sympy"), dummify=False)
+    _f = sympy.lambdify(symbols, expr, ("sympy"), dummify=False)
     def f(**kwargs):
         if (len(kwargs) < len(symbols)):
             raise Exception("Insufficient Args")
