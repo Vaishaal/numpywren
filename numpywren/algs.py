@@ -35,88 +35,126 @@ def TSQR(A:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, N:int):
         for j in range(0, N, 2**(level + 1)):
             Vs[level+1, j], Ts[level+1, j], Rs[level+1, j] = qr_factor(Rs[level, j], Rs[level, j + 2**(level)])
 
-def BDFAC(I:BigMatrix, VsL:BigMatrix, TsL:BigMatrix, Rs:BigMatrix, SL:BigMatrix, VsR:BigMatrix, TsR:BigMatrix, SR:BigMatrix, Ls:BigMatrix, N:int, truncate:int):
+def BDFAC(I:BigMatrix, V_QR:BigMatrix, T_QR:BigMatrix, R_QR:BigMatrix, S_QR:BigMatrix, V_LQ:BigMatrix, T_LQ:BigMatrix, S_LQ:BigMatrix, L_LQ:BigMatrix, N:int, truncate:int):
     b_fac = 2
-    # starting code
-    N_tree_full = ceiling(log(N)/log(2))
+    # I is the input matrix of dimension N * N.
+    #
+    # Dimensions for T_QR, V_QR, V_LQ, T_LQ, R_QR and L_LQ are N * N_tree_full * N
+    # Each array contains all outputs of all column and row updates at each recursion level.
+    # The first index represents which compute stage we are at i.e. how many times we've updated
+    # the trailing matrix and done a block column/row update.
+    # The second index represents how deep in the TSQR/LU recursion we are.
+    # The third index represents the index of the block under consideration at the current recursion
+    # for QR it is the block row and for LQ it is the block column.
+    # 
+    # Dimensions for S_QR and S_LQ are N * N_tree_full * N * N
+    # S_QR and S_LQ are the intermediate representations of our matrix after each low rank update.
+    # S_QR contains all matrices after a QR low rank update, while S_LQ contains all matrices after an LQ
+    # low rank update.
+    # The first index represents which compute stage we are at i.e. how many times we've updated
+    # the trailing matrix and done a block column/row update.
+    # The second index represent the trailing update happening after the recursion depth of the given index.
+    # The third and fourth indices are the indices of the matrix at that stage.
+
+    # We take the convention that i is the computation stage, j is an index into rows,
+    # k is an index into columns, level is a recursion depth.
+
+    #
+    # Step 0: QR column update + trailing matrix updates.
+    # 
+
+    # TODO: add an output matrix right now the output is sharded across S_QR and S_LU.
+    N_tree_QR = ceiling(log(N)/log(2))
+    # Do the first recursion step of the column update + corresponding trailing matrix update.
     for j in range(0, N):
-        #0
-        VsL[j, 0, N_tree_full], TsL[j, 0, N_tree_full], Rs[j, 0, N_tree_full] = qr_factor(I[j, 0])
-    for level in range(0, N_tree_full):
-        for j in range(0, N, 2**(level + 1)):
-            #1
-            VsL[j, 0, N_tree_full - level - 1], TsL[j, 0, N_tree_full - level - 1], Rs[j, 0, N_tree_full - level - 1] = qr_factor(Rs[j, 0, N_tree_full - level], Rs[j + 2**(level), 0, N_tree_full - level])
-
-    # flat trailing matrix update
-    for j in range(0, N):
+        # Perform the QR, reading from the input matrix.
+        V_QR[0, 0, j], T_QR[0, 0, j], R_QR[0, 0, j] = qr_factor(I[j, 0])
+        # Update the trailing row.
         for k in range(1, N):
-            #2
-            SL[j, k, 1, N_tree_full] = qr_leaf(VsL[j, 0, N_tree_full], TsL[j, 0, N_tree_full], I[j,k])
+            S_QR[0, 0, j, k] = qr_leaf(V_QR[0, 0, j], T_QR[0, 0, j], I[j, k])
 
+    # Now run the rest of the recursion for the column + trailing matrix updates.
+    for level in range(1, N_tree_QR + 1):
+        for j in range(0, N, 2 ** level):
+            # Perform the QR, reading from the previous recursion depth.
+            V_QR[0, level, j], T_QR[0, level, j], R_QR[0, level, j] = qr_factor(R_QR[0, level - 1, j], R_QR[0, level - 1, j + 2 ** (level - 1)])
+            # Update the trailing row.
+            for k in range(1, N):
+                S_QR[0, level, j, k], S_QR[0, N_tree_QR, j + 2 ** (level - 1), k] = qr_trailing_update(V_QR[0, level, j], T_QR[0, level, j], S_QR[0, level - 1, j, k], S_QR[0, level - 1, j + 2 ** (level - 1), k])
 
+    #
+    # Step 0: LQ row update + trailing matrix updates.
+    # 
+
+    N_tree_LQ = ceiling(log(N - 1)/log(2))
+    # Do the first recursion step of the row update + corresponding trailing matrix update.
     for k in range(1, N):
-        for level in range(0, N_tree_full):
-            for j in range(0, N, 2**(level + 1)):
-                #3
-                SL[j, k, 1, N_tree_full - 1 - level], SL[j + 2**level, k, 1, 0]  = qr_trailing_update(Vs[j, 0, N_tree_full - 1 - level], Ts[j, 0, N_tree_full - 1 - level], SL[j, k, 1, N_tree_full - level], SL[j + 2**level, k, 1, N_tree_full - level])
+        # Perform the LQ, reading from the final in the previous QR.
+        V_LQ[0, 0, k], T_LQ[0, 0, k], L_LQ[0, 0, k] = lq_factor(S_QR[0, N_tree_QR, 0, k])
+        # Update the trailing column.
+        for j in range(1, N):
+            # TODO: I'm not sure this is correct. Need to think about transposes.
+            S_LQ[0, 0, j, k] = qr_leaf(V_LQ[0, 0, k], T_LQ[0, 0, k], S_QR[0, N_tree_QR, j, k])
 
-    for k in range(1, N):
-        #4
-        RsL[0, k, 0]  = identity(SL[0, k, 1, 0])
+    # Now run the rest of the recursion for the row + trailing matrix updates.
+    for level in range(1, N_tree_LQ + 1):
+        for k in range(1, N, 2 ** level):
+            V_LQ[0, level, k], T_LQ[0, level, k], L_LQ[0, level, k] = lq_factor(L_LQ[0, level - 1, k], L_LQ[0, level - 1, j + 2 ** (level - 1)])
+            # Update the trailing column.
+            for j in range(1, N):
+                # TODO: I'm not sure this is correct. Need to think about transposes.
+                S_LQ[0, level, j, k], S_LQ[0, N_tree_LQ, j, k + 2 ** (level - 1)] = qr_trailing_update(V_LQ[0, level, j], T_LQ[0, level, j], S_LQ[0, level - 1, j, k], S_LQ[0, level - 1, j, k + 2 ** (level - 1)])
 
-    # end of first QR
-    # start first LQ
-
-    for j in range(1, N):
-        #0
-        VsR[0, j,  N_tree_full], TsR[0, j, N_tree_full], Ls[j, 0, N_tree_full] = lq_factor(SL[0, j])
-
-    for level in range(0, N_tree_full):
-        for j in range(0, N, 2**(level + 1)):
-            #1
-            VsR[0, j, N_tree_full - level - 1], TsR[0, j, N_tree_full - level - 1], Ls[0, j, N_tree_full - level - 1] = lq_factor(Ls[0, j, N_tree_full - level], Ls[0, j + 2**(level), N_tree_full - level])
-
-    # flat trailing matrix update
-    for j in range(1, N):
-        for k in range(1, N):
-            #2
-            SR[k, j, 1, N_tree_full] = lq_leaf(VsR[0, j, N_tree_full], TsR[0, j, N_tree_full], SL[k, j])
-
-
-    for k in range(1, N):
-        for level in range(0, N_tree_full):
-            for j in range(0, N, 2**(level + 1)):
-                #3
-                SL[j, k, 1, N_tree_full - 1 - level], SL[j + 2**level, k, 1, 0]  = qr_trailing_update(Vs[j, 0, N_tree_full - 1 - level], Ts[j, 0, N_tree_full - 1 - level], SL[j, k, 1, N_tree_full - level], SL[j + 2**level, k, 1, N_tree_full - level])
-
-    for k in range(1, N):
-        #4
-        Rsi[0, k, 0]  = identity(SL[0, k, 1, 0])
-    # rest
+    #
+    # Run the rest of the steps.
+    # 
     for i in range(1, N):
-        N_tree = ceiling(log(N - i)/log(2))
-        for j in range(i, N):
-            #5
-            Vs[j, i, N_tree], Ts[j, i, N_tree], Rs[j, i, N_tree] = qr_factor(S[j, i, i, 0])
-        for level in range(0, N_tree):
-            for j in range(i, N, 2**(level + 1)):
-                #6
-                Vs[j, i, N_tree - level - 1], Ts[j, i, N_tree - level - 1], Rs[j, i, N_tree - level - 1] = qr_factor(Rs[j, i, N_tree - level], Rs[j + 2**(level), i, N_tree - level])
-        # flat trailing matrix update
-        for j in range(i, N):
-            for k in range(i+1, N):
-                #7
-                S[j, k, i+1, N_tree] = qr_leaf(Vs[j, i, N_tree], Ts[j, i, N_tree], S[j, k, i, 0])
+        #
+        # Step i: QR column update + trailing matrix updates.
+        # 
 
-        for k in range(i+1, N):
-            for level in range(0, N_tree):
-                for j in range(i, N, 2**(level + 1)):
-                    #8
-                    S[j, k, i+1, N_tree - 1 - level], S[j + 2**level, k, i+1, 0]  = qr_trailing_update(Vs[j, i, N_tree - 1 - level], Ts[j, i, N_tree - 1 - level], S[j, k, i+1, N_tree - level], S[j + 2**level, k, i +1, N_tree - level])
+        N_tree_QR = ceiling(log(N - i)/log(2))
+        # Do the first recursion step of the column update + corresponding trailing matrix update.
+        for j in range(i, N):
+            # Perform the QR, reading from the final matrix in the previous LQ.
+            V_QR[i, 0, j], T_QR[i, 0, j], R_QR[i, 0, j] = qr_factor(S_LQ[i - 1, N_tree_LQ, j, i])
+            # Update the trailing row.
+            for k in range(i + 1, N):
+                S_QR[i, 0, j, k] = qr_leaf(V_QR[i, 0, j], T_QR[i, 0, j], S_LQ[i - 1, N_tree_LQ, j, k])
 
-        for k in range(i+1, N):
-            #9
-            Rs[i, k, 0]  = identity(S[i, k, i+1, 0])
+        # Now run the rest of the recursion for the column + trailing matrix updates.
+        for level in range(1, N_tree_QR + 1):
+            # TODO: double check we should be starting from i here.
+            for j in range(i, N, 2 ** level):
+                # Perform the QR, reading from the previous recursion depth.
+                V_QR[i, level, j], T_QR[i, level, j], R_QR[i, level, j] = qr_factor(R_QR[i, level - 1, j], R_QR[i, level - 1, j + 2 ** (level - 1)])
+                # Update the trailing row.
+                for k in range(i + 1, N):
+                    S_QR[i, level, j, k], S_QR[i, N_tree_QR, j + 2 ** (level - 1), k] = qr_trailing_update(V_QR[i, level, j], T_QR[i, level, j], S_QR[i, level - 1, j, k], S_QR[i, level - 1, j + 2 ** (level - 1), k])
+
+        #
+        # Step i: LQ row update + trailing matrix updates.
+        # 
+
+        N_tree_LQ = ceiling(log(N - i - 1)/log(2))
+        # Do the first recursion step of the row update + corresponding trailing matrix update.
+        for k in range(i + 1, N):
+            # Perform the LQ, reading from the final matrix in the previous QR.
+            V_LQ[i, 0, k], T_LQ[i, 0, k], L_LQ[i, 0, k] = lq_factor(S_QR[i, N_tree_QR, i, k])
+            # Update the trailing column.
+            for j in range(i + 1, N):
+                # TODO: I'm not sure this is correct. Need to think about transposes.
+                S_LQ[i, 0, j, k] = qr_leaf(V_LQ[i, 0, k], T_LQ[i, 0, k], S_QR[i, N_tree_QR, j, k])
+
+        # Now run the rest of the recursion for the first row + trailing matrix updates.
+        for level in range(1, N_tree_LQ + 1):
+            # TODO: double check we should be starting from i + 1 here.
+            for k in range(i + 1, N, 2 ** level):
+                V_LQ[i, level, k], T_LQ[i, level, k], L_LQ[i, level, k] = lq_factor(L_LQ[i, level - 1, k], L_LQ[i, level - 1, j + 2 ** (level - 1)])
+                # Update the trailing column.
+                for j in range(i + 1, N):
+                    # TODO: I'm not sure this is correct. Need to think about transposes.
+                    S_LQ[i, level, j, k], S_LQ[i, N_tree_LQ, j, k + 2 ** (level - 1)] = qr_trailing_update(V_LQ[i, level, j], T_LQ[i, level, j], S_LQ[i, level - 1, j, k], S_LQ[i, level - 1, j, k + 2 ** (level - 1)])
 
 
 def QR(I:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int, truncate:int):
