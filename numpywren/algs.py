@@ -106,9 +106,9 @@ def BDFAC(I:BigMatrix, V_QR:BigMatrix, T_QR:BigMatrix, R_QR:BigMatrix, S_QR:BigM
                 S_LQ[0, level, j, k], S_LQ[0, N_tree_LQ, j, k + 2 ** (level - 1)] = qr_trailing_update(V_LQ[0, level, j], T_LQ[0, level, j], S_LQ[0, level - 1, j, k], S_LQ[0, level - 1, j, k + 2 ** (level - 1)])
 
     #
-    # Run the rest of the steps.
+    # Run the rest of the steps except for the last step.
     # 
-    for i in range(1, N):
+    for i in range(1, N - 1):
         #
         # Step i: QR column update + trailing matrix updates.
         # 
@@ -155,6 +155,11 @@ def BDFAC(I:BigMatrix, V_QR:BigMatrix, T_QR:BigMatrix, R_QR:BigMatrix, S_QR:BigM
                 for j in range(i + 1, N):
                     # TODO: I'm not sure this is correct. Need to think about transposes.
                     S_LQ[i, level, j, k], S_LQ[i, N_tree_LQ, j, k + 2 ** (level - 1)] = qr_trailing_update(V_LQ[i, level, j], T_LQ[i, level, j], S_LQ[i, level - 1, j, k], S_LQ[i, level - 1, j, k + 2 ** (level - 1)])
+
+    #
+    # Step N - 1: Final QR update. We don't run an LQ.
+    # 
+    V_QR[N - 1, 0, N - 1], T_QR[N - 1, 0, N - 1], R_QR[N - 1, 0, N - 1] = qr_factor(I[N - 1, N - 1])
 
 
 def QR(I:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int, truncate:int):
