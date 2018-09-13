@@ -212,9 +212,11 @@ def test_qr_lambda():
     N_blocks = X_sharded.num_blocks(0)
     shard_matrix(X_sharded, X)
     program, meta = qr(X_sharded)
+    print(program.hash)
     program.start()
     print("starting program...")
-    futures = run_program_in_pywren(program)
+    futures = run_program_in_pywren(program, num_workers=1)
+    #futures[0].result()
     program.wait()
     program.free()
     Rs = meta["outputs"][0]
@@ -240,10 +242,10 @@ def test_qr_lambda():
 if __name__ == "__main__":
     #test_cholesky()
     #test_tsqr()
-    test_qr()
+    #test_qr()
     #test_cholesky_lambda()
     #test_tsqr_lambda()
     #test_gemm_lambda()
-    #test_qr_lambda()
+    test_qr_lambda()
     pass
 

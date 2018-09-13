@@ -161,8 +161,10 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     program.start()
     t = time.time()
     logger.info("Starting with {0} cores".format(start_cores))
-    invoker = fs.ThreadPoolExecutor(1)
-    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(start_cores), extra_env=extra_env)
+    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=10, compute_threads=compute_threads_per_worker), range(start_cores), extra_env=extra_env)
+    pywren.wait(all_futures)
+    print([f.result() for f in all_futures])
+    return
     start_time = time.time()
     last_run_time = start_time
     print(program.program_status())

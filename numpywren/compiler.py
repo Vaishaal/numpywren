@@ -462,7 +462,7 @@ def integerify_solutions(solutions):
 
 def lambdify(expr):
     symbols = extract_vars(expr)
-    _f = sympy.lambdify(symbols, expr, ("sympy"), dummify=False)
+    _f = sympy.lambdify(symbols, expr, ({"ceil":sympy.ceiling}, "sympy"), dummify=False)
     def f(**kwargs):
         if (len(kwargs) < len(symbols)):
             raise Exception("Insufficient Args")

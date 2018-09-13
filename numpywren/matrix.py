@@ -33,6 +33,7 @@ except Exception as e:
     DEFAULT_BUCKET = ""
     DEFAULT_REGION =  ""
 
+print("DEFAULT_BUCKET", DEFAULT_BUCKET)
 class BigMatrix(object):
     """
     A multidimensional array stored in S3, sharded in blocks of a given size.

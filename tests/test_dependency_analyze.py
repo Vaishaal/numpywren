@@ -93,7 +93,7 @@ def test_bdfac():
     TR = dummy_matrix(num_dims=3)
     L = dummy_matrix(num_dims=4)
     SR = dummy_matrix(num_dims=4)
-    program = lpcompile(BDFAC)(A,V,T,R,S,VR,TR,SR,L,2,0)
+    program = lpcompile(BDFAC)(A,V,T,R,S,VR,TR,SR,L,4,0)
     #print(find_parents(program, 13, {'j': 2, 'k': 2, 'i': 1}))
     verify_program(program)
 
