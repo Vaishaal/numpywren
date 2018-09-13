@@ -133,21 +133,16 @@ def test_tsqr_lambda():
     R  *= np.diag(sign_matrix_local)[:, np.newaxis]
     assert(np.allclose(R_npw, R))
 
-
+#@profile
 def test_gemm():
-    size = 32
+    size = 8192
+    np.random.seed(0)
     A = np.random.randn(size, size)
-    B = np.random.randn(size, size)
-    C = np.dot(A, B)
-    shard_sizes = (8,8)
-    A_sharded = BigMatrix("Gemm_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
-    B_sharded = BigMatrix("Gemm_test_B", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
-    shard_matrix(A_sharded, A)
-    shard_matrix(B_sharded, B)
+    #shard_matrix(B_sharded, B)
     program, meta = gemm(A_sharded, B_sharded)
-    executor = fs.ProcessPoolExecutor(1)
+    #executor = fs.ProcessPoolExecutor(1)
     program.start()
-    future = executor.submit(job_runner.lambdapack_run, program, timeout=60, idle_timeout=6, pipeline_width=1)
+    job_runner.lambdapack_run(program, timeout=60, idle_timeout=6, pipeline_width=3)
     program.wait()
     program.free()
     C_sharded = meta["outputs"][0]
@@ -177,7 +172,7 @@ def test_gemm_lambda():
     return
 
 def test_qr():
-    N = 16
+    N = 32
     shard_size = 8
     shard_sizes = (shard_size, shard_size)
     X = np.random.randn(N, N)
@@ -185,9 +180,11 @@ def test_qr():
     N_blocks = X_sharded.num_blocks(0)
     shard_matrix(X_sharded, X)
     program, meta = qr(X_sharded)
-    executor = fs.ProcessPoolExecutor(1)
+    executor = fs.ProcessPoolExecutor(2)
     program.start()
     print("starting program...")
+    future = executor.submit(job_runner.lambdapack_run, program, timeout=60, idle_timeout=6, pipeline_width=1)
+    future = executor.submit(job_runner.lambdapack_run, program, timeout=60, idle_timeout=6, pipeline_width=1)
     future = executor.submit(job_runner.lambdapack_run, program, timeout=60, idle_timeout=6, pipeline_width=1)
     program.wait()
     program.free()
@@ -246,6 +243,7 @@ if __name__ == "__main__":
     #test_cholesky_lambda()
     #test_tsqr_lambda()
     #test_gemm_lambda()
-    test_qr_lambda()
+    #test_qr_lambda()
+    test_gemm()
     pass
 

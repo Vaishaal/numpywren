@@ -25,7 +25,7 @@ def get_shared_so(so_name):
     fcntl.lockf(lock, fcntl.LOCK_EX)
     if (os.path.exists(out_str)):
         return
-    shard = random.randint(0,NUM_SO_SHARDS)
+    shard = random.randint(1,NUM_SO_SHARDS)
     if (shard > 0):
         shard_str = str(shard)
     else:

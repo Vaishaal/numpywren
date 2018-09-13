@@ -126,17 +126,22 @@ class LambdaPackExecutor(object):
                     for instr in instrs:
                         instr.run = False
                         instr.result = None
-
+                    #next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    instr.post_op_start = time.time()
                     next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
-                    if (next_operator is not None):
-                     profile_bytes_to_ret.append(log_bytes)
+                    instr.post_op_end = time.time()
                     profile_bytes_to_ret.append(log_bytes)
+                    profile_bytes_to_ret.append(log_bytes)
+                    if next_operator is not None:
+                         operator_refs.append(next_operator)
                 elif (node_status == lp.NS.POST_OP):
                     operator_refs_to_ret.append((expr_idx, var_values))
                     logger.warning("node: {0}:{1} finished work skipping to post_op...".format(expr_idx, var_values))
+                    #next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                     next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
-                    if (next_operator is not None):
-                     profile_bytes_to_ret.append(log_bytes)
+                    profile_bytes_to_ret.append(log_bytes)
+                    if next_operator is not None:
+                        operator_refs.append(next_operator)
                 elif (node_status == lp.NS.NOT_READY):
                    logger.warning("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
 
@@ -164,7 +169,13 @@ class LambdaPackExecutor(object):
                 self.program.post_op(expr_idx, var_values, lp.PS.EXCEPTION, inst_block, tb=tb)
                 raise
         e = time.time()
-        return list(zip(operator_refs_to_ret, profile_bytes_to_ret))
+        res = list(zip(operator_refs_to_ret, profile_bytes_to_ret))
+        #print('======\n'*10)
+        #print("operator refs", operator_refs_to_ret)
+        #print("profile bytes to ret", profile_bytes_to_ret)
+        #print("RETURING ", res)
+        #print('======\n'*10)
+        return res
 
 
 def calculate_busy_time(rtimes):
@@ -227,7 +238,7 @@ def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis
     logger.debug("Loop end program status: {0}".format(program.program_status()))
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"])}
-
+#@profile
 def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
     program.incr_up(1)
     lambda_start = time.time()
@@ -257,8 +268,6 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
         # all the async tasks share 1 compute thread and a io cache
         coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout, msg_vis_timeout=msg_vis_timeout, msg_vis_timeout_jitter=msg_vis_timeout_jitter)
         tasks.append(loop.create_task(coro))
-    #results = loop.run_until_complete(asyncio.gather(*tasks))
-    #return results
     loop.run_forever()
     print("loop end")
     loop.close()
@@ -267,16 +276,12 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     m.update(profile_bytes)
     p_key = m.hexdigest()
     p_key = "{0}/{1}/{2}".format("lambdapack", program.hash, p_key)
+    print('='*10)
+    print("PROFILES WAS ", profiles)
+    print("Writing log obj.... to {0}".format(p_key))
+    print('='*10)
     client = boto3.client('s3', region_name=program.control_plane.region)
-    backoff = 1
-    try:
-      new_loop = asyncio.new_event_loop()
-      res = new_loop.run_until_complete(asyncio.ensure_future(program.begin_write(), loop=new_loop))
-      client.put_object(Bucket=program.bucket, Key=p_key, Body=profile_bytes)
-    except botocore.exceptions.ClientError:
-      pass
-    program.decr_up(1)
-    print(program.program_status())
+    client.put_object(Bucket=program.bucket, Key=p_key, Body=profile_bytes)
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"]),
             "executed_messages": shared_state["tot_messages"],

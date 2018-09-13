@@ -161,7 +161,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     program.start()
     t = time.time()
     logger.info("Starting with {0} cores".format(start_cores))
-    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=10, compute_threads=compute_threads_per_worker), range(start_cores), extra_env=extra_env)
+    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(start_cores), extra_env=extra_env)
     start_time = time.time()
     last_run_time = start_time
     print(program.program_status())
@@ -294,7 +294,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
                     new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(cores_to_launch), extra_env=extra_env)
                     last_run_time = time.time()
-                    all_futures.append(new_futures)
+                    all_futures.extend(new_futures)
             else:
                 raise Exception("unknown autoscale policy")
             exp["time_steps"] += 1

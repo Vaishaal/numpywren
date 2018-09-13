@@ -624,12 +624,16 @@ class LambdaPackProgram(object):
             print("Num finished terminators", val,  "num terminators total", self.program.num_terminators)
             if (val == self.program.num_terminators):
               self.return_success()
+
+          #print('pooop\n'*20)
+          #print("next operator", next_operator)
+          #print("next operator", profiling_info)
           return next_operator, profiling_info
         except Exception as e:
             tb = traceback.format_exc()
             traceback.print_exc()
-            raise
             self.handle_exception("POST OP EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+            raise
 
     def start(self):
         put(self.control_plane.client, self.hash, PS.RUNNING.value)
