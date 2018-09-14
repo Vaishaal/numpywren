@@ -6,7 +6,7 @@ import concurrent.futures as fs
 
 from numpywren import compiler, job_runner, kernels
 from numpywren.matrix import BigMatrix
-from numpywren.alg_wrappers import cholesky, tsqr, gemm, qr
+from numpywren.alg_wrappers import cholesky, tsqr, gemm, qr, bdfac
 import numpy as np
 from numpywren.matrix_init import shard_matrix
 from numpywren.algs import *
@@ -200,6 +200,22 @@ def test_qr():
     R_local  *= np.diag(sign_matrix_local)[:, np.newaxis]
     assert(np.allclose(R_local, R_remote))
 
+def test_bdfac():
+    N = 16
+    shard_size = 8
+    shard_sizes = (shard_size, shard_size)
+    X = np.random.randn(N, N)
+    X_sharded = BigMatrix("BDFAC_input_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
+    N_blocks = X_sharded.num_blocks(0)
+    shard_matrix(X_sharded, X)
+    program, meta = bdfac(X_sharded)
+    executor = fs.ProcessPoolExecutor(1)
+    program.start()
+    job_runner.lambdapack_run(program, timeout=60, idle_timeout=6, pipeline_width=1)
+    program.wait()
+    program.free()
+
+
 def test_qr_lambda():
     N = 16
     shard_size = 8
@@ -244,6 +260,7 @@ if __name__ == "__main__":
     #test_tsqr_lambda()
     #test_gemm_lambda()
     #test_qr_lambda()
-    test_gemm()
+    #test_gemm()
+    test_bdfac()
     pass
 

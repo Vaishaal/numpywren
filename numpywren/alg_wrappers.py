@@ -4,7 +4,7 @@ from numpywren import matrix_utils, uops
 from numpywren import lambdapack as lp
 from numpywren import job_runner, frontend
 from numpywren.compiler import lpcompile_for_execution
-from numpywren.algs import CHOLESKY, TSQR, GEMM, QR
+from numpywren.algs import CHOLESKY, TSQR, GEMM, QR, BDFAC
 from numpywren.matrix_utils import constant_zeros
 from numpywren.matrix_init import shard_matrix
 import dill
@@ -87,6 +87,35 @@ def qr(A):
     config = npw.config.default()
     program = lp.LambdaPackProgram(p1, config=config)
     return program, {"outputs":[Rs, Vs, Ts], "intermediates":[Ss], "compile_time": c_time}
+
+
+def bdfac(A):
+    b_fac = 2
+    N = A.shape[0]
+    N_blocks = A.num_blocks(0)
+    b_fac = 2
+    shard_size = A.shard_sizes[0]
+    num_tree_levels = max(int(np.ceil(np.log2(A.num_blocks(0))/np.log2(b_fac))), 1) + 1
+    VLs = BigMatrix("VLs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
+    TLs = BigMatrix("TLs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
+    Rs = BigMatrix("Rs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
+    SLs = BigMatrix("SLs", shape=(2*N, 2*N, 2*N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, 1, 1), write_header=True, parent_fn=constant_zeros, safe=False)
+    VRs = BigMatrix("VRs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
+    TRs = BigMatrix("TRs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
+    Ls = BigMatrix("Ls", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
+    SRs = BigMatrix("SRs", shape=(2*N, 2*N, 2*N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, 1, 1), write_header=True, parent_fn=constant_zeros, safe=False)
+    t = time.time()
+    p0 = lpcompile_for_execution(BDFAC, inputs=["I"], outputs=["Rs"])
+    p1 = p0(A, VLs, TLs, Rs, SLs, VRs, TRs, SRs, Ls,  N_blocks, 0)
+    e = time.time()
+    c_time = e - t
+    config = npw.config.default()
+    program = lp.LambdaPackProgram(p1, config=config)
+    return program, {"outputs":[Ls, Rs], "intermediates":[SRs, SLs, TLs, VLs, VRs, TRs], "compile_time": c_time}
+
+
+
+
 
 
 
