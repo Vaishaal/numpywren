@@ -3,6 +3,7 @@ import concurrent.futures as fs
 import gc
 import logging
 from multiprocessing.dummy import Pool as ThreadPool
+from threading import Thread
 import os
 import pickle
 import random
@@ -10,6 +11,8 @@ import sys
 import time
 import traceback
 import tracemalloc
+from multiprocessing import Process, Queue
+
 
 import aiobotocore
 import botocore
@@ -126,9 +129,9 @@ class LambdaPackExecutor(object):
                     for instr in instrs:
                         instr.run = False
                         instr.result = None
-                    #next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                     instr.post_op_start = time.time()
-                    next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    #next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                     instr.post_op_end = time.time()
                     profile_bytes_to_ret.append(log_bytes)
                     profile_bytes_to_ret.append(log_bytes)
@@ -137,8 +140,8 @@ class LambdaPackExecutor(object):
                 elif (node_status == lp.NS.POST_OP):
                     operator_refs_to_ret.append((expr_idx, var_values))
                     logger.warning("node: {0}:{1} finished work skipping to post_op...".format(expr_idx, var_values))
-                    #next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
-                    next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    #next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
                     profile_bytes_to_ret.append(log_bytes)
                     if next_operator is not None:
                         operator_refs.append(next_operator)
@@ -234,165 +237,186 @@ def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis
     loop.run_forever()
     loop.close()
     lambda_stop = time.time()
-    program.decr_up(1)
-    logger.debug("Loop end program status: {0}".format(program.program_status()))
+    res = program.decr_up(1)
+    print("======"*10)
+    print("program decr up number", res)
+    #logger.debug("Loop end program status: {0}".format(program.program_status()))
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"])}
-#@profile
+
+
+PROGRAM_CHECK_INTERVAL = 10
 def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
     program.incr_up(1)
     lambda_start = time.time()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    computer = fs.ThreadPoolExecutor(compute_threads)
-    program.control_plane.cache()
-    tot_messages = []
-    if (cache_size > 0):
-        cache = LRUCache(max_items=cache_size)
-    else:
-        cache = None
-    m = hashlib.md5()
-    profiles = {}
-    shared_state = {}
-    shared_state["busy_workers"] = 0
-    shared_state["done_workers"] = 0
-    shared_state["pipeline_width"] = pipeline_width
-    shared_state["all_operator_refs"] = []
-    shared_state["profiles"] = profiles
-    shared_state["running_times"] = []
-    shared_state["last_busy_time"] = time.time()
-    shared_state["tot_messages"]  = []
-    loop.create_task(check_program_state(program, loop, shared_state, timeout, idle_timeout))
-    tasks = []
-    for i in range(pipeline_width):
-        # all the async tasks share 1 compute thread and a io cache
-        coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout, msg_vis_timeout=msg_vis_timeout, msg_vis_timeout_jitter=msg_vis_timeout_jitter)
-        tasks.append(loop.create_task(coro))
-    loop.run_forever()
-    print("loop end")
-    loop.close()
-    lambda_stop = time.time()
-    profile_bytes = pickle.dumps(profiles)
+    compute_queue = Queue(pipeline_width)
+    write_queue = Queue(pipeline_width)
+    post_op_queue = Queue(pipeline_width)
+    finish_queue = Queue(pipeline_width)
+    log_queue = Queue()
+    reader = Process(target=lambdapack_reader, args=(write_queue, post_op_queue))
+    computer = Process(target=lambdapack_compute, args=(compute_queue, write_queue))
+    writer = Process(target=lambdapack_writer, args=(write_queue, post_op_queue))
+    post_op = Process(target=lambdapack_post_op, args=(post_op_queue, finish_queue, log_queue))
+    reader.start()
+    computer.start()
+    writer.start()
+    post_op.start()
+    sqs_client = boto3.client('sqs', use_ssl=False, region_name=program.control_plane.region)
+    all_msgs = []
+    msg_info_map = {}
+    finisher = Thread(target=lambdapack_finish, args=(finish_queue))
+    last_p_check = 0
+    while (time.time() < lambda_start + timeout):
+       if ((time.time() - last_p_check) > PROGRAM_CHECK_INTERVAL):
+          s = program.program_status()
+          last_p_check = time.time()
+          if(s != lp.PS.RUNNING):
+            print("program status is ", s)
+            with finished.get_lock():
+               finished.value = True
+            break
+       messages = sqs_client.receive_message(QueueUrl=program.queue_urls[0], MaxNumberOfMessages=1)
+       if ("Messages" not in messages):
+          time.sleep(1)
+          continue
+       try:
+          operator_ref = json.loads(msg["Body"])
+        except ValueError:
+            tb = traceback.format_exc()
+            traceback.print_exc()
+            self.handle_exception("JSON_PARSING_EXCEPTION", tb=tb, expr_idx=-1, var_values={})
+            raise
+
+         msg = messages["Messages"][0]
+         stop = [0]
+         msg_stop_map[(expr_idx, str(var_values)] = (program.queue_urls[0], stop, msg)
+         t = Thread(target=reset_msg_visibility, args=(msg_vis_timeout, queue_url, receipt_handle, stop))
+         t.start()
+         expr_idx, var_values = operator_ref
+         node_status = self.program.get_node_status(expr_idx, var_values)
+         inst_block = self.program.program.eval_expr(expr_idx, var_values)
+         if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
+            #start off with read
+            read_queue.put((expr_idx, var_values, inst_block, 0))
+         elif (node_status == lp.NS.POST_OP):
+            # enqueue directly onto post_op queue
+            post_op_queue.put(inst_block)
+         elif (node_status == lp.NS.NOT_READY):
+            logger.warning("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
+            pass
+         elif (node_status == lp.NS.FINISHED):
+            logger.warning("node: {0}:{1} finished post_op skipping...".format(expr_idx, var_values))
+         else:
+            raise Exception("Unknown status: {0}".format(node_status))
+    profiled_inst_blocks = {}
+    while (not log_queue.empty):
+      expr_idx, var_values, log = log_queue.get()
+    profiled_inst_blocks[(expr_idx, str(var_values))] = inst_block
+
+    profile_bytes = pickle.dumps(logs)
     m.update(profile_bytes)
+    # double store the logs because they are *SO GOD DAMN IMPORTANT*
     p_key = m.hexdigest()
     p_key = "{0}/{1}/{2}".format("lambdapack", program.hash, p_key)
-    print('='*10)
-    print("PROFILES WAS ", profiles)
-    print("Writing log obj.... to {0}".format(p_key))
-    print('='*10)
     client = boto3.client('s3', region_name=program.control_plane.region)
     client.put_object(Bucket=program.bucket, Key=p_key, Body=profile_bytes)
+    res = program.decr_up(1)
+    lambda_stop = time.time()
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"]),
             "executed_messages": shared_state["tot_messages"],
-            "operator_refs": shared_state["all_operator_refs"]}
+            "operator_refs": shared_state["all_operator_refs"]
+            "logs":  profiled_inst_blocks}
 
-async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lock):
-    assert(timeout > timeout_jitter)
-    while(lock[0] == 1):
+def lambdapack_read(read_queue, compute_queue, program, finished):
+   # do read and then pass on to compute_queue
+   while(True):
+      expr_idx, var_values, inst_block, i = read_queue.get()
+      assert i == 0
+      for i,instr in enumerate(instrs):
+         if (isinstance(instr, lp.RemoteRead)):
+            instr()
+         elif (isinstance(instr, lp.RemoteWrite)):
+            assert False
+         elif (isinstance(instr, lp.RemoteCall)):
+            #serialize and send forward
+            compute_queue.put((expr_idx, var_values, inst_block, i))
+            break
+
+def lambdapack_compute(compute_queue, write_queue, program, finished):
+   while(True):
+      expr_idx, var_values, inst_block, i = compute_queue.get()
+      assert(isinstance(inst_block.instrs[i], lp.RemoteCall))
+      try:
+         inst_block.instrs[i]()
+      except:
+         tb = traceback.format_exc()
+         traceback.print_exc()
+         program.handle_exception("COMPUTE EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+         with finished.get_lock():
+            finished.value = True
+      assert len(inst_block.instrs) > i + 1
+      assert isinstance(inst_block.instrs[i+1], lp.RemoteWrite)
+      write_queue.put((expr_idx, var_values, inst_block, i+1))
+
+def lambdapack_write(write_queue, post_op_queue):
+   while(True):
+      expr_idx, var_values, inst_block, i = write_queue.get()
+      for (j in range(i, len(inst_block.instrs))):
+         assert(isinstance(inst_block.instrs[j], lp.RemoteWrite))
+         try:
+            inst_block.instrs[j]()
+         except:
+            tb = traceback.format_exc()
+            traceback.print_exc()
+            program.handle_exception("COMPUTE EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+            with finished.get_lock():
+               finished.value = True
+      post_op_queue.put((expr_idx, var_values, inst_block, j))
+
+
+def lambdapack_post_op(post_op_queue, finish_queue):
+   while(True):
+      expr_idx, var_values, inst_block, i = post_op_queue.get()
+      assert(len(inst_block) == i + 1)
+      try:
+         next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+         finish_queue.put((next_operator, log_bytes))
+      except:
+         program.handle_exception("WRITE EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+         with finished.get_lock():
+            finished.value = True
+
+
+def reset_msg_visibility(msg, msg_vis_timeout, queue_url, stop):
+    while(True):
         try:
             receipt_handle = msg["ReceiptHandle"]
             operator_ref = tuple(json.loads(msg["Body"]))
             sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(45)
+            res = sqs_client.change_message_visibility(VisibilityTimeout=msg_vis_timeout, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            time.sleep((msg_vis_timeout/2))
+            if (stop[0]):
+               break
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(operator_ref) + str(e))
-            await asyncio.sleep(10)
-    operator_ref = tuple(json.loads(msg["Body"]))
+            time.sleep(msg_vis_timeout/2)
     return 0
 
-async def check_program_state(program, loop, shared_state, timeout, idle_timeout):
-    start_time = time.time()
-    while(True):
-        if shared_state["busy_workers"] == 0:
-            if time.time() - start_time > timeout:
-                break
-            if time.time() - shared_state["last_busy_time"] >  idle_timeout:
-                break
-        #TODO make this an s3 access as opposed to DD access since we don't *really need* atomicity here
-        #TODO make this coroutine friendly
-        s = program.program_status()
-        if(s != lp.PS.RUNNING):
-           print("program status is ", s)
-           break
-        await asyncio.sleep(idle_timeout)
-    #print("Closing loop from program")
-    loop.stop()
+def lambdapack_finish(finish_queue, msg_info_map):
+   while (True):
+      expr_idx, var_values, inst_block, i = finish_queue.get()
+      print("Marking {0} as done".format((expr_idx, var_values)))
+      program.set_node_status(expr_idx, var_values, lp.NS.FINISHED)
+      queue_url, msg, stop = msg_info_map[(expr_idx, str(var_values)]
+      stop[0] = True
+      receipt_handle = msg["ReceiptHandle"]
+      sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
 
 
-#@profile
-async def lambdapack_run_async(loop, program, computer, cache, shared_state, pipeline_width=1, msg_vis_timeout=60, timeout=200, msg_vis_timeout_jitter=15):
-    global REDIS_CLIENT
-    session = aiobotocore.get_session(loop=loop)
-    lmpk_executor = LambdaPackExecutor(program, loop, cache)
-    start_time = time.time()
-    running_times = shared_state['running_times']
-    if (REDIS_CLIENT == None):
-       REDIS_CLIENT = program.control_plane.client
-    redis_client = REDIS_CLIENT
-    try:
-        while(True):
-            current_time = time.time()
-            if ((current_time - start_time) > timeout):
-                print("Hit timeout...returning now")
-                shared_state["done_workers"] += 1
-                loop.stop()
-                return
-            await asyncio.sleep(0)
-            # go from high priority -> low priority
-            for queue_url in program.queue_urls[::-1]:
-                async with session.create_client('sqs', use_ssl=False,  region_name=program.control_plane.region) as sqs_client:
-                    messages = await sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
-                if ("Messages" not in messages):
-                    continue
-                else:
-                    # note for loops in python leak scope so when this breaks
-                    # messages = messages
-                    # queue_url= messages
-                    break
-            if ("Messages" not in messages):
-                #if time.time() - last_message_time > 10:
-                #    return running_times
-                continue
-            shared_state["busy_workers"] += 1
-            redis_client.incr("{0}_busy".format(program.hash))
-            #last_message_time = time.time()
-            start_processing_time = time.time()
-            msg = messages["Messages"][0]
-            receipt_handle = msg["ReceiptHandle"]
-            # if we don't finish in 75s count as a failure
-            #res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            operator_ref = json.loads(msg["Body"])
-            print("Operator ref", operator_ref)
-            shared_state["tot_messages"].append(operator_ref)
-            redis_client.set(msg["MessageId"], str(time.time()))
-            #print("creating lock")
-            lock = [1]
-            coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, msg_vis_timeout_jitter, lock)
-            loop.create_task(coro)
-            all_operator_refs = shared_state["all_operator_refs"]
-            operator_refs = await lmpk_executor.run(*operator_ref, computer=computer)
-            profiles = shared_state["profiles"]
-            for operator_ref, p_info in operator_refs:
-                logger.debug("Marking {0} as done".format(operator_ref))
-                program.set_node_status(*operator_ref, lp.NS.FINISHED)
-                all_operator_refs.append(operator_ref)
-                profiles[str(operator_ref)] = p_info
-            async with session.create_client('sqs', use_ssl=False,  region_name=program.control_plane.region) as sqs_client:
-                lock[0] = 0
-                await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            end_processing_time = time.time()
-            running_times.append((start_processing_time, end_processing_time))
-            shared_state["busy_workers"] -= 1
-            redis_client.decr("{0}_busy".format(program.hash))
-            shared_state["last_busy_time"] = time.time()
-            current_time = time.time()
-    except Exception as e:
-        #print(e)
-        traceback.print_exc()
-        raise
-    return
+
+
 
 
 

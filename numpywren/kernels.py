@@ -105,11 +105,7 @@ def fast_qr(x):
 
 def qr_factor(*blocks, **kwargs):
     ins = np.vstack(blocks)
-    print("="*20)
-    print("QR_FACTOR in ", ins)
     v,t,r = fast_qr(ins)
-    print("QR_FACTOR out", r)
-    print("="*20)
     return v,t,r
 
 def _qr_flops(*blocks):
@@ -128,8 +124,6 @@ def lq_factor(*blocks, **kwargs):
 def qr_leaf(V, T, S0, *args, **kwargs):
     # (I - VTV)^{T}*S
     val = S0 - (V @ T.T @ (V.T @ S0))
-    print("=========")
-    print("QR LEAF OUTPUT", val)
     return val
 
 def _qr_leaf_flops(V, T, S0):
@@ -226,9 +220,6 @@ gemm.flops = _gemm_flops
 
 def trsm(x, y, lower=False, right=True, *args, **kwargs):
     if np.allclose(y, 0):
-        print("==="*10)
-        print("RETURNING ZEROS")
-        print("==="*10)
         return np.zeros((x.shape[1], y.shape[0]))
     return scipy.linalg.blas.dtrsm(1.0, x.T, y, lower=lower, side=int(right))
 
