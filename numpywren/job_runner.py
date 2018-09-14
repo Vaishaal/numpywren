@@ -282,34 +282,32 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
           continue
        try:
           operator_ref = json.loads(msg["Body"])
-        except ValueError:
+       except ValueError:
             tb = traceback.format_exc()
             traceback.print_exc()
             self.handle_exception("JSON_PARSING_EXCEPTION", tb=tb, expr_idx=-1, var_values={})
             raise
 
-         msg = messages["Messages"][0]
-         stop = [0]
-         msg_stop_map[(expr_idx, str(var_values)] = (program.queue_urls[0], stop, msg)
-         t = Thread(target=reset_msg_visibility, args=(msg_vis_timeout, queue_url, receipt_handle, stop))
-         t.start()
-         expr_idx, var_values = operator_ref
-         node_status = self.program.get_node_status(expr_idx, var_values)
-         inst_block = self.program.program.eval_expr(expr_idx, var_values)
-         if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
-            #start off with read
+       msg = messages["Messages"][0]
+       stop = [0]
+       msg_stop_map[(expr_idx, str(var_values))] = (program.queue_urls[0], stop, msg)
+       t = Thread(target=reset_msg_visibility, args=(msg_vis_timeout, queue_url, receipt_handle, stop))
+       t.start()
+       expr_idx, var_values = operator_ref
+       node_status = self.program.get_node_status(expr_idx, var_values)
+       inst_block = self.program.program.eval_expr(expr_idx, var_values)
+       if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
             read_queue.put((expr_idx, var_values, inst_block, 0))
-         elif (node_status == lp.NS.POST_OP):
-            # enqueue directly onto post_op queue
+       elif (node_status == lp.NS.POST_OP):
             post_op_queue.put(inst_block)
-         elif (node_status == lp.NS.NOT_READY):
+       elif (node_status == lp.NS.NOT_READY):
             logger.warning("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
             pass
-         elif (node_status == lp.NS.FINISHED):
+       elif (node_status == lp.NS.FINISHED):
             logger.warning("node: {0}:{1} finished post_op skipping...".format(expr_idx, var_values))
-         else:
+       else:
             raise Exception("Unknown status: {0}".format(node_status))
-    profiled_inst_blocks = {}
+       profiled_inst_blocks = {}
     while (not log_queue.empty):
       expr_idx, var_values, log = log_queue.get()
     profiled_inst_blocks[(expr_idx, str(var_values))] = inst_block
@@ -326,7 +324,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"]),
             "executed_messages": shared_state["tot_messages"],
-            "operator_refs": shared_state["all_operator_refs"]
+            "operator_refs": shared_state["all_operator_refs"],
             "logs":  profiled_inst_blocks}
 
 def lambdapack_read(read_queue, compute_queue, program, finished):
@@ -363,7 +361,7 @@ def lambdapack_compute(compute_queue, write_queue, program, finished):
 def lambdapack_write(write_queue, post_op_queue):
    while(True):
       expr_idx, var_values, inst_block, i = write_queue.get()
-      for (j in range(i, len(inst_block.instrs))):
+      for j in range(i, len(inst_block.instrs)):
          assert(isinstance(inst_block.instrs[j], lp.RemoteWrite))
          try:
             inst_block.instrs[j]()
@@ -409,7 +407,7 @@ def lambdapack_finish(finish_queue, msg_info_map):
       expr_idx, var_values, inst_block, i = finish_queue.get()
       print("Marking {0} as done".format((expr_idx, var_values)))
       program.set_node_status(expr_idx, var_values, lp.NS.FINISHED)
-      queue_url, msg, stop = msg_info_map[(expr_idx, str(var_values)]
+      queue_url, msg, stop = msg_info_map[(expr_idx, str(var_values))]
       stop[0] = True
       receipt_handle = msg["ReceiptHandle"]
       sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
