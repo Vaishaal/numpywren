@@ -151,13 +151,13 @@ def decr(client, key, amount, s3=False, s3_bucket=""):
 
 
 
-def run_function_with_timeout(f, *args):
+def run_function_with_timeout(timeout, f, *args):
     tp = fs.ThreadPoolExecutor(1)
     val_future = tp.submit(f, *args)
-    done, not_done = fs.wait([val_future], timeout=60)
+    done, not_done = fs.wait([val_future], timeout=timeout)
     if len(done) == 0:
       raise LambdaPackTimeoutException(f"function {f} timed out!")
-    return done[0].result()
+    return list(done)[0].result()
 
 def conditional_increment(client, key_to_incr, condition_key):
   ''' Crucial atomic operation needed to insure DAG correctness
@@ -262,7 +262,7 @@ class RemoteRead(RemoteInstruction):
               tries = 0
               while (True):
                 try:
-                  self.result = run_function_with_timeout(self.matrix.get_block, *self.bidxs)
+                  self.result = run_function_with_timeout(self.MAX_READ_TIME, self.matrix.get_block, *self.bidxs)
                   print("read shape", self.result.shape)
                   break
                 except (LambdaPackTimeoutException, botocore.exceptions.ClientError):
@@ -307,7 +307,6 @@ class RemoteWrite(RemoteInstruction):
     #@profile
     def __call__(self, skip_empty=False):
         t = time.time()
-        loop = asyncio.get_event_loop()
         self.start_time = time.time()
         if (self.result is None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
@@ -326,7 +325,7 @@ class RemoteWrite(RemoteInstruction):
                       sparse_write = True
                       break
                   else:
-                    self.result = run_function_with_timeout(self.MAX_WRITE_TIME, self.matrix.put_block.put_block, self.data_loc[self.data_idx], *self.bidxs)
+                    self.result = run_function_with_timeout(self.MAX_WRITE_TIME, self.matrix.put_block, self.data_loc[self.data_idx], *self.bidxs)
                     break
               except (LambdaPackTimeoutException, botocore.exceptions.ClientError):
                     tries += 1

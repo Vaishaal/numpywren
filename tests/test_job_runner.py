@@ -36,6 +36,29 @@ def test_cholesky():
     assert(np.allclose(L_npw, L))
     print("great success!")
 
+def test_cholesky_lambda():
+    X = np.random.randn(64, 64)
+    A = X.dot(X.T) + np.eye(X.shape[0])
+    shard_size = 64
+    shard_sizes = (shard_size, shard_size)
+    A_sharded= BigMatrix("job_runner_test", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
+    A_sharded.free()
+    shard_matrix(A_sharded, A)
+    program, meta =  cholesky(A_sharded)
+    executor = fs.ProcessPoolExecutor(1)
+    print("starting program")
+    program.start()
+    pwex = pywren.default_executor()
+    future = pwex.map(lambda x: job_runner.lambdapack_run(program, timeout=10, idle_timeout=6), range(1))
+    print(future[0].result())
+    program.wait()
+    program.free()
+    L_sharded = meta["outputs"][0]
+    L_npw = L_sharded.numpy()
+    L = np.linalg.cholesky(A)
+    assert(np.allclose(L_npw, L))
+    print("great success!")
+
 
 if __name__ == "__main__":
-    pass
+    test_cholesky_lambda()
