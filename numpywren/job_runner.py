@@ -3,7 +3,6 @@ import concurrent.futures as fs
 import gc
 import logging
 from multiprocessing.dummy import Pool as ThreadPool
-from threading import Thread
 import os
 import pickle
 import random
@@ -11,9 +10,6 @@ import sys
 import time
 import traceback
 import tracemalloc
-from multiprocessing import Process, Queue, Manager, Value
-#from queue import Queue
-import queue
 
 import aiobotocore
 import botocore
@@ -27,318 +23,456 @@ import redis
 import sympy
 import hashlib
 
-PROGRAM_CHECK_INTERVAL = 10
 
-def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
-    program.incr_up(1)
-    lambda_start = time.time()
-    read_queue = Queue(pipeline_width)
-    compute_queue = Queue(pipeline_width)
-    write_queue = Queue(pipeline_width)
-    post_op_queue = Queue(pipeline_width*2)
-    finish_queue = Queue(pipeline_width*2)
-    log_queue = Queue()
-    manager = Manager()
-    msg_info_map  = manager.dict()
-    finished = Value('i', 0)
-    deadline = lambda_start + timeout
-    Thread = Process
-    reader = Thread(target=lambdapack_read, args=(read_queue, compute_queue, program, finished, deadline), daemon=True)
-    computer = Thread(target=lambdapack_compute, args=(compute_queue, write_queue, program, finished), daemon=True)
-    writer = Thread(target=lambdapack_write, args=(write_queue, post_op_queue, program, finished, deadline), daemon=True)
-    post_op = Thread(target=lambdapack_post_op, args=(post_op_queue, finish_queue, log_queue, program, finished), daemon=True)
-    reader.start()
-    computer.start()
-    writer.start()
-    post_op.start()
-    sqs_client = boto3.client('sqs', use_ssl=False, region_name=program.control_plane.region)
-    all_msgs = []
-    finisher = Thread(target=lambdapack_finish, args=(finish_queue, msg_info_map, program, finished), daemon=True)
-    finisher.start()
-    last_p_check = 0
-    queue_url = program.queue_urls[0]
-    print("starting job runner...")
-    while (True):
-       reset_msg_visibility(msg_info_map, msg_vis_timeout, queue_url)
-       if (finished.value):
-          break
-       if (time.time() >= lambda_start + timeout):
-          print("job runner process timeout....")
-          finished.value = True
-          break
-       if ((time.time() - last_p_check) > PROGRAM_CHECK_INTERVAL):
-          s = program.program_status()
-          last_p_check = time.time()
-          if(s != lp.PS.RUNNING):
-            #print("program status is ", s)
-            finished.value = True
-            break
-       if (not read_queue.full()):
-          try:
-            messages = sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
-          except:
-             break
-          #TODO: Multiple prioritiy queues
-          queue_url = program.queue_urls[0]
-          if ("Messages" not in messages):
-             print("no messages...")
-             time.sleep(1)
-             continue
-          else:
-             msg = messages["Messages"][0]
+REDIS_CLIENT = None
+logger = logging.getLogger(__name__)
 
-          try:
-             operator_ref = json.loads(msg["Body"])
-          except ValueError:
+def mem():
+   mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+   return mem_bytes/(1024.**3)
+
+class LRUCache(object):
+    def __init__(self, max_items=10):
+        self.cache = {}
+        self.key_order = []
+        self.max_items = max_items
+
+    def __setitem__(self, key, value):
+        self.cache[key] = value
+        self._mark(key)
+
+    def __getitem__(self, key):
+        try:
+            value = self.cache[key]
+        except KeyError:
+            # Explicit reraise for better tracebacks
+            raise KeyError
+        self._mark(key)
+        return value
+
+    def __contains__(self, obj):
+        return obj in self.cache
+
+    def _mark(self, key):
+        if key in self.key_order:
+            self.key_order.remove(key)
+
+        self.key_order.insert(0, key)
+        if len(self.key_order) > self.max_items:
+            remove = self.key_order[self.max_items]
+            del self.cache[remove]
+            self.key_order.remove(remove)
+
+class LambdaPackExecutor(object):
+    def __init__(self, program, loop, cache, read_queue):
+        self.read_executor = None
+        self.write_executor = None
+        self.compute_executor = None
+        self.loop = loop
+        self.program = program
+        self.cache = cache
+        self.block_ends= set()
+        self.read_queue = read_queue
+
+    #@profile
+    async def run(self, expr_idx, var_values, computer=None, profile=True):
+        operator_refs = [(expr_idx, var_values)]
+        event = asyncio.Event()
+        operator_refs_to_ret = []
+        profile_bytes_to_ret = []
+        for expr_idx, var_values in operator_refs:
+            try:
+               t = time.time()
+               node_status = self.program.get_node_status(expr_idx, var_values)
+               inst_block = self.program.program.eval_expr(expr_idx, var_values)
+               inst_block.start_time = time.time()
+               print(f"Running JOB={(expr_idx, var_values)}")
+               instrs = inst_block.instrs
+               next_operator = None
+            except:
                tb = traceback.format_exc()
                traceback.print_exc()
-               program.handle_exception("JSON_PARSING_EXCEPTION", tb=tb, expr_idx=-1, var_values={})
+               self.program.handle_exception("EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
                raise
 
-          msg = messages["Messages"][0]
-          print("running msg ", msg)
-          expr_idx, var_values = operator_ref
-          print("Expr IDX", expr_idx)
-          print("VAR VALUES", var_values)
-          msg_info_map[(expr_idx, str(var_values))] = (msg, queue_url, time.time())
-          node_status = program.get_node_status(expr_idx, var_values)
-          inst_block = program.program.eval_expr(expr_idx, var_values)
-          inst_block.start_time = time.time()
-          print("node_status", node_status)
-          if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
-               print("adding to read_queue")
-               try:
-                  read_queue.put((expr_idx, var_values, inst_block, 0), timeout=1, block=False)
-               except queue.Full:
-                  continue
+            if (len(instrs) != len(set(instrs))):
+                raise Exception("Duplicate instruction in instruction stream")
+            try:
+                if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
+                    self.program.set_node_status(expr_idx, var_values, lp.NS.RUNNING)
+                    operator_refs_to_ret.append((expr_idx, var_values))
+                    print("adding to read queue")
+                    await self.read_queue.put((expr_idx, var_values, inst_block, 0, event))
+                    print("added to read queue")
+                    await event.wait()
+                    for instr in instrs:
+                        instr.run = False
+                        instr.result = None
+                    instr.post_op_start = time.time()
+                    next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    #next_operator, log_bytes = self.program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    instr.post_op_end = time.time()
+                    profile_bytes_to_ret.append(log_bytes)
+                    if next_operator is not None:
+                         operator_refs.append(next_operator)
+                elif (node_status == lp.NS.POST_OP):
+                    operator_refs_to_ret.append((expr_idx, var_values))
+                    logger.warning("node: {0}:{1} finished work skipping to post_op...".format(expr_idx, var_values))
+                    next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+                    profile_bytes_to_ret.append(log_bytes)
+                    if next_operator is not None:
+                        operator_refs.append(next_operator)
+                elif (node_status == lp.NS.NOT_READY):
+                   logger.warning("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
 
-               print("added to read_queue")
-          elif (node_status == lp.NS.POST_OP):
-               print("skipping directly to post op")
-               try:
-                  post_op_queue.put((expr_idx, var_values, inst_block, len(inst_block.instrs) - 1))
-                  full_queue = False
-               except queue.Full:
-                  full_queue = True
-                  continue
-          elif (node_status == lp.NS.NOT_READY):
-               print("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
-               pass
-          elif (node_status == lp.NS.FINISHED):
-               print("node: {0}:{1} finished post_op skipping...".format(expr_idx, var_values))
-          else:
-               raise Exception("Unknown status: {0}".format(node_status))
-    finished.value= True
-    print("LOG QUEUE SIZE", log_queue.qsize())
-    profiled_inst_blocks = {}
+                   continue
+                elif (node_status == lp.NS.FINISHED):
+                   logger.warning("node: {0}:{1} finished post_op skipping...".format(expr_idx, var_values))
+                   continue
+                else:
+                    raise Exception("Unknown status: {0}".format(node_status))
+                if next_operator is not None:
+                    operator_refs.append(next_operator)
+            except fs._base.TimeoutError as e:
+                self.program.decr_up(1)
+                raise
+            except RuntimeError as e:
+                self.program.decr_up(1)
+                raise
+            except Exception as e:
+                instr.run = True
+                instr.cache = None
+                instr.executor = None
+                self.program.decr_up(1)
+                traceback.print_exc()
+                tb = traceback.format_exc()
+                self.program.post_op(expr_idx, var_values, lp.PS.EXCEPTION, inst_block, tb=tb)
+                raise
+        e = time.time()
+        res = list(zip(operator_refs_to_ret, profile_bytes_to_ret))
+        #print('======\n'*10)
+        #print("operator refs", operator_refs_to_ret)
+        #print("profile bytes to ret", profile_bytes_to_ret)
+        #print("RETURING ", res)
+        #print('======\n'*10)
+        return res
+
+
+def calculate_busy_time(rtimes):
+    #pairs = [[(item[0], 1), (item[1], -1)] for sublist in rtimes for item in sublist]
+    pairs = [[(item[0], 1), (item[1], -1)] for item in rtimes]
+    events = sorted([item for sublist in pairs for item in sublist])
+    running = 0
+    wtimes = []
+    current_start = 0
+    for event in events:
+        if running == 0 and event[1] == 1:
+            current_start = event[0]
+        if running == 1 and event[1] == -1:
+            wtimes.append([current_start, event[0]])
+        running += event[1]
+    return wtimes
+
+
+async def check_failure(loop, program, failure_key):
+    global REDIS_CLIENT
+    if (REDIS_CLIENT == None):
+       REDIS_CLIENT = program.control_plane.client
     while (True):
-      try:
-         expr_idx, var_values, inst_block = log_queue.get(block=False)
-         profiled_inst_blocks[(expr_idx, str(var_values))] = inst_block
-      except queue.Empty:
-         print("log queue empty...")
-         break
-      except:
-         print("some other exception occurred!!!")
-         break
-    try:
-      profile_bytes = pickle.dumps(profiled_inst_blocks)
-    except:
-       print("PROFILE BYTES PICKLE FAILED..")
+      f_key = REDIS_CLIENT.get(failure_key)
+      if (f_key is not None):
+         logger.error("FAIL FAIL FAIL FAIL FAIL")
+         logger.error(f_key)
+         loop.stop()
+      await asyncio.sleep(5)
 
-    print("number of profiled inst blocks", len(profiled_inst_blocks))
+
+def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=0, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
+    program.incr_up(1)
+    lambda_start = time.time()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    computer = fs.ThreadPoolExecutor(compute_threads)
+    if (cache_size > 0):
+        cache = LRUCache(max_items=cache_size)
+    else:
+        cache = None
+    shared_state = {}
+    shared_state["busy_workers"] = 0
+    shared_state["done_workers"] = 0
+    shared_state["pipeline_width"] = pipeline_width
+    shared_state["running_times"] = []
+    shared_state["last_busy_time"] = time.time()
+    loop.create_task(check_program_state(program, loop, shared_state, timeout, idle_timeout))
+    loop.create_task(check_failure(loop, program, failure_key))
+    tasks = []
+    for i in range(pipeline_width):
+        # all the async tasks share 1 compute thread and a io cache
+        coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout, msg_vis_timeout=msg_vis_timeout, msg_vis_timeout_jitter=msg_vis_timeout_jitter)
+        tasks.append(loop.create_task(coro))
+    #results = loop.run_until_complete(asyncio.gather(*tasks))
+    loop.run_forever()
+    loop.close()
+    lambda_stop = time.time()
+    program.decr_up(1)
+    logger.debug("Loop end program status: {0}".format(program.program_status()))
+    return {"up_time": [lambda_start, lambda_stop],
+            "exec_time": calculate_busy_time(shared_state["running_times"])}
+
+async def read(read_queue, compute_queue, program):
+   while (True):
+      print("started reader..")
+      val = await read_queue.get()
+      print("got a value")
+      print(val)
+      expr_idx, var_values, inst_block, i, event = val
+      print("here")
+      assert i == 0
+      for i, instr in enumerate(inst_block.instrs):
+         print("inst_block, i", inst_block, i)
+         if (not isinstance(instr, lp.RemoteRead)):
+            break
+         else:
+            try:
+               await instr()
+               read_size = instr.read_size
+               program.incr_read(read_size)
+            except:
+                print("EXCEPTION")
+                instr.run = True
+                instr.cache = None
+                instr.executor = None
+                program.decr_up(1)
+                traceback.print_exc()
+                tb = traceback.format_exc()
+                self.program.handle_exception("READ_EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+                raise
+
+      await compute_queue.put((expr_idx, var_values, inst_block, i, event))
+      await asyncio.sleep(0)
+
+async def compute(compute_queue, write_queue, program):
+   print("started computer..")
+   while (True):
+      val = await compute_queue.get()
+      expr_idx, var_values, inst_block, i, event = val
+      assert isinstance(inst_block.instrs[i], lp.RemoteCall)
+      instr = inst_block.instrs[i]
+      try:
+         await instr()
+         flops = int(instr.get_flops())
+         program.incr_flops(flops)
+         print("finished compute")
+      except:
+          instr.run = True
+          instr.cache = None
+          instr.executor = None
+          traceback.print_exc()
+          tb = traceback.format_exc()
+          program.handle_exception("COMPUTE EXCEPITION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+          raise
+      print("adding something to write queue")
+      await write_queue.put((expr_idx, var_values, inst_block, i+1, event))
+      await asyncio.sleep(0)
+
+async def write(write_queue, program):
+   while (True):
+      print("started writer..")
+      val = await write_queue.get()
+      print("got write value")
+      expr_idx, var_values, inst_block, i, event = val
+      print('got here')
+      for i in range(i, len(inst_block.instrs)):
+         assert isinstance(inst_block.instrs[i], lp.RemoteWrite)
+         instr = inst_block.instrs[i]
+         print('here here')
+         try:
+            await instr()
+            write_size = instr.write_size
+            program.incr_write(write_size)
+         except:
+             instr.run = True
+             instr.cache = None
+             instr.executor = None
+             traceback.print_exc()
+             tb = traceback.format_exc()
+             program.handle_exception("COMPUTE EXCEPITION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+             raise
+      event.set()
+      await asyncio.sleep(0)
+
+
+
+
+
+#@profile
+def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
+    program.incr_up(1)
+    lambda_start = time.time()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    computer = fs.ThreadPoolExecutor(compute_threads)
+    program.control_plane.cache()
+
+    read_queue = asyncio.Queue(pipeline_width)
+    compute_queue = asyncio.Queue(pipeline_width)
+    write_queue = asyncio.Queue(pipeline_width)
+    post_op_queue = asyncio.Queue(pipeline_width)
+
+    tot_messages = []
+    if (cache_size > 0):
+        cache = LRUCache(max_items=cache_size)
+    else:
+        cache = None
     m = hashlib.md5()
+    profiles = {}
+    shared_state = {}
+    shared_state["busy_workers"] = 0
+    shared_state["done_workers"] = 0
+    shared_state["pipeline_width"] = pipeline_width
+    shared_state["all_operator_refs"] = []
+    shared_state["profiles"] = profiles
+    shared_state["running_times"] = []
+    shared_state["last_busy_time"] = time.time()
+    shared_state["tot_messages"]  = []
+    loop.create_task(check_program_state(program, loop, shared_state, timeout, idle_timeout))
+    loop.create_task(read(read_queue, compute_queue, program))
+    loop.create_task(compute(compute_queue, write_queue, program))
+    loop.create_task(write(write_queue, program))
+
+    tasks = []
+    for i in range(pipeline_width):
+        # all the async tasks share 1 compute thread and a io cache
+        coro = lambdapack_run_async(loop, program, computer, cache, shared_state=shared_state, timeout=timeout, msg_vis_timeout=msg_vis_timeout, msg_vis_timeout_jitter=msg_vis_timeout_jitter, read_queue=read_queue)
+        tasks.append(loop.create_task(coro))
+    loop.run_forever()
+    print("loop end")
+    loop.close()
+    lambda_stop = time.time()
+    profile_bytes = pickle.dumps(profiles)
     m.update(profile_bytes)
     p_key = m.hexdigest()
     p_key = "{0}/{1}/{2}".format("lambdapack", program.hash, p_key)
+    print('='*10)
+    print("PROFILES WAS ", profiles)
+    print("Writing log obj.... to {0}".format(p_key))
+    print('='*10)
     client = boto3.client('s3', region_name=program.control_plane.region)
     client.put_object(Bucket=program.bucket, Key=p_key, Body=profile_bytes)
-    res = program.decr_up(1)
-    lambda_stop = time.time()
     return {"up_time": [lambda_start, lambda_stop],
-            "logs":  profiled_inst_blocks}
-    return
-
-def lambdapack_read(read_queue, compute_queue, program, finished, deadline):
-   #print("READER STARTED..")
-   # do read and then pass on to compute_queue
-   while(True):
-      t = time.time()
-      val = read_queue.get()
-      if val == -1:
-         return
-      e = time.time()
-      expr_idx, var_values, inst_block, i = val
-      inst_block.read_queue_start = t
-      inst_block.read_queue_end = e
-      inst_block.read_start = time.time()
-      assert i == 0
-      if (time.time() >= deadline):
-         print("job runner process timeout....")
-         finished.value = True
-         break
-
-      for i,instr in enumerate(inst_block.instrs):
-         if (isinstance(instr, lp.RemoteRead)):
-            try:
-               instr()
-               program.incr_read(instr.size)
-            except:
-               raise
-               tb = traceback.format_exc()
-               traceback.print_exc()
-               program.handle_exception("READ EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-               finished.value= True
-         elif (isinstance(instr, lp.RemoteWrite)):
-            assert False
-         elif (isinstance(instr, lp.RemoteCall)):
-            #serialize and send forward
-            inst_block.read_end = time.time()
-            compute_queue.put((expr_idx, var_values, inst_block, i))
-            break
-
-def lambdapack_compute(compute_queue, write_queue, program, finished):
-   #print("COMPUTER STARTED..")
-   while(True):
-      t = time.time()
-      val = compute_queue.get()
-      e = time.time()
-      if val == -1:
-         #print("compute returns")
-         return
-      expr_idx, var_values, inst_block, i = val
-      inst_block.compute_queue_start = t
-      inst_block.compute_queue_end = e
-      #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in COMPUTE")
-      assert(isinstance(inst_block.instrs[i], lp.RemoteCall))
-      try:
-         inst_block.compute_start = time.time()
-         inst_block.instrs[i]()
-         inst_block.compute_end = time.time()
-         program.incr_flops(int(inst_block.instrs[i].get_flops()))
-      except:
-         raise
-         tb = traceback.format_exc()
-         traceback.print_exc()
-         program.handle_exception("COMPUTE EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-         finished.value = True
-      assert len(inst_block.instrs) > i + 1
-      assert isinstance(inst_block.instrs[i+1], lp.RemoteWrite)
-      write_queue.put((expr_idx, var_values, inst_block, i+1))
-
-def lambdapack_write(write_queue, post_op_queue, program, finished, deadline):
-   #print("WRITER STARTED..")
-   while(True):
-      t = time.time()
-      val = write_queue.get()
-      e = time.time()
-      if val == -1:
-         #print("write returning")
-         return
-      expr_idx, var_values, inst_block, i = val
-      inst_block.write_queue_start = t
-      inst_block.write_queue_end = e
-      inst_block.write_start = time.time()
-      #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in WRITE")
-      for j in range(i, len(inst_block.instrs)):
-         assert(isinstance(inst_block.instrs[j], lp.RemoteWrite))
-         try:
-            inst_block.instrs[j]()
-            program.incr_write(inst_block.instrs[j].size)
-            if (time.time() >= deadline):
-               print("job runner process timeout....")
-               finished.value = True
-               break
-         except:
-            raise
-            tb = traceback.format_exc()
-            traceback.print_exc()
-            program.handle_exception("WRITE EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-            finished.value = True
-      inst_block.write_end = time.time()
-      post_op_queue.put((expr_idx, var_values, inst_block, len(inst_block.instrs) - 1))
+            "exec_time": calculate_busy_time(shared_state["running_times"]),
+            "executed_messages": shared_state["tot_messages"],
+            "operator_refs": shared_state["all_operator_refs"],
+            "log" : profile_bytes}
 
 
-
-def lambdapack_post_op(post_op_queue, finish_queue, log_queue, program, finished):
-   #print("POSTOP STARTED..")
-   while(True):
-      t = time.time()
-      val = post_op_queue.get()
-      e = time.time()
-      if val == -1:
-         #print("post_op returning")
-         return
-      expr_idx, var_values, inst_block, i = val
-      inst_block.post_op_queue_start = t
-      inst_block.post_op_queue_end = e
-      #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in POST_OP")
-      assert(len(inst_block.instrs) - 1 == i)
-      try:
-         inst_block.post_op_start = time.time()
-         next_operator, profiled_block = program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
-         inst_block.post_op_end = time.time()
-         print("post_op took", inst_block.post_op_end - inst_block.post_op_start)
-         finish_queue.put((expr_idx, var_values, inst_block, i))
-         #print("submitting log object...")
-         log_queue.put((expr_idx, var_values, profiled_block))
-      except:
-         program.handle_exception("post op EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-         finished.value = True
-
-
-def reset_msg_visibility(msg_info_map, msg_vis_timeout, queue_url):
-   for key, val in list(msg_info_map.items()):
+async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lock):
+    assert(timeout > timeout_jitter)
+    while(lock[0] == 1):
         try:
-            last_reset_time = val[-1]
-            msg = val[0]
-            queue_url = val[1]
-            curr_time = time.time()
-            if (last_reset_time - curr_time  > msg_vis_timeout/3):
-               operator_ref = tuple(json.loads(msg["Body"]))
-               if (finished.value):
-                  #print(f"reset msg for {operator_ref} finished quitting..")
-                  break
-               receipt_handle = msg["ReceiptHandle"]
-               sqs_client = boto3.client('sqs')
-               res = sqs_client.change_message_visibility(VisibilityTimeout=msg_vis_timeout, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-               msg_info_map[msg] = (msg, queue_url, time.time())
-               time.sleep((msg_vis_timeout/2))
+            receipt_handle = msg["ReceiptHandle"]
+            operator_ref = tuple(json.loads(msg["Body"]))
+            sqs_client = boto3.client('sqs')
+            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            await asyncio.sleep(45)
         except Exception as e:
-            finished.value = True
-   return 0
+            print("PC: {0} Exception in reset msg vis ".format(operator_ref) + str(e))
+            await asyncio.sleep(10)
+    operator_ref = tuple(json.loads(msg["Body"]))
+    return 0
 
-def lambdapack_finish(finish_queue, msg_info_map, program, finished):
-   try:
-      sqs_client = boto3.client('sqs', region_name='us-west-2')
-      while (True):
-         if (finished.value):
-            break
-         val = finish_queue.get()
-         if (val == -1):
-            return
-         expr_idx, var_values, inst_block, i = val
-         inst_block.finish_start = time.time()
-         assert(len(inst_block.instrs) == i + 1)
-         print("Marking {0} as done".format((expr_idx, var_values)))
-         program.set_node_status(expr_idx, var_values, lp.NS.FINISHED)
-         msg, queue_url, reset_time = msg_info_map[(expr_idx, str(var_values))]
-         receipt_handle = msg["ReceiptHandle"]
-         try:
-            del msg_info_map[(expr_idx, str(var_values))]
-         except KeyError:
-            print("key error..")
-            pass
-         sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-         inst_block.finish_end = time.time()
-   except:
-      finished.value = True
-      raise
+async def check_program_state(program, loop, shared_state, timeout, idle_timeout):
+    start_time = time.time()
+    while(True):
+        if shared_state["busy_workers"] == 0:
+            if time.time() - start_time > timeout:
+                break
+            if time.time() - shared_state["last_busy_time"] >  idle_timeout:
+                break
+        #TODO make this an s3 access as opposed to DD access since we don't *really need* atomicity here
+        #TODO make this coroutine friendly
+        s = program.program_status()
+        if(s != lp.PS.RUNNING):
+           print("program status is ", s)
+           break
+        await asyncio.sleep(idle_timeout)
+    #print("Closing loop from program")
+    loop.stop()
 
 
-
-
-
+#@profile
+async def lambdapack_run_async(loop, program, computer, cache, shared_state, read_queue, pipeline_width=1, msg_vis_timeout=60, timeout=200, msg_vis_timeout_jitter=15):
+    global REDIS_CLIENT
+    session = aiobotocore.get_session(loop=loop)
+    lmpk_executor = LambdaPackExecutor(program, loop, cache, read_queue)
+    start_time = time.time()
+    running_times = shared_state['running_times']
+    if (REDIS_CLIENT == None):
+       REDIS_CLIENT = program.control_plane.client
+    redis_client = REDIS_CLIENT
+    try:
+        while(True):
+            current_time = time.time()
+            if ((current_time - start_time) > timeout):
+                print("Hit timeout...returning now")
+                shared_state["done_workers"] += 1
+                loop.stop()
+                return
+            await asyncio.sleep(0)
+            # go from high priority -> low priority
+            for queue_url in program.queue_urls[::-1]:
+                async with session.create_client('sqs', use_ssl=False,  region_name=program.control_plane.region) as sqs_client:
+                    messages = await sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
+                if ("Messages" not in messages):
+                    continue
+                else:
+                    # note for loops in python leak scope so when this breaks
+                    # messages = messages
+                    # queue_url= messages
+                    break
+            if ("Messages" not in messages):
+                #if time.time() - last_message_time > 10:
+                #    return running_times
+                continue
+            shared_state["busy_workers"] += 1
+            redis_client.incr("{0}_busy".format(program.hash))
+            #last_message_time = time.time()
+            start_processing_time = time.time()
+            msg = messages["Messages"][0]
+            receipt_handle = msg["ReceiptHandle"]
+            # if we don't finish in 75s count as a failure
+            #res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            operator_ref = json.loads(msg["Body"])
+            print("Operator ref", operator_ref)
+            shared_state["tot_messages"].append(operator_ref)
+            redis_client.set(msg["MessageId"], str(time.time()))
+            #print("creating lock")
+            lock = [1]
+            coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, msg_vis_timeout_jitter, lock)
+            loop.create_task(coro)
+            all_operator_refs = shared_state["all_operator_refs"]
+            all_operator_refs = shared_state["all_operator_refs"]
+            operator_refs= await lmpk_executor.run(*operator_ref, computer=computer)
+            profiles = shared_state["profiles"]
+            for operator_ref, p_info in operator_refs:
+                logger.debug("Marking {0} as done".format(operator_ref))
+                program.set_node_status(*operator_ref, lp.NS.FINISHED)
+                all_operator_refs.append(operator_ref)
+                profiles[str(operator_ref)] = p_info
+            async with session.create_client('sqs', use_ssl=False,  region_name=program.control_plane.region) as sqs_client:
+                lock[0] = 0
+                await sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            end_processing_time = time.time()
+            running_times.append((start_processing_time, end_processing_time))
+            shared_state["busy_workers"] -= 1
+            redis_client.decr("{0}_busy".format(program.hash))
+            shared_state["last_busy_time"] = time.time()
+            current_time = time.time()
+    except Exception as e:
+        #print(e)
+        traceback.print_exc()
+        raise
+    return
 
 
 
