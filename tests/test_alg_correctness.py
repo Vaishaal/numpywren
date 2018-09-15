@@ -31,7 +31,7 @@ def run_program_in_pywren(program, num_workers=32):
 def test_cholesky():
     X = np.random.randn(64, 64)
     A = X.dot(X.T) + np.eye(X.shape[0])
-    shard_size = 16
+    shard_size = 8
     shard_sizes = (shard_size, shard_size)
     A_sharded= BigMatrix("cholesky_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
     A_sharded.free()
@@ -40,7 +40,7 @@ def test_cholesky():
     executor = fs.ProcessPoolExecutor(1)
     print("starting program")
     program.start()
-    future = executor.submit(job_runner.lambdapack_run, program, timeout=60, idle_timeout=6)
+    future = executor.submit(job_runner.lambdapack_run, program, timeout=30, idle_timeout=6)
     program.wait()
     program.free()
     L_sharded = meta["outputs"][0]

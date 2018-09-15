@@ -13,7 +13,7 @@ import traceback
 import tracemalloc
 #from multiprocessing import Process
 from queue import Queue
-
+import queue
 
 import aiobotocore
 import botocore
@@ -53,15 +53,23 @@ def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, 
     finisher = Thread(target=lambdapack_finish, args=(finish_queue,msg_info_map, program, finished))
     finisher.start()
     last_p_check = 0
-    while (time.time() < lambda_start + timeout):
+    queue_url = program.queue_urls[0]
+    while (True):
+       reset_msg_visibility(msg_info_map, msg_vis_timeout, queue_url)
+       if (time.time() >= lambda_start + timeout):
+          print("job runner process timeout....")
+          break
        if ((time.time() - last_p_check) > PROGRAM_CHECK_INTERVAL):
           s = program.program_status()
           last_p_check = time.time()
           if(s != lp.PS.RUNNING):
-            print("program status is ", s)
+            #print("program status is ", s)
             finished[0] = True
             break
-       messages = sqs_client.receive_message(QueueUrl=program.queue_urls[0], MaxNumberOfMessages=1)
+       try:
+         messages = sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
+       except:
+          break
        #TODO: Multiple prioritiy queues
        queue_url = program.queue_urls[0]
        if ("Messages" not in messages):
@@ -79,21 +87,18 @@ def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, 
             raise
 
        msg = messages["Messages"][0]
-       print("running msg ", msg)
-       stop = [0]
-       t = Thread(target=reset_msg_visibility, args=(msg, msg_vis_timeout, queue_url, stop, finished))
-       t.start()
+       #print("running msg ", msg)
        expr_idx, var_values = operator_ref
-       print("Expr IDX", expr_idx)
-       print("VAR VALUES", var_values)
-       msg_info_map[(expr_idx, str(var_values))] = (queue_url, msg, stop)
+       #print("Expr IDX", expr_idx)
+       #print("VAR VALUES", var_values)
+       msg_info_map[(expr_idx, str(var_values))] = (msg, queue_url, time.time())
        node_status = program.get_node_status(expr_idx, var_values)
        inst_block = program.program.eval_expr(expr_idx, var_values)
-       print("node_status", node_status)
+       #print("node_status", node_status)
        if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
-            print("adding to read_queue")
+            #print("adding to read_queue")
             read_queue.put((expr_idx, var_values, inst_block, 0))
-            print("added to read_queue")
+            #print("added to read_queue")
        elif (node_status == lp.NS.POST_OP):
             post_op_queue.put(inst_block)
        elif (node_status == lp.NS.NOT_READY):
@@ -105,15 +110,25 @@ def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, 
             raise Exception("Unknown status: {0}".format(node_status))
     profiled_inst_blocks = {}
     finished[0]= True
-    while (not log_queue.empty):
-      expr_idx, var_values, log = log_queue.get()
-      profiled_inst_blocks[(expr_idx, str(var_values))] = inst_block
+    print("LOG QUEUE SIZE", log_queue.qsize())
+    while (True):
+      try:
+         expr_idx, var_values, inst_block = log_queue.get(block=False)
+         profiled_inst_blocks[(expr_idx, str(var_values))] = inst_block
+      except queue.Empty:
+         print("log queue empty...")
+         break
+      except:
+         print("some other exception occurred!!!")
+         break
+    try:
+      profile_bytes = pickle.dumps(profiled_inst_blocks)
+    except:
+       print("PROFILE BYTES PICKLE FAILED..")
 
-    profile_bytes = pickle.dumps(profiled_inst_blocks)
+    print("number of profiled inst blocks", len(profiled_inst_blocks))
     m = hashlib.md5()
     m.update(profile_bytes)
-    # double store the logs because they are *SO GOD DAMN IMPORTANT*
-    m = hashlib.md5()
     p_key = m.hexdigest()
     p_key = "{0}/{1}/{2}".format("lambdapack", program.hash, p_key)
     client = boto3.client('s3', region_name=program.control_plane.region)
@@ -125,22 +140,18 @@ def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, 
     compute_queue.put(-1)
     post_op_queue.put(-1)
     finish_queue.put(-1)
-    print("returning..")
+    #print("returning..")
     return {"up_time": [lambda_start, lambda_stop],
             "logs":  profiled_inst_blocks}
 
 def lambdapack_read(read_queue, compute_queue, program, finished):
-   print("READER STARTED..")
+   #print("READER STARTED..")
    # do read and then pass on to compute_queue
    while(True):
-      print("YOOO")
       val = read_queue.get()
       if val == -1:
-         print("read returns")
          return
       expr_idx, var_values, inst_block, i = val
-      print("YO")
-      #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in READ")
       assert i == 0
       for i,instr in enumerate(inst_block.instrs):
          if (isinstance(instr, lp.RemoteRead)):
@@ -159,14 +170,14 @@ def lambdapack_read(read_queue, compute_queue, program, finished):
             break
 
 def lambdapack_compute(compute_queue, write_queue, program, finished):
-   print("COMPUTER STARTED..")
+   #print("COMPUTER STARTED..")
    while(True):
       val = compute_queue.get()
       if val == -1:
-         print("compute returns")
+         #print("compute returns")
          return
       expr_idx, var_values, inst_block, i = val
-      print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in COMPUTE")
+      #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in COMPUTE")
       assert(isinstance(inst_block.instrs[i], lp.RemoteCall))
       try:
          inst_block.instrs[i]()
@@ -180,14 +191,14 @@ def lambdapack_compute(compute_queue, write_queue, program, finished):
       write_queue.put((expr_idx, var_values, inst_block, i+1))
 
 def lambdapack_write(write_queue, post_op_queue, program, finished):
-   print("WRITER STARTED..")
+   #print("WRITER STARTED..")
    while(True):
       val = write_queue.get()
       if val == -1:
-         print("write returning")
+         #print("write returning")
          return
       expr_idx, var_values, inst_block, i = val
-      print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in WRITE")
+      #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in WRITE")
       for j in range(i, len(inst_block.instrs)):
          assert(isinstance(inst_block.instrs[j], lp.RemoteWrite))
          try:
@@ -201,47 +212,50 @@ def lambdapack_write(write_queue, post_op_queue, program, finished):
 
 
 def lambdapack_post_op(post_op_queue, finish_queue, log_queue, program, finished):
-   print("POSTOP STARTED..")
+   #print("POSTOP STARTED..")
    while(True):
       val = post_op_queue.get()
       if val == -1:
-         print("post_op returning")
+         #print("post_op returning")
          return
       expr_idx, var_values, inst_block, i = val
-      print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in POST_OP")
+      #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in POST_OP")
       assert(len(inst_block.instrs) == i + 1)
       try:
-         next_operator, log_bytes = program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
+         next_operator, profiled_block = program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
          finish_queue.put((expr_idx, var_values, inst_block, i))
-         log_queue.put(log_bytes)
+         print("submitting log object...")
+         log_queue.put((expr_idx, var_values, profiled_block))
       except:
-         program.handle_exception("WRITE EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+         program.handle_exception("post op EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
          finished[0] = True
 
 
-def reset_msg_visibility(msg, msg_vis_timeout, queue_url, stop, finished):
-    while(True):
+def reset_msg_visibility(msg_info_map, msg_vis_timeout, queue_url):
+   for key, val in list(msg_info_map.items()):
         try:
-            operator_ref = tuple(json.loads(msg["Body"]))
-            if (finished[0]):
-               print(f"reset msg for {operator_ref} finished quitting..")
-               break
-            receipt_handle = msg["ReceiptHandle"]
-            sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=msg_vis_timeout, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            time.sleep((msg_vis_timeout/2))
-            if (stop[0]):
-               break
+            last_reset_time = val[-1]
+            msg = val[0]
+            queue_url = val[1]
+            curr_time = time.time()
+            if (last_reset_time - curr_time  > msg_vis_timeout/3):
+               operator_ref = tuple(json.loads(msg["Body"]))
+               if (finished[0]):
+                  #print(f"reset msg for {operator_ref} finished quitting..")
+                  break
+               receipt_handle = msg["ReceiptHandle"]
+               sqs_client = boto3.client('sqs')
+               res = sqs_client.change_message_visibility(VisibilityTimeout=msg_vis_timeout, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+               msg_info_map[msg] = (msg, queue_url, time.time())
+               time.sleep((msg_vis_timeout/2))
         except Exception as e:
-            print("PC: {0} Exception in reset msg vis ".format(operator_ref) + str(e))
-            time.sleep(msg_vis_timeout/2)
-    return 0
+            pass
+   return 0
 
 def lambdapack_finish(finish_queue, msg_info_map, program, finished):
    sqs_client = boto3.client('sqs')
    while (True):
       if (finished[0]):
-         print("lambdapack finish quitting..")
          break
       val = finish_queue.get()
       if (val == -1):
@@ -250,9 +264,9 @@ def lambdapack_finish(finish_queue, msg_info_map, program, finished):
       assert(len(inst_block.instrs) == i + 1)
       print("Marking {0} as done".format((expr_idx, var_values)))
       program.set_node_status(expr_idx, var_values, lp.NS.FINISHED)
-      queue_url, msg, stop = msg_info_map[(expr_idx, str(var_values))]
-      stop[0] = True
+      msg, queue_url, reset_time = msg_info_map[(expr_idx, str(var_values))]
       receipt_handle = msg["ReceiptHandle"]
+      del msg_info_map[(expr_idx, str(var_values))]
       sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
 
 

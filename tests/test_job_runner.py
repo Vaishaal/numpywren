@@ -18,7 +18,7 @@ import pywren.wrenconfig as wc
 def test_cholesky():
     X = np.random.randn(64, 64)
     A = X.dot(X.T) + np.eye(X.shape[0])
-    shard_size = 32
+    shard_size = 8
     shard_sizes = (shard_size, shard_size)
     A_sharded= BigMatrix("job_runner_test", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
     A_sharded.free()
@@ -35,6 +35,34 @@ def test_cholesky():
     L = np.linalg.cholesky(A)
     assert(np.allclose(L_npw, L))
     print("great success!")
+
+def test_cholesky_multiprocess():
+    X = np.random.randn(128, 128)
+    A = X.dot(X.T) + 1e9*np.eye(X.shape[0])
+    shard_size = 8
+    shard_sizes = (shard_size, shard_size)
+    A_sharded= BigMatrix("job_runner_test", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
+    A_sharded.free()
+    shard_matrix(A_sharded, A)
+    program, meta =  cholesky(A_sharded)
+    executor = fs.ProcessPoolExecutor(8)
+    print("starting program")
+    program.start()
+    futures = []
+    for i in range(8):
+        future = executor.submit(job_runner.lambdapack_run, program, timeout=25)
+        futures.append(future)
+    fs.wait(futures)
+    [f.result() for f in futures]
+    program.wait()
+    #program.free()
+    L_sharded = meta["outputs"][0]
+    L_npw = L_sharded.numpy()
+    L = np.linalg.cholesky(A)
+    assert(np.allclose(L_npw, L))
+    print("great success!")
+    return 0
+
 
 def test_cholesky_lambda():
     X = np.random.randn(128, 128)
@@ -53,7 +81,7 @@ def test_cholesky_lambda():
     pywren.wait(futures)
     print([f.result() for f in futures])
     program.wait()
-    program.free()
+    #program.free()
     L_sharded = meta["outputs"][0]
     L_npw = L_sharded.numpy()
     L = np.linalg.cholesky(A)
@@ -62,4 +90,5 @@ def test_cholesky_lambda():
 
 
 if __name__ == "__main__":
-    test_cholesky()
+    test_cholesky_multiprocess()
+    #test_cholesky()
