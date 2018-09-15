@@ -23,7 +23,7 @@ try:
     else:
         raise Exception("Unsupported loglevel")
 except:
-    log_level = logging.INFO
+    log_level = logging.DEBUG
     pass
 logger.setLevel(logging.DEBUG)
 logging.getLogger('boto').setLevel(logging.CRITICAL)

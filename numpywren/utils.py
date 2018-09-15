@@ -68,6 +68,7 @@ def get_object_with_backoff(s3_client, bucket, key, max_tries=MAX_TRIES, backoff
             obj_bytes = s3_client.get_object(Bucket=bucket, Key=key, **extra_get_args)["Body"].read()
             break
         except:
+            print("backing off")
             time.sleep(backoff)
             backoff *= 2
             num_tries += 1

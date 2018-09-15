@@ -20,6 +20,7 @@ def add_matrices(*args, **kwargs):
     return out
 
 def get_shared_so(so_name):
+    pid = os.getpid()
     out_str = f"/tmp/{so_name}.{SO_TAIL}"
     lock = open("/tmp/so_lock", "a")
     fcntl.lockf(lock, fcntl.LOCK_EX)
