@@ -123,7 +123,7 @@ def lq_factor(*blocks, **kwargs):
 
 def lq_leaf(V, T, S0, *args, **kwargs):
     # (I - VTV)^{T}*S
-    val = S0 - S0 @ V @ T.T @ V.T
+    val = S0 - S0 @ V.T @ T.T @ V
     print("=========")
     print("LQ LEAF OUTPUT", val)
     return val
