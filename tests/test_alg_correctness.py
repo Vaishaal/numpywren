@@ -201,8 +201,8 @@ def test_qr():
     assert(np.allclose(R_local, R_remote))
 
 def test_bdfac():
-    N = 16
-    shard_size = 8
+    N = 4
+    shard_size = 2
     shard_sizes = (shard_size, shard_size)
     X = np.random.randn(N, N)
     X_sharded = BigMatrix("BDFAC_input_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
@@ -214,6 +214,18 @@ def test_bdfac():
     job_runner.lambdapack_run(program, timeout=60, idle_timeout=6, pipeline_width=1)
     program.wait()
     program.free()
+    R = meta["outputs"][1]
+    L = meta["outputs"][0]
+    print(R.get_block(1, 0, 1).shape, "_____________")
+    fac = np.block([[R.get_block(0, 0, 0), L.get_block(0, 0, 1)],
+                    [np.zeros(shard_sizes), R.get_block(1, 0, 1)]])
+    print(fac)
+    print(np.linalg.qr(X[:shard_size, :shard_size]))
+    svd_remote = np.linalg.svd(fac, compute_uv=False)
+    svd_local = np.linalg.svd(X, compute_uv=False)
+
+    # make the signs match
+    assert(np.allclose(svd_remote, svd_local))
 
 
 def test_qr_lambda():

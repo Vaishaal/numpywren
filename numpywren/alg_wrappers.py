@@ -96,22 +96,22 @@ def bdfac(A):
     b_fac = 2
     shard_size = A.shard_sizes[0]
     num_tree_levels = max(int(np.ceil(np.log2(A.num_blocks(0))/np.log2(b_fac))), 1) + 1
-    VLs = BigMatrix("VLs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
-    TLs = BigMatrix("TLs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
-    Rs = BigMatrix("Rs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
-    SLs = BigMatrix("SLs", shape=(2*N, 2*N, 2*N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, 1, 1), write_header=True, parent_fn=constant_zeros, safe=False)
-    VRs = BigMatrix("VRs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
-    TRs = BigMatrix("TRs", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
-    Ls = BigMatrix("Ls", shape=(2*N, 2*N, num_tree_levels), shard_sizes=(shard_size, shard_size, 1), write_header=True, parent_fn=constant_zeros, safe=False)
-    SRs = BigMatrix("SRs", shape=(2*N, 2*N, 2*N, num_tree_levels*shard_size), shard_sizes=(shard_size, shard_size, 1, 1), write_header=True, parent_fn=constant_zeros, safe=False)
+    V_QR = BigMatrix("V_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
+    T_QR = BigMatrix("T_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
+    R_QR = BigMatrix("R_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
+    S_QR = BigMatrix("S_QR", shape=(N, num_tree_levels, N, N), shard_sizes=(1, 1, shard_size, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
+    V_LQ = BigMatrix("V_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
+    T_LQ = BigMatrix("T_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
+    L_LQ = BigMatrix("L_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
+    S_LQ = BigMatrix("S_LQ", shape=(N, num_tree_levels, N, N), shard_sizes=(1, 1, shard_size, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
     t = time.time()
-    p0 = lpcompile_for_execution(BDFAC, inputs=["I"], outputs=["Rs"])
-    p1 = p0(A, VLs, TLs, Rs, SLs, VRs, TRs, SRs, Ls,  N_blocks, 0)
+    p0 = lpcompile_for_execution(BDFAC, inputs=["I"], outputs=["R_QR", "L_LQ"])
+    p1 = p0(A, V_QR, T_QR, S_QR, R_QR, V_LQ, T_LQ, S_LQ, L_LQ, N_blocks, 0)
     e = time.time()
     c_time = e - t
     config = npw.config.default()
     program = lp.LambdaPackProgram(p1, config=config)
-    return program, {"outputs":[Ls, Rs], "intermediates":[SRs, SLs, TLs, VLs, VRs, TRs], "compile_time": c_time}
+    return program, {"outputs":[L_LQ, R_QR], "intermediates":[S_LQ, S_QR, T_QR, V_QR, V_LQ, T_LQ], "compile_time": c_time}
 
 
 
