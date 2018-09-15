@@ -28,63 +28,10 @@ import sympy
 import hashlib
 
 
-REDIS_CLIENT = None
-logger = logging.getLogger(__name__)
-
-def mem():
-   mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
-   return mem_bytes/(1024.**3)
-
-class LRUCache(object):
-    def __init__(self, max_items=10):
-        self.cache = {}
-        self.key_order = []
-        self.max_items = max_items
-
-    def __setitem__(self, key, value):
-        self.cache[key] = value
-        self._mark(key)
-
-    def __getitem__(self, key):
-        try:
-            value = self.cache[key]
-        except KeyError:
-            # Explicit reraise for better tracebacks
-            raise KeyError
-        self._mark(key)
-        return value
-
-    def __contains__(self, obj):
-        return obj in self.cache
-
-    def _mark(self, key):
-        if key in self.key_order:
-            self.key_order.remove(key)
-
-        self.key_order.insert(0, key)
-        if len(self.key_order) > self.max_items:
-            remove = self.key_order[self.max_items]
-            del self.cache[remove]
-            self.key_order.remove(remove)
-
-def calculate_busy_time(rtimes):
-    #pairs = [[(item[0], 1), (item[1], -1)] for sublist in rtimes for item in sublist]
-    pairs = [[(item[0], 1), (item[1], -1)] for item in rtimes]
-    events = sorted([item for sublist in pairs for item in sublist])
-    running = 0
-    wtimes = []
-    current_start = 0
-    for event in events:
-        if running == 0 and event[1] == 1:
-            current_start = event[0]
-        if running == 1 and event[1] == -1:
-            wtimes.append([current_start, event[0]])
-        running += event[1]
-    return wtimes
-
 
 
 PROGRAM_CHECK_INTERVAL = 10
+
 def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
     program.incr_up(1)
     lambda_start = time.time()
@@ -163,7 +110,7 @@ def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, 
     finished[0]= True
     while (not log_queue.empty):
       expr_idx, var_values, log = log_queue.get()
-    profiled_inst_blocks[(expr_idx, str(var_values))] = inst_block
+      profiled_inst_blocks[(expr_idx, str(var_values))] = inst_block
 
     profile_bytes = pickle.dumps(profiled_inst_blocks)
     m = hashlib.md5()

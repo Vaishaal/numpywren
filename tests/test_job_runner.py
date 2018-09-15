@@ -18,7 +18,7 @@ import pywren.wrenconfig as wc
 def test_cholesky():
     X = np.random.randn(64, 64)
     A = X.dot(X.T) + np.eye(X.shape[0])
-    shard_size = 64
+    shard_size = 32
     shard_sizes = (shard_size, shard_size)
     A_sharded= BigMatrix("job_runner_test", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
     A_sharded.free()
@@ -37,9 +37,9 @@ def test_cholesky():
     print("great success!")
 
 def test_cholesky_lambda():
-    X = np.random.randn(64, 64)
+    X = np.random.randn(128, 128)
     A = X.dot(X.T) + np.eye(X.shape[0])
-    shard_size = 64
+    shard_size = 32
     shard_sizes = (shard_size, shard_size)
     A_sharded= BigMatrix("job_runner_test", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
     A_sharded.free()
@@ -49,8 +49,9 @@ def test_cholesky_lambda():
     print("starting program")
     program.start()
     pwex = pywren.default_executor()
-    future = pwex.map(lambda x: job_runner.lambdapack_run(program, timeout=10, idle_timeout=6), range(1))
-    print(future[0].result())
+    futures = pwex.map(lambda x: job_runner.lambdapack_run(program, timeout=60, idle_timeout=6), range(16))
+    pywren.wait(futures)
+    print([f.result() for f in futures])
     program.wait()
     program.free()
     L_sharded = meta["outputs"][0]
@@ -61,4 +62,4 @@ def test_cholesky_lambda():
 
 
 if __name__ == "__main__":
-    test_cholesky_lambda()
+    test_cholesky()
