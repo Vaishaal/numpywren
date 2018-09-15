@@ -76,7 +76,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     if (not matrix_exists):
         X = np.random.randn(problem_size, 1)
         shard_sizes = [shard_size, 1]
-        X_sharded = BigMatrix("qr_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi")
+        X_sharded = BigMatrix("qr_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi2")
         shard_matrix(X_sharded, X)
         print("Generating PSD matrix...")
         t = time.time()
@@ -85,9 +85,9 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         e = time.time()
         print("GEMM took {0}".format(e - t))
     else:
-        X_sharded = BigMatrix("qr_test_{0}_{1}".format(problem_size, shard_size), autosqueeze=False, bucket="numpywrennsdi")
+        X_sharded = BigMatrix("qr_test_{0}_{1}".format(problem_size, shard_size), autosqueeze=False, bucket="numpywrennsdi2")
         key_name = binops.generate_key_name_binop(X_sharded, X_sharded.T, "gemm")
-        XXT_sharded = BigMatrix(key_name, hash_keys=False, bucket="numpywrennsdi")
+        XXT_sharded = BigMatrix(key_name, hash_keys=False, bucket="numpywrensdi2")
     XXT_sharded.lambdav = problem_size*10
     t = time.time()
     program, meta = qr(XXT_sharded)
@@ -289,7 +289,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
                    # [x.result() for x in all_futures]
                     all_futures.extend(new_future_futures)
             elif (autoscale_policy == "constant_timeout"):
-                if (time_since_launch > (0.85*timeout)):
+                if (False and time_since_launch > (0.85*timeout)):
                     cores_to_launch = max_cores
                     logger.info("launching {0} new tasks....".format(cores_to_launch))
                     new_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout, compute_threads=compute_threads_per_worker), range(cores_to_launch), extra_env=extra_env)

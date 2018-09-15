@@ -10,7 +10,7 @@ lambda:
     function_name : pywren_2
 
 s3:
-    bucket: numpywrennsdi
+    bucket: numpywrennsdi2
     pywren_prefix: pywren.jobs
     #bucket: imagenet2pywren
     #pywren_prefix: pywren.jobs
@@ -24,10 +24,10 @@ runtime:
   #s3_key: pywren.runtime/pywren_runtime-3.6-imagenet2pywren.tar.gz
 
 scheduler:
-    map_item_limit: 10000
+    map_item_limit: 30000
 
 standalone:
-    ec2_instance_type: c4.8xlarge
+    ec2_instance_type: c4.large
     sqs_queue_name: pywren-jobs-1
     visibility: 10
     ec2_ssh_key : imagenet_exps

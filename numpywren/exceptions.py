@@ -15,3 +15,10 @@ class LambdaPackTypeException(Exception):
     def __init__(self, msg):
         super().__init__(msg)
 
+class LambdaPackTimeoutException(Exception):
+    def __init__(self, msg):
+        super().__init__(msg)
+
+class LambdaPackRetriesExhaustedException(Exception):
+    def __init__(self, msg):
+        super().__init__(msg)
