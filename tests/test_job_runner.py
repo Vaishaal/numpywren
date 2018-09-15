@@ -23,7 +23,7 @@ import json
 def test_cholesky():
     X = np.random.randn(64, 64)
     A = X.dot(X.T) + np.eye(X.shape[0])
-    shard_size = 16
+    shard_size = 32
     shard_sizes = (shard_size, shard_size)
     A_sharded= BigMatrix("job_runner_test", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
     A_sharded.free()
@@ -172,5 +172,5 @@ def test_cholesky_multi_repeats():
 
 if __name__ == "__main__":
     #test_cholesky_multi_repeats()
-    test_cholesky()
-    #test_cholesky_lambda()
+    #test_cholesky()
+    test_cholesky_lambda()

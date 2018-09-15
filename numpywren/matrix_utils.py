@@ -311,7 +311,7 @@ def make_constant_parent(cnst):
     return constant_parent
 
 
-def constant_zeros(bigm, *block_idx):
+async def constant_zeros(bigm, loop, *block_idx):
     real_idxs = bigm.__block_idx_to_real_idx__(block_idx)
     current_shape = tuple([e - s for s,e in real_idxs])
     return np.zeros(current_shape)
