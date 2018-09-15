@@ -5,7 +5,7 @@ from numpywren import lambdapack as lp
 from numpywren import job_runner, frontend
 from numpywren.compiler import lpcompile_for_execution
 from numpywren.algs import CHOLESKY, TSQR, GEMM, QR, BDFAC
-from numpywren.matrix_utils import constant_zeros
+from numpywren.matrix_utils import constant_zeros, constant_zeros_ext
 from numpywren.matrix_init import shard_matrix
 import dill
 import numpywren as npw
@@ -96,14 +96,14 @@ def bdfac(A):
     b_fac = 2
     shard_size = A.shard_sizes[0]
     num_tree_levels = max(int(np.ceil(np.log2(A.num_blocks(0))/np.log2(b_fac))), 1) + 1
-    V_QR = BigMatrix("V_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
-    T_QR = BigMatrix("T_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
-    R_QR = BigMatrix("R_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
-    S_QR = BigMatrix("S_QR", shape=(N, num_tree_levels, N, N), shard_sizes=(1, 1, shard_size, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
-    V_LQ = BigMatrix("V_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
-    T_LQ = BigMatrix("T_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
-    L_LQ = BigMatrix("L_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
-    S_LQ = BigMatrix("S_LQ", shape=(N, num_tree_levels, N, N), shard_sizes=(1, 1, shard_size, shard_size), write_header=True, parent_fn=constant_zeros, safe=False)
+    V_QR = BigMatrix("V_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    T_QR = BigMatrix("T_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    R_QR = BigMatrix("R_QR", shape=(N, num_tree_levels, N), parent_fn=constant_zeros, shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    S_QR = BigMatrix("S_QR", shape=(N, num_tree_levels, N, N), shard_sizes=(1, 1, shard_size, shard_size), write_header=True, safe=False)
+    V_LQ = BigMatrix("V_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    T_LQ = BigMatrix("T_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    L_LQ = BigMatrix("L_LQ", shape=(N, num_tree_levels, N), parent_fn=constant_zeros_ext, shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    S_LQ = BigMatrix("S_LQ", shape=(N, num_tree_levels, N, N), shard_sizes=(1, 1, shard_size, shard_size), write_header=True, safe=False)
     t = time.time()
     p0 = lpcompile_for_execution(BDFAC, inputs=["I"], outputs=["R_QR", "L_LQ"])
     p1 = p0(A, V_QR, T_QR, S_QR, R_QR, V_LQ, T_LQ, S_LQ, L_LQ, N_blocks, 0)

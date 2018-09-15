@@ -118,7 +118,9 @@ qr_factor.flops = _qr_flops
 
 def lq_factor(*blocks, **kwargs):
     ins = np.hstack(blocks)
+    print(ins.shape)
     v,t,r = fast_qr(ins.T)
+    print(v.shape)
     return v.T,t.T,r.T
 
 def lq_leaf(V, T, S0, *args, **kwargs):
@@ -168,6 +170,7 @@ qr_trailing_update.flops = _qr_trailing_flops
 def lq_trailing_update(V, T, S0, S1=None, *args, **kwargs):
     if (S1 is None):
         return lq_leaf(V, T, S0), np.zeros(S0.shape)
+    print(V.shape)
     V = V[:, -S0.shape[0]:]
     W = (S0 + S1 @ V.T) @ T.T
     S01 = S0 - W

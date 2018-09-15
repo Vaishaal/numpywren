@@ -206,7 +206,7 @@ def test_qr():
     assert(np.allclose(R_local, R_remote))
 
 def test_bdfac():
-    N = 4
+    N = 8
     shard_size = 2
     shard_sizes = (shard_size, shard_size)
     X = np.random.randn(N, N)
@@ -221,27 +221,15 @@ def test_bdfac():
     program.free()
     R = meta["outputs"][1]
     L = meta["outputs"][0]
-    fac = np.block([[R.get_block(0, 1, 0), L.get_block(0, 0, 1)],
-                    [np.zeros(shard_sizes), R.get_block(1, 0, 1)]])
-    print(fac)
-    svd_local = np.linalg.svd(X, compute_uv=False)
-    Q00, X[:shard_size, :shard_size] = np.linalg.qr(X[:shard_size, :shard_size])
-    Q01, X[shard_size:, :shard_size] = np.linalg.qr(X[shard_size:, :shard_size])
-    Q10, X[:, :shard_size] = np.linalg.qr(X[:, :shard_size], mode='complete')
-    X[:shard_size, shard_size:] = Q00.T @ X[:shard_size, shard_size:]
-    X[shard_size:, shard_size:] = Q01.T @ X[shard_size:, shard_size:]
-    X[:, shard_size:] = Q10.T @ X[:, shard_size:]
-    Q, X[:shard_size, shard_size:] = np.linalg.qr(X[:shard_size, shard_size:].T)
-    X[:shard_size, shard_size:] =X[:shard_size, shard_size:].T   
-    X[shard_size:, shard_size:] = X[shard_size:, shard_size:] @ Q
-    X[shard_size:, shard_size:] = np.linalg.qr(X[shard_size:, shard_size:], mode='r')
-    print(X)
+    fac = np.block([[R.get_block(0, 2, 0), L.get_block(0, 1, 1), np.zeros(shard_sizes), np.zeros(shard_sizes)],
+                    [np.zeros(shard_sizes), R.get_block(1, 1, 1), L.get_block(1, 1, 2), np.zeros(shard_sizes)],
+                    [np.zeros(shard_sizes), np.zeros(shard_sizes), R.get_block(2, 1, 2), L.get_block(2, 0, 3)],
+                    [np.zeros(shard_sizes), np.zeros(shard_sizes), np.zeros(shard_sizes), R.get_block(3, 0, 3)]])
     
     svd_remote = np.linalg.svd(fac, compute_uv=False)
-    svd_check = np.linalg.svd(X, compute_uv=False)
+    svd_local = np.linalg.svd(X, compute_uv=False)
 
     # make the signs match
-    assert(np.allclose(svd_check, svd_local))
     assert(np.allclose(svd_remote, svd_local))
 
 

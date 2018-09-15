@@ -316,6 +316,13 @@ async def constant_zeros(bigm, loop, *block_idx):
     current_shape = tuple([e - s for s,e in real_idxs])
     return np.zeros(current_shape)
 
+async def constant_zeros_ext(bigm, loop, *block_idx):
+    real_idxs = bigm.__block_idx_to_real_idx__(block_idx)
+    current_shape = list([e - s for s,e in real_idxs])
+    if current_shape == 1:
+        current_shape = [1] + current_shape
+    return np.zeros(current_shape)
+
 
 def reshard_down(pwex, bigm, breakdowns):
     ''' Return a new bigm whose shard sizes are bigm.shard_sizes/break_downs

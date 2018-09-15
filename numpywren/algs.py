@@ -111,7 +111,7 @@ def BDFAC(I:BigMatrix, V_QR:BigMatrix, T_QR:BigMatrix, S_QR:BigMatrix, R_QR:BigM
             for j in range(1, N):
                 # TODO: I'm not sure this is correct. Need to think about transposes.
 #7
-                S_LQ[0, level, j, k], S_LQ[0, N_tree_LQ_full, j, k + 2 ** (level - 1)] = lq_trailing_update(V_LQ[0, level, j], T_LQ[0, level, j], S_LQ[0, level - 1, j, k], S_LQ[0, level - 1, j, k + 2 ** (level - 1)])
+                S_LQ[0, level, j, k], S_LQ[0, N_tree_LQ_full, j, k + 2 ** (level - 1)] = lq_trailing_update(V_LQ[0, level, k], T_LQ[0, level, k], S_LQ[0, level - 1, j, k], S_LQ[0, level - 1, j, k + 2 ** (level - 1)])
 
     #
     # Run the rest of the steps except for the last step.
@@ -171,7 +171,7 @@ def BDFAC(I:BigMatrix, V_QR:BigMatrix, T_QR:BigMatrix, S_QR:BigMatrix, R_QR:BigM
                 for j in range(i + 1, N):
                     # TODO: I'm not sure this is correct. Need to think about transposes.
 #15
-                    S_LQ[i, level, j, k], S_LQ[i, N_tree_LQ, j, k + 2 ** (level - 1)] = lq_trailing_update(V_LQ[i, level, j], T_LQ[i, level, j], S_LQ[i, level - 1, j, k], S_LQ[i, level - 1, j, k + 2 ** (level - 1)])
+                    S_LQ[i, level, j, k], S_LQ[i, N_tree_LQ, j, k + 2 ** (level - 1)] = lq_trailing_update(V_LQ[i, level, k], T_LQ[i, level, k], S_LQ[i, level - 1, j, k], S_LQ[i, level - 1, j, k + 2 ** (level - 1)])
 
     #
     # Step N - 1: Final QR update. We don't run an LQ.
