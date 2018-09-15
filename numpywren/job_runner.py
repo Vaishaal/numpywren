@@ -11,8 +11,8 @@ import sys
 import time
 import traceback
 import tracemalloc
-#from multiprocessing import Process
-from queue import Queue
+from multiprocessing import Process, Queue, Manager, Value
+#from queue import Queue
 import queue
 
 import aiobotocore
@@ -35,11 +35,14 @@ def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, 
     read_queue = Queue(pipeline_width)
     compute_queue = Queue(pipeline_width)
     write_queue = Queue(pipeline_width)
-    post_op_queue = Queue(pipeline_width)
-    finish_queue = Queue(pipeline_width)
+    post_op_queue = Queue(pipeline_width*2)
+    finish_queue = Queue(pipeline_width*2)
     log_queue = Queue()
-    finished = [0]
+    manager = Manager()
+    msg_info_map  = manager.dict()
+    finished = Value('i', 0)
     deadline = lambda_start + timeout
+    Thread = Process
     reader = Thread(target=lambdapack_read, args=(read_queue, compute_queue, program, finished, deadline), daemon=True)
     computer = Thread(target=lambdapack_compute, args=(compute_queue, write_queue, program, finished), daemon=True)
     writer = Thread(target=lambdapack_write, args=(write_queue, post_op_queue, program, finished, deadline), daemon=True)
@@ -50,26 +53,25 @@ def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, 
     post_op.start()
     sqs_client = boto3.client('sqs', use_ssl=False, region_name=program.control_plane.region)
     all_msgs = []
-    msg_info_map = {}
-    finisher = Thread(target=lambdapack_finish, args=(finish_queue,msg_info_map, program, finished), daemon=True)
+    finisher = Thread(target=lambdapack_finish, args=(finish_queue, msg_info_map, program, finished), daemon=True)
     finisher.start()
     last_p_check = 0
     queue_url = program.queue_urls[0]
     print("starting job runner...")
     while (True):
        reset_msg_visibility(msg_info_map, msg_vis_timeout, queue_url)
-       if (finished[0]):
+       if (finished.value):
           break
        if (time.time() >= lambda_start + timeout):
           print("job runner process timeout....")
-          finished[0] = True
+          finished.value = True
           break
        if ((time.time() - last_p_check) > PROGRAM_CHECK_INTERVAL):
           s = program.program_status()
           last_p_check = time.time()
           if(s != lp.PS.RUNNING):
             #print("program status is ", s)
-            finished[0] = True
+            finished.value = True
             break
        if (not read_queue.full()):
           try:
@@ -126,7 +128,7 @@ def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, 
                print("node: {0}:{1} finished post_op skipping...".format(expr_idx, var_values))
           else:
                raise Exception("Unknown status: {0}".format(node_status))
-    finished[0]= True
+    finished.value= True
     print("LOG QUEUE SIZE", log_queue.qsize())
     profiled_inst_blocks = {}
     while (True):
@@ -161,15 +163,19 @@ def lambdapack_read(read_queue, compute_queue, program, finished, deadline):
    #print("READER STARTED..")
    # do read and then pass on to compute_queue
    while(True):
+      t = time.time()
       val = read_queue.get()
       if val == -1:
          return
+      e = time.time()
       expr_idx, var_values, inst_block, i = val
+      inst_block.read_queue_start = t
+      inst_block.read_queue_end = e
       inst_block.read_start = time.time()
       assert i == 0
       if (time.time() >= deadline):
          print("job runner process timeout....")
-         finished[0] = True
+         finished.value = True
          break
 
       for i,instr in enumerate(inst_block.instrs):
@@ -182,7 +188,7 @@ def lambdapack_read(read_queue, compute_queue, program, finished, deadline):
                tb = traceback.format_exc()
                traceback.print_exc()
                program.handle_exception("READ EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-               finished[0]= True
+               finished.value= True
          elif (isinstance(instr, lp.RemoteWrite)):
             assert False
          elif (isinstance(instr, lp.RemoteCall)):
@@ -194,11 +200,15 @@ def lambdapack_read(read_queue, compute_queue, program, finished, deadline):
 def lambdapack_compute(compute_queue, write_queue, program, finished):
    #print("COMPUTER STARTED..")
    while(True):
+      t = time.time()
       val = compute_queue.get()
+      e = time.time()
       if val == -1:
          #print("compute returns")
          return
       expr_idx, var_values, inst_block, i = val
+      inst_block.compute_queue_start = t
+      inst_block.compute_queue_end = e
       #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in COMPUTE")
       assert(isinstance(inst_block.instrs[i], lp.RemoteCall))
       try:
@@ -211,7 +221,7 @@ def lambdapack_compute(compute_queue, write_queue, program, finished):
          tb = traceback.format_exc()
          traceback.print_exc()
          program.handle_exception("COMPUTE EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-         finished[0]= True
+         finished.value = True
       assert len(inst_block.instrs) > i + 1
       assert isinstance(inst_block.instrs[i+1], lp.RemoteWrite)
       write_queue.put((expr_idx, var_values, inst_block, i+1))
@@ -219,11 +229,15 @@ def lambdapack_compute(compute_queue, write_queue, program, finished):
 def lambdapack_write(write_queue, post_op_queue, program, finished, deadline):
    #print("WRITER STARTED..")
    while(True):
+      t = time.time()
       val = write_queue.get()
+      e = time.time()
       if val == -1:
          #print("write returning")
          return
       expr_idx, var_values, inst_block, i = val
+      inst_block.write_queue_start = t
+      inst_block.write_queue_end = e
       inst_block.write_start = time.time()
       #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in WRITE")
       for j in range(i, len(inst_block.instrs)):
@@ -233,38 +247,44 @@ def lambdapack_write(write_queue, post_op_queue, program, finished, deadline):
             program.incr_write(inst_block.instrs[j].size)
             if (time.time() >= deadline):
                print("job runner process timeout....")
-               finished[0] = True
+               finished.value = True
                break
          except:
             raise
             tb = traceback.format_exc()
             traceback.print_exc()
             program.handle_exception("WRITE EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-            finished[0] = True
+            finished.value = True
       inst_block.write_end = time.time()
       post_op_queue.put((expr_idx, var_values, inst_block, len(inst_block.instrs) - 1))
+
 
 
 def lambdapack_post_op(post_op_queue, finish_queue, log_queue, program, finished):
    #print("POSTOP STARTED..")
    while(True):
+      t = time.time()
       val = post_op_queue.get()
+      e = time.time()
       if val == -1:
          #print("post_op returning")
          return
       expr_idx, var_values, inst_block, i = val
+      inst_block.post_op_queue_start = t
+      inst_block.post_op_queue_end = e
       #print(f"{expr_idx}, {var_values}, {inst_block}[{i}] in POST_OP")
       assert(len(inst_block.instrs) - 1 == i)
       try:
          inst_block.post_op_start = time.time()
          next_operator, profiled_block = program.post_op(expr_idx, var_values, lp.PS.SUCCESS, inst_block)
          inst_block.post_op_end = time.time()
+         print("post_op took", inst_block.post_op_end - inst_block.post_op_start)
          finish_queue.put((expr_idx, var_values, inst_block, i))
          #print("submitting log object...")
          log_queue.put((expr_idx, var_values, profiled_block))
       except:
          program.handle_exception("post op EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-         finished[0] = True
+         finished.value = True
 
 
 def reset_msg_visibility(msg_info_map, msg_vis_timeout, queue_url):
@@ -276,7 +296,7 @@ def reset_msg_visibility(msg_info_map, msg_vis_timeout, queue_url):
             curr_time = time.time()
             if (last_reset_time - curr_time  > msg_vis_timeout/3):
                operator_ref = tuple(json.loads(msg["Body"]))
-               if (finished[0]):
+               if (finished.value):
                   #print(f"reset msg for {operator_ref} finished quitting..")
                   break
                receipt_handle = msg["ReceiptHandle"]
@@ -285,14 +305,14 @@ def reset_msg_visibility(msg_info_map, msg_vis_timeout, queue_url):
                msg_info_map[msg] = (msg, queue_url, time.time())
                time.sleep((msg_vis_timeout/2))
         except Exception as e:
-            pass
+            finished.value = True
    return 0
 
 def lambdapack_finish(finish_queue, msg_info_map, program, finished):
    try:
       sqs_client = boto3.client('sqs', region_name='us-west-2')
       while (True):
-         if (finished[0]):
+         if (finished.value):
             break
          val = finish_queue.get()
          if (val == -1):
@@ -312,7 +332,7 @@ def lambdapack_finish(finish_queue, msg_info_map, program, finished):
          sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
          inst_block.finish_end = time.time()
    except:
-      finished[0] = True
+      finished.value = True
       raise
 
 

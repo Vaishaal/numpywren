@@ -14,6 +14,7 @@ import traceback
 import sys
 
 import aiobotocore
+import io
 import aiohttp
 import asyncio
 import boto3
@@ -250,6 +251,7 @@ class RemoteRead(RemoteInstruction):
         if (self.result is None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
             if (self.cache != None and cache_key in self.cache):
+              assert False
               t = time.time()
               self.result = self.cache[cache_key]
               self.cache_hit = True
@@ -262,8 +264,10 @@ class RemoteRead(RemoteInstruction):
               tries = 0
               while (True):
                 try:
-                  self.result = run_function_with_timeout(self.MAX_READ_TIME, self.matrix.get_block, *self.bidxs)
-                  #print("read shape", self.result.shape)
+                  res = run_function_with_timeout(self.MAX_READ_TIME, self.matrix.get_block, *self.bidxs)
+                  bio = io.BytesIO()
+                  np.save(bio, res)
+                  self.result = bio.getvalue()
                   break
                 except (LambdaPackTimeoutException, botocore.exceptions.ClientError):
                   time.sleep(backoff)
@@ -311,6 +315,7 @@ class RemoteWrite(RemoteInstruction):
         if (self.result is None):
             cache_key = (self.matrix.key, self.matrix.bucket, self.matrix.true_block_idx(*self.bidxs))
             if (self.cache != None):
+              assert False
               # write to the cache
               self.cache[cache_key] = self.data_loc[self.data_idx]
             backoff = 0.2
@@ -321,13 +326,14 @@ class RemoteWrite(RemoteInstruction):
               try:
                   #print("Writing to ", self.bidxs)
                   assert self.data_loc[self.data_idx] is not None
-                  all_zero = np.allclose(self.data_loc[self.data_idx], 0)
+                  mat = np.load(io.BytesIO(self.data_loc[self.data_idx]))
+                  all_zero = np.allclose(mat, 0)
                   if (all_zero and skip_empty):
                       #print(f"Skipping sparse write to {self.bidxs}")
                       sparse_write = True
                       break
                   else:
-                    self.result = run_function_with_timeout(self.MAX_WRITE_TIME, self.matrix.put_block, self.data_loc[self.data_idx], *self.bidxs)
+                    self.result = run_function_with_timeout(self.MAX_WRITE_TIME, self.matrix.put_block, mat, *self.bidxs)
                     break
               except (LambdaPackTimeoutException, botocore.exceptions.ClientError):
                     tries += 1
@@ -373,7 +379,7 @@ class RemoteCall(RemoteInstruction):
           pyarg_list = []
           for arg in self.argv_instr:
             if (isinstance(arg, RemoteRead)):
-              pyarg_list.append(arg.result)
+              pyarg_list.append(np.load(io.BytesIO(arg.result)))
             elif (isinstance(arg, float)):
               pyarg_list.append(arg)
           #print("CALLING COMPUTE", self.compute)
@@ -382,9 +388,15 @@ class RemoteCall(RemoteInstruction):
             raise Exception("Expected {0} results, got {1}".format(len(self.results), len(results)))
           elif (isinstance(results, tuple)):
             for i,r in enumerate(results):
-              self.results[i] = results[i]
+              res = results[i]
+              bio = io.BytesIO()
+              np.save(bio, res)
+              self.results[i] = bio.getvalue()
           else:
-            self.results[0] = results
+            bio = io.BytesIO()
+            print(type(results))
+            np.save(bio, results)
+            self.results[0] = bio.getvalue()
           self.ret_code = 0
           self.end_time = time.time()
           return self.results
@@ -404,7 +416,7 @@ class RemoteCall(RemoteInstruction):
       pyarg_list = []
       for arg in self.argv_instr:
         if (isinstance(arg, RemoteRead)):
-          pyarg_list.append(arg.result)
+          pyarg_list.append(np.load(io.BytesIO(arg.result)))
         elif (isinstance(arg, float)):
           pyarg_list.append(arg)
       if getattr(self.compute, "flops", None) is not None:
@@ -594,7 +606,7 @@ class LambdaPackProgram(object):
             return_edge = self._edge_key(expr_idx, var_values, return_key, {})
             tp = fs.ThreadPoolExecutor(1)
             val_future = tp.submit(conditional_increment, self.control_plane.client, return_key, return_edge)
-            done, not_done = fs.wait([val_future], timeout=60)
+            done, not_done = fs.wait([val_future], timeout=2)
             if len(done) == 0:
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
