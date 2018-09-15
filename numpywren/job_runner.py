@@ -27,9 +27,6 @@ import redis
 import sympy
 import hashlib
 
-
-
-
 PROGRAM_CHECK_INTERVAL = 10
 
 def lambdapack_run(program, pipeline_width=1, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):

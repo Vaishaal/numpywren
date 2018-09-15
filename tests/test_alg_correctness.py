@@ -135,12 +135,17 @@ def test_tsqr_lambda():
 
 #@profile
 def test_gemm():
-    size = 8192
-    np.random.seed(0)
+    size = 64
+    #np.random.seed(0)
     A = np.random.randn(size, size)
-    #shard_matrix(B_sharded, B)
+    B = np.random.randn(size, size)
+    C = np.dot(A, B)
+    shard_sizes = (16,16)
+    A_sharded = BigMatrix("Gemm_test_A", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
+    B_sharded = BigMatrix("Gemm_test_B", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
+    shard_matrix(A_sharded, A)
+    shard_matrix(B_sharded, B)
     program, meta = gemm(A_sharded, B_sharded)
-    #executor = fs.ProcessPoolExecutor(1)
     program.start()
     job_runner.lambdapack_run(program, timeout=60, idle_timeout=6, pipeline_width=3)
     program.wait()
