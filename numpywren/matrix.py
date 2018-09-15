@@ -20,7 +20,7 @@ import dill
 from collections import defaultdict
 
 from . import matrix_utils
-from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists_async
+from .matrix_utils import list_all_keys, block_key_to_block, get_local_matrix, key_exists_async, key_exists
 from . import utils
 
 cpu_count = multiprocessing.cpu_count()
@@ -33,7 +33,6 @@ except Exception as e:
     DEFAULT_BUCKET = ""
     DEFAULT_REGION =  ""
 
-print("DEFAULT_BUCKET", DEFAULT_BUCKET)
 class BigMatrix(object):
     """
     A multidimensional array stored in S3, sharded in blocks of a given size.
@@ -264,11 +263,41 @@ class BigMatrix(object):
         return block_idx
 
     def get_block(self, *block_idx):
-        loop = asyncio.new_event_loop()
-        #asyncio.set_event_loop(loop)
-        get_block_async_coro = self.get_block_async(loop, *block_idx)
-        res = loop.run_until_complete(asyncio.ensure_future(get_block_async_coro, loop=loop))
-        return res
+        """
+        Given a block index, get the contents of the block.
+
+        Parameters
+        ----------
+        block_idx : int or sequence of ints
+            The index of the block to retrieve.
+
+        Returns
+        -------
+        block : ndarray
+            The block at the given index as a numpy array.
+        """
+        if (len(block_idx) != len(self.shape)):
+            print("block_idx", block_idx)
+            print("shape", self.shape)
+            raise Exception("Get block query does not match shape {0} vs {1}".format(block_idx, self.shape))
+        key = self.__shard_idx_to_key__(block_idx)
+        exists = key_exists(self.bucket, key)
+        if (not exists and dill.loads(self.parent_fn) == None):
+            logger.warning(self.bucket)
+            logger.warning(key)
+            logger.warning(block_idx)
+            raise Exception("Key does {0} not exist, and no parent function prescripted".format(key))
+        elif (not exists and dill.loads(self.parent_fn) != None):
+            X_block = dill.loads(self.parent_fn)(self, *block_idx)
+        else:
+            bio = self.__s3_key_to_byte_io_sync__(key)
+            X_block = np.load(bio)
+        if (self.autosqueeze):
+            X_block = np.squeeze(X_block)
+        if (len(set(block_idx)) == 1 and len(set(self.shape)) == 1 and len(self.shape) != 1):
+            idxs = np.diag_indices(X_block.shape[0])
+            X_block[idxs] += self.lambdav
+        return X_block
 
     async def get_block_async(self, loop, *block_idx):
         """
@@ -360,11 +389,30 @@ class BigMatrix(object):
         #block = block.astype(self.dtype)
         return await self.__save_matrix_to_s3__(block, key, loop)
 
-    def delete_block(self, block, *block_idx):
-        loop = asyncio.new_event_loop()
-        delete_block_async_coro = self.delete_block_async(loop, block, *block_idx)
-        res = loop.run_until_complete(asyncio.ensure_future(delete_block_async_coro, loop=loop))
-        return res
+    def delete_block(self, *block_idx):
+        """
+        Delete the block at the given block index.
+
+        Parameters
+        ----------
+        block_idx : int or sequence of ints
+            The index of the block to delete.
+
+        Returns
+        -------
+        response : dict
+            The response from S3 containing information on the status of
+            the delete request.
+
+        Notes
+        -----
+        For details on the S3 response format see:
+        http://boto3.readthedocs.io/en/latest/reference/services/s3.html#S3.Client.delete_object
+        """
+        key = self.__shard_idx_to_key__(block_idx)
+        client = boto3.client('s3', use_ssl=False, verify=False, region_name=self.region)
+        resp = client.delete_object(Key=key, Bucket=self.bucket)
+        return resp
 
     async def delete_block_async(self, loop=None, *block_idx):
         """
@@ -532,6 +580,36 @@ class BigMatrix(object):
             del X
         return None
 
+    def __s3_key_to_byte_io_sync__(self, key):
+        client = boto3.client('s3', use_ssl=False, verify=False, region_name=self.region)
+        n_tries = 0
+        max_n_tries = 5
+        bio = None
+        while bio is None and n_tries <= max_n_tries:
+            try:
+                resp = client.get_object(Bucket=self.bucket, Key=key)["Body"]
+                bio = io.BytesIO(resp.read())
+            except Exception as e:
+                raise
+                n_tries += 1
+            if bio is None:
+                raise Exception("S3 Read Failed")
+        return bio
+
+
+    def __save_matrix_to_s3_sync___(self, X, out_key, client=None):
+
+        client = boto3.client('s3', use_ssl=False, verify=False, region_name=self.region)
+        outb = io.BytesIO()
+        np.save(outb, X)
+        response = client.put_object(Key=out_key,
+                                     Bucket=self.bucket,
+                                     Body=outb.getvalue(),
+                                     ACL="bucket-owner-full-control")
+        del outb
+        del X
+        return None
+
     def __write_header__(self):
         key = os.path.join(self.key_base, "header")
         client = boto3.client('s3')
@@ -640,7 +718,7 @@ class BigMatrixView(BigMatrix):
     def true_block_idx(self, *block_idx):
         return self.parent.true_block_idx(*self.__view_to_parent_block_idx__(block_idx))
 
-    def get_block(self, *block_idx): 
+    def get_block(self, *block_idx):
         parent_idx = self.__view_to_parent_block_idx__(block_idx)
         block = self.parent.get_block(*parent_idx)
         if self.transposed:

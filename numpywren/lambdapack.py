@@ -263,7 +263,7 @@ class RemoteRead(RemoteInstruction):
               while (True):
                 try:
                   self.result = run_function_with_timeout(self.MAX_READ_TIME, self.matrix.get_block, *self.bidxs)
-                  print("read shape", self.result.shape)
+                  #print("read shape", self.result.shape)
                   break
                 except (LambdaPackTimeoutException, botocore.exceptions.ClientError):
                   time.sleep(backoff)
@@ -278,7 +278,7 @@ class RemoteRead(RemoteInstruction):
               e = time.time()
         self.end_time = time.time()
         e = time.time()
-        print(f"Read took {e - t} seconds")
+        #print(f"Read took {e - t} seconds")
         return self.result
 
     def clear(self):
@@ -316,12 +316,14 @@ class RemoteWrite(RemoteInstruction):
             backoff = 0.2
             sparse_write = False
             #print(f"Writing to {self.matrix} at {self.bidxs}")
+            tries = 0
             while (True):
               try:
-                  print("Writing to ", self.bidxs)
+                  #print("Writing to ", self.bidxs)
+                  assert self.data_loc[self.data_idx] is not None
                   all_zero = np.allclose(self.data_loc[self.data_idx], 0)
                   if (all_zero and skip_empty):
-                      print(f"Skipping sparse write to {self.bidxs}")
+                      #print(f"Skipping sparse write to {self.bidxs}")
                       sparse_write = True
                       break
                   else:
@@ -337,7 +339,7 @@ class RemoteWrite(RemoteInstruction):
             self.ret_code = 0
             self.end_time = time.time()
             e = time.time()
-            print(f"Write took {e - t} seconds")
+            #print(f"Write took {e - t} seconds")
         return self.result
 
     def clear(self):
@@ -389,7 +391,7 @@ class RemoteCall(RemoteInstruction):
         t = time.time()
         res = compute()
         e = time.time()
-        print(f"Compute {self.compute} took {e - t} seconds")
+        #print(f"Compute {self.compute} took {e - t} seconds")
         return res
 
     def clear(self):
@@ -407,7 +409,7 @@ class RemoteCall(RemoteInstruction):
           pyarg_list.append(arg)
       if getattr(self.compute, "flops", None) is not None:
         f_count = self.compute.flops(*pyarg_list)
-        print("FLOPS", f_count)
+        #print("FLOPS", f_count)
         return f_count
       else:
         return 0
@@ -554,7 +556,7 @@ class LambdaPackProgram(object):
               if ((val == num_child_parents) and self.get_node_status(*child) != NS.FINISHED):
                 self.set_node_status(*child, NS.READY)
                 ready_children.append(child)
-          print("Ready children", ready_children)
+          #print("Ready children", ready_children)
 
           if self.eager and ready_children:
               # TODO: Re-add priorities here
