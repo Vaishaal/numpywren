@@ -219,7 +219,7 @@ def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"])}
 
-async def read(read_queue, compute_queue, program):
+async def read(read_queue, compute_queue, program, loop):
    while (True):
       print("started reader..")
       val = await read_queue.get()
@@ -237,8 +237,11 @@ async def read(read_queue, compute_queue, program):
                await instr()
                read_size = instr.read_size
                program.incr_read(read_size)
+            except (GeneratorExit, RuntimeError):
+               pass
             except:
                 print("EXCEPTION")
+                loop.close()
                 instr.run = True
                 instr.cache = None
                 instr.executor = None
@@ -246,12 +249,13 @@ async def read(read_queue, compute_queue, program):
                 traceback.print_exc()
                 tb = traceback.format_exc()
                 self.program.handle_exception("READ_EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+                loop.close()
                 raise
 
       await compute_queue.put((expr_idx, var_values, inst_block, i, event))
       await asyncio.sleep(0)
 
-async def compute(compute_queue, write_queue, program):
+async def compute(compute_queue, write_queue, program, loop):
    print("started computer..")
    while (True):
       val = await compute_queue.get()
@@ -263,6 +267,8 @@ async def compute(compute_queue, write_queue, program):
          flops = int(instr.get_flops())
          program.incr_flops(flops)
          print("finished compute")
+      except (GeneratorExit, RuntimeError):
+         pass
       except:
           instr.run = True
           instr.cache = None
@@ -270,14 +276,16 @@ async def compute(compute_queue, write_queue, program):
           traceback.print_exc()
           tb = traceback.format_exc()
           program.handle_exception("COMPUTE EXCEPITION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+          loop.close()
           raise
       print("adding something to write queue")
       await write_queue.put((expr_idx, var_values, inst_block, i+1, event))
       await asyncio.sleep(0)
 
-async def write(write_queue, program):
+async def write(write_queue, program, loop):
    while (True):
       print("started writer..")
+      print("program is block sparse??: {0}".format(program.block_sparse))
       val = await write_queue.get()
       print("got write value")
       expr_idx, var_values, inst_block, i, event = val
@@ -287,9 +295,14 @@ async def write(write_queue, program):
          instr = inst_block.instrs[i]
          print('here here')
          try:
-            await instr()
+            await instr(program.block_sparse)
+            if (instr.sparse_write):
+               print("SPARSE WRITE")
+               program.incr_sparse_write(instr.write_size)
             write_size = instr.write_size
             program.incr_write(write_size)
+         except (GeneratorExit, RuntimeError):
+            pass
          except:
              instr.run = True
              instr.cache = None
@@ -297,6 +310,7 @@ async def write(write_queue, program):
              traceback.print_exc()
              tb = traceback.format_exc()
              program.handle_exception("COMPUTE EXCEPITION", tb=tb, expr_idx=expr_idx, var_values=var_values)
+             loop.close()
              raise
       event.set()
       await asyncio.sleep(0)
@@ -336,9 +350,9 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     shared_state["last_busy_time"] = time.time()
     shared_state["tot_messages"]  = []
     loop.create_task(check_program_state(program, loop, shared_state, timeout, idle_timeout))
-    loop.create_task(read(read_queue, compute_queue, program))
-    loop.create_task(compute(compute_queue, write_queue, program))
-    loop.create_task(write(write_queue, program))
+    loop.create_task(read(read_queue, compute_queue, program, loop))
+    loop.create_task(compute(compute_queue, write_queue, program, loop))
+    loop.create_task(write(write_queue, program, loop))
 
     tasks = []
     for i in range(pipeline_width):
