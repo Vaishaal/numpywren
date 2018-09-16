@@ -238,14 +238,18 @@ def test_bdfac():
     np.random.seed(0)
     X = np.random.randn(N, N)
     U,S,V = bdfac_python(X, block_size=shard_size)
-    print(S)
+    svd_bdfac = np.linalg.svd(S, compute_uv=False)
+    svd_local = np.linalg.svd(X, compute_uv=False)
+    print(svd_bdfac)
+    print(svd_local)
+    assert(np.allclose(svd_bdfac, svd_local))
     X_sharded = BigMatrix("BDFAC_input_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
     N_blocks = X_sharded.num_blocks(0)
     shard_matrix(X_sharded, X)
     program, meta = bdfac(X_sharded)
     executor = fs.ProcessPoolExecutor(1)
     program.start()
-    job_runner.lambdapack_run(program, timeout=200, idle_timeout=200, pipeline_width=1)
+    executor.submit(job_runner.lambdapack_run, program, timeout=200, idle_timeout=200, pipeline_width=1)
     program.wait()
     print("returned..")
     program.free()
@@ -267,6 +271,14 @@ def test_bdfac():
     print(R_local)
     print(R_remote)
     assert(np.allclose(np.abs(R_local), np.abs(R_remote)))
+    fac = np.block([[R.get_block(0, 2, 0), L.get_block(0, 2, 1), np.zeros(shard_sizes), np.zeros(shard_sizes)],
+                    [np.zeros(shard_sizes), R.get_block(1, 2, 1), L.get_block(1, 1, 2), np.zeros(shard_sizes)],
+                    [np.zeros(shard_sizes), np.zeros(shard_sizes), R.get_block(2, 1, 2), L.get_block(2, 0, 3)],
+                    [np.zeros(shard_sizes), np.zeros(shard_sizes), np.zeros(shard_sizes), R.get_block(3, 0, 3)]])
+
+    svd_remote = np.linalg.svd(fac, compute_uv=False)
+    svd_local = np.linalg.svd(X, compute_uv=False)
+    assert(np.allclose(svd_remote, svd_local))
     print("GREAT SUUUCESSSS\n"*100)
     return 0
 
