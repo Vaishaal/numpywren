@@ -105,8 +105,13 @@ def fast_qr(x):
     return v,t,r
 
 def qr_factor(*blocks, **kwargs):
+    print("QR INPUT SHAPE (before stack)", [x.shape for x in blocks])
     ins = np.vstack(blocks)
+    print("QR INPUT SHAPE (after stack)", ins.shape)
     v,t,r = fast_qr(ins)
+    print("QR output r SHAPE", r.shape)
+    print("QR output v SHAPE", v.shape)
+    print("QR output t SHAPE", t.shape)
     return v,t,r
 
 def _qr_flops(*blocks):
