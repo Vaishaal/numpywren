@@ -671,6 +671,17 @@ class LambdaPackProgram(object):
     def incr_up(self, amount):
       incr(self.control_plane.client, self.up, amount)
 
+    def incr_repeated_compute(self, amount):
+      incr(self.control_plane.client, "{0}_repeated_compute".format(self.hash), amount)
+
+    def incr_repeated_post_op(self, amount):
+      incr(self.control_plane.client, "{0}_repeated_post_op".format(self.hash), amount)
+    def incr_repeated_finish(self, amount):
+      incr(self.control_plane.client, "{0}_repeated_finish".format(self.hash), amount)
+
+    def incr_not_ready(self, amount):
+      incr(self.control_plane.client, "{0}_not_ready".format(self.hash), amount)
+
     def incr_progress(self):
       incr(self.control_plane.client, "{0}_progress".format(self.hash))
 

@@ -99,6 +99,9 @@ class LambdaPackExecutor(object):
                 raise Exception("Duplicate instruction in instruction stream")
             try:
                 if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
+                    if (node_status == lp.NS.RUNNING):
+                       program.incr_repeated_compute()
+
                     self.program.set_node_status(expr_idx, var_values, lp.NS.RUNNING)
                     operator_refs_to_ret.append((expr_idx, var_values))
                     print("adding to read queue")
@@ -116,6 +119,7 @@ class LambdaPackExecutor(object):
                     if next_operator is not None:
                          operator_refs.append(next_operator)
                 elif (node_status == lp.NS.POST_OP):
+                    program.incr_repeated_post_op()
                     operator_refs_to_ret.append((expr_idx, var_values))
                     logger.warning("node: {0}:{1} finished work skipping to post_op...".format(expr_idx, var_values))
                     next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
@@ -123,10 +127,12 @@ class LambdaPackExecutor(object):
                     if next_operator is not None:
                         operator_refs.append(next_operator)
                 elif (node_status == lp.NS.NOT_READY):
+                   program.not_ready_incr()
                    logger.warning("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
 
                    continue
                 elif (node_status == lp.NS.FINISHED):
+                   program.repeated_finish_incr()
                    logger.warning("node: {0}:{1} finished post_op skipping...".format(expr_idx, var_values))
                    continue
                 else:
