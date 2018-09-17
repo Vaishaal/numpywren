@@ -175,7 +175,7 @@ def BDFAC(I:BigMatrix, V_QR:BigMatrix, T_QR:BigMatrix, S_QR:BigMatrix, R_QR:BigM
 
     #
     # Step N - 1: Final QR update. We don't run an LQ.
-    # 
+    #
     V_QR[N - 1, 0, N - 1], T_QR[N - 1, 0, N - 1], R_QR[N - 1, 0, N - 1] = qr_factor(S_LQ[N - 2, 0, N - 1, N - 1])
 
 

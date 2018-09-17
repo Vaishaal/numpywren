@@ -96,14 +96,14 @@ def bdfac(A):
     b_fac = 2
     shard_size = A.shard_sizes[0]
     num_tree_levels = max(int(np.ceil(np.log2(A.num_blocks(0))/np.log2(b_fac))), 1) + 1
-    V_QR = BigMatrix("V_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
-    T_QR = BigMatrix("T_QR", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
-    R_QR = BigMatrix("R_QR", shape=(N, num_tree_levels, N), parent_fn=constant_zeros, shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
-    S_QR = BigMatrix("S_QR", shape=(N, num_tree_levels, N, N), parent_fn=constant_zeros, shard_sizes=(1, 1, shard_size, shard_size), write_header=True, safe=False)
-    V_LQ = BigMatrix("V_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
-    T_LQ = BigMatrix("T_LQ", shape=(N, num_tree_levels, N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
-    L_LQ = BigMatrix("L_LQ", shape=(N, num_tree_levels, N), parent_fn=constant_zeros_ext, shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
-    S_LQ = BigMatrix("S_LQ", shape=(N, num_tree_levels, N, N), parent_fn=constant_zeros_ext, shard_sizes=(1, 1, shard_size, shard_size), write_header=True, safe=False)
+    V_QR = BigMatrix("V_QR", shape=(2*N, num_tree_levels, 2*N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    T_QR = BigMatrix("T_QR", shape=(2*N, num_tree_levels, 2*N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    R_QR = BigMatrix("R_QR", shape=(2*N, num_tree_levels, 2*N), parent_fn=constant_zeros, shard_sizes=(shard_size, 1, shard_size), write_header=True, safe=False)
+    S_QR = BigMatrix("S_QR", shape=(2*N, num_tree_levels, 2*N, 2*N), parent_fn=constant_zeros, shard_sizes=(1, 1, shard_size, shard_size), write_header=True, safe=False)
+    V_LQ = BigMatrix("V_LQ", shape=(2*N, num_tree_levels, 2*N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    T_LQ = BigMatrix("T_LQ", shape=(2*N, num_tree_levels, 2*N), shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    L_LQ = BigMatrix("L_LQ", shape=(2*N, num_tree_levels, 2*N), parent_fn=constant_zeros_ext, shard_sizes=(1, 1, shard_size), write_header=True, safe=False)
+    S_LQ = BigMatrix("S_LQ", shape=(2*N, num_tree_levels, 2*N, 2*N), parent_fn=constant_zeros_ext, shard_sizes=(1, 1, shard_size, shard_size), write_header=True, safe=False)
     V_QR.free()
     T_QR.free()
     R_QR.free()
