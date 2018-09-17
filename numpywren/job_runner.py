@@ -100,13 +100,11 @@ class LambdaPackExecutor(object):
             try:
                 if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
                     if (node_status == lp.NS.RUNNING):
-                       program.incr_repeated_compute()
+                       self.program.incr_repeated_compute()
 
                     self.program.set_node_status(expr_idx, var_values, lp.NS.RUNNING)
                     operator_refs_to_ret.append((expr_idx, var_values))
-                    print("adding to read queue")
                     await self.read_queue.put((expr_idx, var_values, inst_block, 0, event))
-                    print("added to read queue")
                     await event.wait()
                     for instr in instrs:
                         instr.run = False
@@ -119,7 +117,7 @@ class LambdaPackExecutor(object):
                     if next_operator is not None:
                          operator_refs.append(next_operator)
                 elif (node_status == lp.NS.POST_OP):
-                    program.incr_repeated_post_op()
+                    self.program.incr_repeated_post_op()
                     operator_refs_to_ret.append((expr_idx, var_values))
                     logger.warning("node: {0}:{1} finished work skipping to post_op...".format(expr_idx, var_values))
                     next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
@@ -132,7 +130,7 @@ class LambdaPackExecutor(object):
 
                    continue
                 elif (node_status == lp.NS.FINISHED):
-                   program.repeated_finish_incr()
+                   self.program.incr_repeated_finish()
                    logger.warning("node: {0}:{1} finished post_op skipping...".format(expr_idx, var_values))
                    continue
                 else:
@@ -146,9 +144,6 @@ class LambdaPackExecutor(object):
                 self.program.decr_up(1)
                 raise
             except Exception as e:
-                instr.run = True
-                instr.cache = None
-                instr.executor = None
                 self.program.decr_up(1)
                 traceback.print_exc()
                 tb = traceback.format_exc()
@@ -184,7 +179,7 @@ async def check_failure(loop, program, failure_key):
     global REDIS_CLIENT
     if (REDIS_CLIENT == None):
        REDIS_CLIENT = program.control_plane.client
-    while (True):
+    while (loop.is_running()):
       f_key = REDIS_CLIENT.get(failure_key)
       if (f_key is not None):
          logger.error("FAIL FAIL FAIL FAIL FAIL")
@@ -225,14 +220,11 @@ def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"])}
 
+#@profile
 async def read(read_queue, compute_queue, program, loop):
-   while (True):
-      print("started reader..")
+   while (loop.is_running()):
       val = await read_queue.get()
-      print("got a value")
-      print(val)
       expr_idx, var_values, inst_block, i, event = val
-      print("here")
       assert i == 0
       for i, instr in enumerate(inst_block.instrs):
          #print("inst_block, i", inst_block, i)
@@ -255,15 +247,15 @@ async def read(read_queue, compute_queue, program, loop):
                 traceback.print_exc()
                 tb = traceback.format_exc()
                 self.program.handle_exception("READ_EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
-                loop.close()
+                loop.stop()
                 raise
 
       await compute_queue.put((expr_idx, var_values, inst_block, i, event))
       await asyncio.sleep(0)
 
+#@profile
 async def compute(compute_queue, write_queue, program, loop):
-   print("started computer..")
-   while (True):
+   while (loop.is_running()):
       val = await compute_queue.get()
       expr_idx, var_values, inst_block, i, event = val
       assert isinstance(inst_block.instrs[i], lp.RemoteCall)
@@ -272,7 +264,6 @@ async def compute(compute_queue, write_queue, program, loop):
          await instr()
          flops = int(instr.get_flops())
          program.incr_flops(flops)
-         print("finished compute")
       except (GeneratorExit, RuntimeError):
          pass
       except:
@@ -284,26 +275,22 @@ async def compute(compute_queue, write_queue, program, loop):
           program.handle_exception("COMPUTE EXCEPITION", tb=tb, expr_idx=expr_idx, var_values=var_values)
           loop.close()
           raise
-      print("adding something to write queue")
       await write_queue.put((expr_idx, var_values, inst_block, i+1, event))
       await asyncio.sleep(0)
 
-async def write(write_queue, program, loop):
-   while (True):
-      print("started writer..")
-      print("program is block sparse??: {0}".format(program.block_sparse))
+async def write(write_queue, program, loop, start_time, timeout):
+   while (loop.is_running()):
+      if (time.time() > start_time + timeout):
+         loop.stop()
+         break
       val = await write_queue.get()
-      print("got write value")
       expr_idx, var_values, inst_block, i, event = val
-      print('got here')
       for i in range(i, len(inst_block.instrs)):
          assert isinstance(inst_block.instrs[i], lp.RemoteWrite)
          instr = inst_block.instrs[i]
-         print('here here')
          try:
             await instr(program.block_sparse)
             if (instr.sparse_write):
-               print("SPARSE WRITE")
                program.incr_sparse_write(instr.write_size)
             write_size = instr.write_size
             program.incr_write(write_size)
@@ -358,7 +345,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     loop.create_task(check_program_state(program, loop, shared_state, timeout, idle_timeout))
     loop.create_task(read(read_queue, compute_queue, program, loop))
     loop.create_task(compute(compute_queue, write_queue, program, loop))
-    loop.create_task(write(write_queue, program, loop))
+    loop.create_task(write(write_queue, program, loop, lambda_start, timeout))
 
     tasks = []
     for i in range(pipeline_width):
@@ -375,6 +362,7 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     p_key = "{0}/{1}/{2}".format("lambdapack", program.hash, p_key)
     client = boto3.client('s3', region_name=program.control_plane.region)
     client.put_object(Bucket=program.bucket, Key=p_key, Body=profile_bytes)
+    program.decr_up(1)
     return {"up_time": [lambda_start, lambda_stop],
             "exec_time": calculate_busy_time(shared_state["running_times"]),
             "executed_messages": shared_state["tot_messages"],
@@ -382,19 +370,21 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
             "log" : profile_bytes}
 
 
+#@profile
 async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lock):
     assert(timeout > timeout_jitter)
     num_tries = 0
-    while(lock[0] == 1):
+    while(lock[0] == 1 and loop.is_running()):
         try:
             if (num_tries > 2):
                break
             receipt_handle = msg["ReceiptHandle"]
             operator_ref = tuple(json.loads(msg["Body"]))
-            sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=45, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            session = aiobotocore.get_session(loop=loop)
+            async with session.create_client('sqs', use_ssl=False,  region_name="us-west-2") as sqs_client:
+               res = await sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             num_tries += 1
-            await asyncio.sleep(50)
+            await asyncio.sleep(30)
 
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(operator_ref) + str(e))
@@ -402,9 +392,10 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lo
     operator_ref = tuple(json.loads(msg["Body"]))
     return 0
 
+#@profile
 async def check_program_state(program, loop, shared_state, timeout, idle_timeout):
     start_time = time.time()
-    while(True):
+    while(loop.is_running()):
         if shared_state["busy_workers"] == 0:
             if time.time() - start_time > timeout:
                 break
@@ -417,8 +408,6 @@ async def check_program_state(program, loop, shared_state, timeout, idle_timeout
            print("program status is ", s)
            break
         await asyncio.sleep(idle_timeout)
-    #print("Closing loop from program")
-    loop.stop()
 
 
 #@profile
@@ -432,7 +421,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, rea
        REDIS_CLIENT = program.control_plane.client
     redis_client = REDIS_CLIENT
     try:
-        while(True):
+        while(loop.is_running()):
             current_time = time.time()
             if ((current_time - start_time) > timeout):
                 print("Hit timeout...returning now")
@@ -443,7 +432,7 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, rea
             # go from high priority -> low priority
             for queue_url in program.queue_urls[::-1]:
                 async with session.create_client('sqs', use_ssl=False,  region_name=program.control_plane.region) as sqs_client:
-                    messages = await sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
+                    messages = await sqs_client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1, VisibilityTimeout=200)
                 if ("Messages" not in messages):
                     continue
                 else:
@@ -462,12 +451,11 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, rea
             msg = messages["Messages"][0]
             receipt_handle = msg["ReceiptHandle"]
             # if we don't finish in 75s count as a failure
-            #res = sqs_client.change_message_visibility(VisibilityTimeout=1800, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            #res = sqs_client.change_message_visibility(VisibilityTimeout=90, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
             operator_ref = json.loads(msg["Body"])
-            print("Operator ref", operator_ref)
             shared_state["tot_messages"].append(operator_ref)
             redis_client.set(msg["MessageId"], str(time.time()))
-            #print("creating lock")
+            print("creating lock")
             lock = [1]
             coro = reset_msg_visibility(msg, queue_url, loop, msg_vis_timeout, msg_vis_timeout_jitter, lock)
             loop.create_task(coro)

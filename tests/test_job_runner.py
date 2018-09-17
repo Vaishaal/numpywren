@@ -41,6 +41,26 @@ def test_cholesky():
     assert(np.allclose(L_npw, L))
     print("great success!")
 
+def test_cholesky_timeouts():
+    X = np.random.randn(64, 64)
+    A = X.dot(X.T) + np.eye(X.shape[0])
+    shard_size = 8
+    shard_sizes = (shard_size, shard_size)
+    A_sharded= BigMatrix("job_runner_test", shape=A.shape, shard_sizes=shard_sizes, write_header=True)
+    A_sharded.free()
+    shard_matrix(A_sharded, A)
+    program, meta =  cholesky(A_sharded)
+    executor = fs.ProcessPoolExecutor(1)
+    print("starting program")
+    program.start()
+    future = executor.submit(job_runner.lambdapack_run, program, timeout=10, idle_timeout=6)
+    time.sleep(15)
+    print("poop")
+    assert(int(program.get_up()) == 0)
+    program.free()
+    print("great success!")
+
+
 def test_cholesky_multiprocess():
     X = np.random.randn(128, 128)
     A = X.dot(X.T) + 1e9*np.eye(X.shape[0])
@@ -173,4 +193,5 @@ def test_cholesky_multi_repeats():
 if __name__ == "__main__":
     #test_cholesky_multi_repeats()
     #test_cholesky()
-    test_cholesky_lambda()
+    test_cholesky_timeouts()
+    #test_cholesky_lambda()

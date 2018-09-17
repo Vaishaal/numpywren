@@ -623,7 +623,7 @@ class LambdaPackProgram(object):
             if len(done) == 0:
               raise Exception("Redis Atomic Set and Sum timed out!")
             val = val_future.result()
-            #print("Num finished terminators", val,  "num terminators total", self.program.num_terminators)
+            print("Num finished terminators", val,  "num terminators total", self.program.num_terminators)
             if (val == self.program.num_terminators):
               self.return_success()
 
@@ -673,15 +673,15 @@ class LambdaPackProgram(object):
     def incr_up(self, amount):
       incr(self.control_plane.client, self.up, amount)
 
-    def incr_repeated_compute(self, amount):
+    def incr_repeated_compute(self, amount=1):
       incr(self.control_plane.client, "{0}_repeated_compute".format(self.hash), amount)
 
-    def incr_repeated_post_op(self, amount):
+    def incr_repeated_post_op(self, amount=1):
       incr(self.control_plane.client, "{0}_repeated_post_op".format(self.hash), amount)
-    def incr_repeated_finish(self, amount):
+    def incr_repeated_finish(self, amount=1):
       incr(self.control_plane.client, "{0}_repeated_finish".format(self.hash), amount)
 
-    def incr_not_ready(self, amount):
+    def incr_not_ready(self, amount=1):
       incr(self.control_plane.client, "{0}_not_ready".format(self.hash), amount)
 
     def incr_progress(self):

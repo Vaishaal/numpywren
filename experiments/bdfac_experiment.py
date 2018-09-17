@@ -91,7 +91,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         XXT_sharded = BigMatrix(key_name, hash_keys=False, bucket="numpywrensdi2")
     XXT_sharded.lambdav = problem_size*10
     t = time.time()
-    program, meta = bdfac(XXT_sharded)
+    program, meta = bdfac(XXT_sharded, truncate=truncate)
     pipeline_width = args.pipeline
     if (lru):
         cache_size = 5

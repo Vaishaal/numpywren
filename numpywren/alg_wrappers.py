@@ -89,7 +89,7 @@ def qr(A):
     return program, {"outputs":[Rs, Vs, Ts], "intermediates":[Ss], "compile_time": c_time}
 
 
-def bdfac(A):
+def bdfac(A, truncate=0):
     b_fac = 2
     N = A.shape[0]
     N_blocks = A.num_blocks(0)
@@ -106,7 +106,7 @@ def bdfac(A):
     S_LQ = BigMatrix("S_LQ", shape=(2*N, num_tree_levels, 2*N, 2*N), parent_fn=constant_zeros_ext, shard_sizes=(1, 1, shard_size, shard_size), write_header=True, safe=False)
     t = time.time()
     p0 = lpcompile_for_execution(BDFAC, inputs=["I"], outputs=["R_QR", "L_LQ"])
-    p1 = p0(A, V_QR, T_QR, S_QR, R_QR, V_LQ, T_LQ, S_LQ, L_LQ, N_blocks, 0)
+    p1 = p0(A, V_QR, T_QR, S_QR, R_QR, V_LQ, T_LQ, S_LQ, L_LQ, N_blocks, truncate)
     e = time.time()
     c_time = e - t
     config = npw.config.default()

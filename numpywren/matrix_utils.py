@@ -321,9 +321,7 @@ async def constant_zeros_ext(bigm, loop, *block_idx):
     current_shape = list([e - s for s,e in real_idxs])
     if len(current_shape) == 1:
         current_shape = [1] + current_shape
-    print(current_shape, "=====================================\n\n\n\n\n\n\n")
     ret = np.zeros([bigm.shard_sizes[-1], bigm.shard_sizes[-1]]) # current_shape)
-    print("+++++++++++++++++++++++ returning", ret.shape)
     return ret
 
 def reshard_down(pwex, bigm, breakdowns):

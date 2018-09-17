@@ -116,7 +116,7 @@ def BDFAC(I:BigMatrix, V_QR:BigMatrix, T_QR:BigMatrix, S_QR:BigMatrix, R_QR:BigM
     #
     # Run the rest of the steps except for the last step.
     # 
-    for i in range(1, N - 1):
+    for i in range(1, N - 1 - truncate):
         #
         # Step i: QR column update + trailing matrix updates.
         # 

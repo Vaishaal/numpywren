@@ -105,13 +105,8 @@ def fast_qr(x):
     return v,t,r
 
 def qr_factor(*blocks, **kwargs):
-    print("QR INPUT SHAPE (before stack)", [x.shape for x in blocks])
     ins = np.vstack(blocks)
-    print("QR INPUT SHAPE (after stack)", ins.shape)
     v,t,r = fast_qr(ins)
-    print("QR output r SHAPE", r.shape)
-    print("QR output v SHAPE", v.shape)
-    print("QR output t SHAPE", t.shape)
     return v,t,r
 
 def _qr_flops(*blocks):
@@ -123,22 +118,19 @@ def _qr_flops(*blocks):
 qr_factor.flops = _qr_flops
 
 def lq_factor(*blocks, **kwargs):
-    for block in blocks:
-        print("\n\n\n\nAAA", block.shape)
     if len(blocks) == 2:
         assert(blocks[0].shape[0] == blocks[1].shape[0])
     ins = np.hstack(blocks)
-    print(ins.shape)
     v,t,r = fast_qr(ins.T)
-    print(v.shape)
     return v.T,t.T,r.T
+
+lq_factor.flops = _qr_flops
 
 def lq_leaf(V, T, S0, *args, **kwargs):
     # (I - VTV)^{T}*S
     val = S0 - S0 @ V.T @ T.T @ V
-    print("=========")
-    print("LQ LEAF OUTPUT", val)
     return val
+
 
 def qr_leaf(V, T, S0, *args, **kwargs):
     # (I - VTV)^{T}*S
@@ -152,6 +144,7 @@ def _qr_leaf_flops(V, T, S0):
     return c0 + c1 + c2 + S0.shape[0]*S0.shape[1]
 
 qr_leaf.flops = _qr_leaf_flops
+lq_leaf.flops = _qr_leaf_flops
 
 def identity(X, *args, **kwargs):
     return X
@@ -180,22 +173,15 @@ qr_trailing_update.flops = _qr_trailing_flops
 def lq_trailing_update(V, T, S0, S1=None, *args, **kwargs):
     if (S1 is None):
         return lq_leaf(V, T, S0), np.zeros(S0.shape)
-    print("----V", V.shape)
-    print("----T", T.shape)
-    print("----S0", S0.shape)
-    print("----S1", S1.shape)
     V = V[:, -S0.shape[0]:]
-    print(V.shape)
     W = (S0 + S1 @ V.T) @ T.T
     S01 = S0 - W
     S11 = S1 - W.dot(V)
-    print(S0.shape, S01.shape)
-    print(S1.shape, S11.shape)
     assert(S0.shape == S01.shape)
     assert(S1.shape == S11.shape)
     return S01, S11
 
-
+lq_trailing_update.flops = _qr_trailing_flops
 
 def syrk(s, x, y, *args, **kwargs):
     if (np.allclose(x, 0) or np.allclose(y, 0)):
