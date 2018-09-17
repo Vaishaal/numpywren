@@ -27,7 +27,8 @@ scheduler:
     map_item_limit: 30000
 
 standalone:
-    ec2_instance_type: c4.large
+    ec2_instance_type: c4.8xlarge
+    #ec2_instance_type: c4.large
     sqs_queue_name: pywren-jobs-1
     visibility: 10
     ec2_ssh_key : imagenet_exps

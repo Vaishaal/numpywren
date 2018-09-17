@@ -367,10 +367,6 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
     m.update(profile_bytes)
     p_key = m.hexdigest()
     p_key = "{0}/{1}/{2}".format("lambdapack", program.hash, p_key)
-    #print('='*10)
-    #print("PROFILES WAS ", profiles)
-    #print("Writing log obj.... to {0}".format(p_key))
-    #print('='*10)
     client = boto3.client('s3', region_name=program.control_plane.region)
     client.put_object(Bucket=program.bucket, Key=p_key, Body=profile_bytes)
     return {"up_time": [lambda_start, lambda_stop],

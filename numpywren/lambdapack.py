@@ -302,8 +302,8 @@ class RemoteWrite(RemoteInstruction):
               # write to the cache
               self.cache[cache_key] = self.data_loc[self.data_idx]
             backoff = 0.2
-            sparse_write = False
-            ##print(f"Writing to {self.matrix} at {self.bidxs}")
+            self.sparse_write = False
+            #print(f"Writing to {self.matrix} at {self.bidxs}")
             while (True):
               try:
                 #print("Writing to ", self.bidxs)
@@ -311,6 +311,8 @@ class RemoteWrite(RemoteInstruction):
                 if (all_zero and skip_empty):
                   #print(f"Skipping sparse write to {self.bidxs}")
                   sparse_write = True
+                  print(f"Skipping sparse write to {self.bidxs}")
+                  self.sparse_write = True
                   pass
                 else:
                   self.result = await asyncio.wait_for(self.matrix.put_block_async(self.data_loc[self.data_idx], loop, *self.bidxs), self.MAX_WRITE_TIME)
@@ -683,9 +685,17 @@ class LambdaPackProgram(object):
       if (amount > 0):
         incr(self.control_plane.client,"{0}_read".format(self.hash), amount)
 
+    def incr_sparse_read(self, amount):
+      if (amount > 0):
+        incr(self.control_plane.client,"{0}_sparse_read".format(self.hash), amount)
+
     def incr_write(self, amount):
       if (amount > 0):
         incr(self.control_plane.client,"{0}_write".format(self.hash), amount)
+
+    def incr_sparse_write(self, amount):
+      if (amount > 0):
+        incr(self.control_plane.client,"{0}_write_sparse".format(self.hash), amount)
 
     def decr_flops(self, amount):
       if (amount > 0):

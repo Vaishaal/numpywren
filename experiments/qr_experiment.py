@@ -58,7 +58,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     logger.addHandler(ch)
     logger.info("Logging to {0}".format(log_file))
     if standalone:
-        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"].strip() , "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"].strip(), "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
+        extra_env ={"AWS_ACCESS_KEY_ID" : "AKIAJO7J456T575BNHTA", "AWS_SECRET_ACCESS_KEY": "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" , "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
         config = wc.default()
         config['runtime']['s3_bucket'] = 'numpywrenpublic'
         key = "pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz"

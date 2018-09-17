@@ -177,8 +177,8 @@ def test_gemm_lambda():
     return
 
 def test_qr():
-    N = 32
-    shard_size = 8
+    N = 28
+    shard_size = 7
     shard_sizes = (shard_size, shard_size)
     X = np.random.randn(N, N)
     X_sharded = BigMatrix("QR_input_X", shape=X.shape, shard_sizes=shard_sizes, write_header=True)
