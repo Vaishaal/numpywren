@@ -99,6 +99,9 @@ class LambdaPackExecutor(object):
                 raise Exception("Duplicate instruction in instruction stream")
             try:
                 if (node_status == lp.NS.READY or node_status == lp.NS.RUNNING):
+                    if (node_status == lp.NS.RUNNING):
+                       program.incr_repeated_compute()
+
                     self.program.set_node_status(expr_idx, var_values, lp.NS.RUNNING)
                     operator_refs_to_ret.append((expr_idx, var_values))
                     print("adding to read queue")
@@ -116,6 +119,7 @@ class LambdaPackExecutor(object):
                     if next_operator is not None:
                          operator_refs.append(next_operator)
                 elif (node_status == lp.NS.POST_OP):
+                    program.incr_repeated_post_op()
                     operator_refs_to_ret.append((expr_idx, var_values))
                     logger.warning("node: {0}:{1} finished work skipping to post_op...".format(expr_idx, var_values))
                     next_operator, log_bytes = await self.loop.run_in_executor(computer, self.program.post_op, expr_idx, var_values, lp.PS.SUCCESS, inst_block)
@@ -123,10 +127,12 @@ class LambdaPackExecutor(object):
                     if next_operator is not None:
                         operator_refs.append(next_operator)
                 elif (node_status == lp.NS.NOT_READY):
+                   program.not_ready_incr()
                    logger.warning("node: {0}:{1} not ready skipping...".format(expr_idx, var_values))
 
                    continue
                 elif (node_status == lp.NS.FINISHED):
+                   program.repeated_finish_incr()
                    logger.warning("node: {0}:{1} finished post_op skipping...".format(expr_idx, var_values))
                    continue
                 else:
@@ -378,13 +384,18 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lock):
     assert(timeout > timeout_jitter)
+    num_tries = 0
     while(lock[0] == 1):
         try:
+            if (num_tries > 2):
+               break
             receipt_handle = msg["ReceiptHandle"]
             operator_ref = tuple(json.loads(msg["Body"]))
             sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(45)
+            res = sqs_client.change_message_visibility(VisibilityTimeout=45, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            num_tries += 1
+            await asyncio.sleep(50)
+
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(operator_ref) + str(e))
             await asyncio.sleep(10)
