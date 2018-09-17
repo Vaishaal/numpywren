@@ -374,13 +374,18 @@ def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, 
 
 async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lock):
     assert(timeout > timeout_jitter)
+    num_tries = 0
     while(lock[0] == 1):
         try:
+            if (num_tries > 2):
+               break
             receipt_handle = msg["ReceiptHandle"]
             operator_ref = tuple(json.loads(msg["Body"]))
             sqs_client = boto3.client('sqs')
-            res = sqs_client.change_message_visibility(VisibilityTimeout=60, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            await asyncio.sleep(45)
+            res = sqs_client.change_message_visibility(VisibilityTimeout=45, QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            num_tries += 1
+            await asyncio.sleep(50)
+
         except Exception as e:
             print("PC: {0} Exception in reset msg vis ".format(operator_ref) + str(e))
             await asyncio.sleep(10)
