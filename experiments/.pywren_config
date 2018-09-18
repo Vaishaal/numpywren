@@ -10,7 +10,7 @@ lambda:
     function_name : pywren_2
 
 s3:
-    bucket: numpywrennsdi2
+    bucket: numpywrennsdi
     pywren_prefix: pywren.jobs
     #bucket: imagenet2pywren
     #pywren_prefix: pywren.jobs

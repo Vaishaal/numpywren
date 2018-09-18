@@ -637,15 +637,24 @@ class LambdaPackProgram(object):
             self.handle_exception("POST OP EXCEPTION", tb=tb, expr_idx=expr_idx, var_values=var_values)
             raise
 
-    def start(self):
+    def start(self, parallel=False):
         put(self.control_plane.client, self.hash, PS.RUNNING.value)
-        sqs = boto3.resource('sqs')
-        for starter in self.program.starters:
-          self.set_node_status(*starter, NS.READY)
-          # TODO readd priorities here
+        print("len starters", len(self.program.starters))
+        chunked_starters = chunk(self.program.starters, 100)
+        def start_chunk(c):
+          sqs = boto3.resource('sqs')
           queue = sqs.Queue(self.queue_urls[0])
-          queue.send_message(MessageBody=json.dumps([starter[0], {str(key): val for key, val in starter[1].items()}]))
-        return 0
+          for x in c:
+            self.set_node_status(*x, NS.READY)
+            queue.send_message(MessageBody=json.dumps([x[0], {str(key): val for key, val in x[1].items()}]))
+        if (parallel):
+          pwex = pywren.default_executor()
+          futures = pwex.map(start_chunk, chunked_starters)
+          pywren.wait(futures)
+        else:
+          for c in chunked_starters:
+            start_chunk(c)
+          return 0
 
 
     def stop(self):

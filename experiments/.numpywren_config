@@ -16,7 +16,7 @@ runtime:
   bucket: numpywrenpublic
   s3_key: pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz
 s3:
-  bucket: numpywrennsdi2
+  bucket: numpywrennsdi
   lifespan: 1
   prefix: npw
 logging:

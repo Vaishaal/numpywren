@@ -58,11 +58,12 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     logger.addHandler(ch)
     logger.info("Logging to {0}".format(log_file))
     if standalone:
-        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_ACCESS_KEY_ID"], "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
+        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"], "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
         config = wc.default()
         config['runtime']['s3_bucket'] = 'numpywrenpublic'
-        key = "pywren.runtime/pywren_runtime-3.6-numpywren-standalone.tar.gz"
+        key = "pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz"
         config['runtime']['s3_key'] = key
+        print("CONFIG", config)
         pwex = pywren.standalone_executor(config=config)
     else:
         extra_env = {"AWS_DEFAULT_REGION":region}
@@ -115,7 +116,6 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     all_read_timeouts = []
     all_write_timeouts = []
     all_redis_timeouts = []
-    times = [time.time()]
     flops = [0]
     reads = [0]
     writes = [0]
@@ -131,7 +131,6 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     exp["sqs_vis_counts"] = sqs_vis_counts
     exp["busy_workers"] = busy_workers_counts
     exp["up_workers"] = up_workers_counts
-    exp["times"] = times
     exp["lru"] = lru
     exp["priority"] = num_priorities 
     exp["eager"] = eager
@@ -157,20 +156,24 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     exp["time_steps"] = 1
     exp["failed"] = False
 
-
-    program.start()
+    t = time.time()
+    program.start(parallel=True)
+    e = time.time()
+    print("program start took", e - t)
     t = time.time()
     logger.info("Starting with {0} cores".format(start_cores))
     invoker = fs.ThreadPoolExecutor(1)
-    all_future_futures = invoker.submit(lambda: pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=extra_env))
-    #print(all_future_futures.result())
-    all_futures = [all_future_futures]
+    all_futures = pwex.map(lambda x: job_runner.lambdapack_run(program, pipeline_width=pipeline_width, cache_size=cache_size, timeout=timeout), range(start_cores), extra_env=extra_env)
+    #print('waiting...')
+    #print([f.result() for f in all_futures])
     # print([f.result() for f in all_futures])
     start_time = time.time()
     last_run_time = start_time
     print(program.program_status())
     print("QUEUE URLS", len(program.queue_urls))
     total_lambda_epochs = start_cores
+    times = [time.time()]
+    exp["times"] = times
     try:
         while(program.program_status() == lp.PS.RUNNING):
             time.sleep(log_granularity)

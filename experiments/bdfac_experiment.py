@@ -77,7 +77,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     if (not matrix_exists):
         X = np.random.randn(problem_size, 1)
         shard_sizes = [shard_size, 1]
-        X_sharded = BigMatrix("qr_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi2")
+        X_sharded = BigMatrix("qr_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi")
         shard_matrix(X_sharded, X)
         print("Generating PSD matrix...")
         t = time.time()
@@ -86,7 +86,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         e = time.time()
         print("GEMM took {0}".format(e - t))
     else:
-        X_sharded = BigMatrix("qr_test_{0}_{1}".format(problem_size, shard_size), autosqueeze=False, bucket="numpywrennsdi2")
+        X_sharded = BigMatrix("qr_test_{0}_{1}".format(problem_size, shard_size), autosqueeze=False, bucket="numpywrennsdi")
         key_name = binops.generate_key_name_binop(X_sharded, X_sharded.T, "gemm")
         XXT_sharded = BigMatrix(key_name, hash_keys=False, bucket="numpywrensdi2")
     XXT_sharded.lambdav = problem_size*10
