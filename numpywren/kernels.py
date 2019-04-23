@@ -104,10 +104,35 @@ def fast_qr(x):
     r = r[:r.shape[1],:]
     return v,t,r
 
+def fast_qr_triangular(x0, x1):
+    get_shared_so("dtpqrt")
+    sys.path.insert(0, "/tmp/")
+    import dtpqrt
+    m = x0.shape[0]
+    n = x0.shape[1]
+    k = min(x0.shape[0], x0.shape[1])
+    transposed = False
+    x0 = x0.copy(order='F')
+    x1 = x1.copy(order='F')
+    t = np.zeros((x0.shape[1], x0.shape[1]), order='F')
+    work = np.zeros([32* x0.shape[0]])
+    dtpqrt.dtpqrt(m=x0.shape[0], n=x0.shape[1], nb=min(n, 32), l=x0.shape[0], a=x0, b=x1, t=t, work=work, info=0)
+    r = np.triu(x0)
+    v = np.triu(x1.T).T
+    idxs = np.diag_indices(min(v.shape[0], v.shape[1]))
+    v[idxs] = 1
+    return v,t,r
+
+
 def qr_factor(*blocks, **kwargs):
     ins = np.vstack(blocks)
     v,t,r = fast_qr(ins)
     return v,t,r
+
+def qr_factor_triangular(x0, x1, **kwargs):
+    v,t,r = fast_qr_triangular(x0, x1)
+    return v,t,r
+
 
 def _qr_flops(*blocks):
     ins = np.vstack(blocks)
@@ -134,7 +159,8 @@ def lq_leaf(V, T, S0, *args, **kwargs):
 
 def qr_leaf(V, T, S0, *args, **kwargs):
     # (I - VTV)^{T}*S
-    val = S0 - (V @ T.T @ (V.T @ S0))
+    #val = S0 - (V @ T.T @ (V.T @ S0))
+    val = S0 - (V.T @ S0)
     return val
 
 def _qr_leaf_flops(V, T, S0):
@@ -239,7 +265,8 @@ def _trsm_flops(x, y):
 
 if __name__ == "__main__":
     x = np.random.randn(4,4)
-    print(fast_qr(x))
-    print(slow_qr(x))
-
+    y = np.random.randn(4,4)
+    x = np.triu(x)
+    y = np.triu(y)
+    print(fast_qr(x,y))
 

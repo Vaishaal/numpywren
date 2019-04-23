@@ -189,7 +189,7 @@ def QR(I:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int
     for level in range(0, N_tree_full):
         for j in range(0, N, 2**(level + 1)):
             #1
-            Vs[j, 0, N_tree_full - level - 1], Ts[j, 0, N_tree_full - level - 1], Rs[j, 0, N_tree_full - level - 1] = qr_factor(Rs[j, 0, N_tree_full - level], Rs[j + 2**(level), 0, N_tree_full - level])
+            Vs[j, 0, N_tree_full - level - 1], Ts[j, 0, N_tree_full - level - 1], Rs[j, 0, N_tree_full - level - 1] = qr_factor_triangular(Rs[j, 0, N_tree_full - level], Rs[j + 2**(level), 0, N_tree_full - level])
 
     # flat trailing matrix update
     for j in range(0, N):
@@ -216,7 +216,7 @@ def QR(I:BigMatrix, Vs:BigMatrix, Ts:BigMatrix, Rs:BigMatrix, S:BigMatrix, N:int
         for level in range(0, N_tree):
             for j in range(i, N, 2**(level + 1)):
                 #6
-                Vs[j, i, N_tree - level - 1], Ts[j, i, N_tree - level - 1], Rs[j, i, N_tree - level - 1] = qr_factor(Rs[j, i, N_tree - level], Rs[j + 2**(level), i, N_tree - level])
+                Vs[j, i, N_tree - level - 1], Ts[j, i, N_tree - level - 1], Rs[j, i, N_tree - level - 1] = qr_factor_triangular(Rs[j, i, N_tree - level], Rs[j + 2**(level), i, N_tree - level])
         # flat trailing matrix update
         for j in range(i, N):
             for k in range(i+1, N):

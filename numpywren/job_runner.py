@@ -188,10 +188,10 @@ async def check_failure(loop, program, failure_key):
       await asyncio.sleep(5)
 
 
-def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=0, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
+def lambdapack_run_with_failures(failure_key, program, pipeline_width=5, msg_vis_timeout=60, cache_size=0, timeout=200, idle_timeout=5, msg_vis_timeout_jitter=15, compute_threads=1):
     program.incr_up(1)
     lambda_start = time.time()
-    loop = asyncio.new_event_loop()
+    loop = asyncio.new_event_loop(200)
     asyncio.set_event_loop(loop)
     computer = fs.ThreadPoolExecutor(compute_threads)
     if (cache_size > 0):
@@ -313,7 +313,7 @@ async def write(write_queue, program, loop, start_time, timeout):
 
 
 #@profile
-def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=60, msg_vis_timeout_jitter=15, compute_threads=1):
+def lambdapack_run(program, pipeline_width=5, msg_vis_timeout=60, cache_size=5, timeout=200, idle_timeout=5, msg_vis_timeout_jitter=15, compute_threads=1):
     program.incr_up(1)
     lambda_start = time.time()
     loop = asyncio.new_event_loop()
@@ -396,6 +396,13 @@ async def reset_msg_visibility(msg, queue_url, loop, timeout, timeout_jitter, lo
 async def check_program_state(program, loop, shared_state, timeout, idle_timeout):
     start_time = time.time()
     while(loop.is_running()):
+        print("checking program state...")
+        s = program.program_status()
+        if(s != lp.PS.RUNNING):
+            print("program status is ", s)
+            print("program stopped returning now!")
+            loop.stop()
+            break;
         if shared_state["busy_workers"] == 0:
             if time.time() - start_time > timeout:
                 break
@@ -403,11 +410,8 @@ async def check_program_state(program, loop, shared_state, timeout, idle_timeout
                 break
         #TODO make this an s3 access as opposed to DD access since we don't *really need* atomicity here
         #TODO make this coroutine friendly
-        s = program.program_status()
-        if(s != lp.PS.RUNNING):
-           print("program status is ", s)
-           break
         await asyncio.sleep(idle_timeout)
+
 
 
 #@profile
@@ -428,6 +432,13 @@ async def lambdapack_run_async(loop, program, computer, cache, shared_state, rea
                 shared_state["done_workers"] += 1
                 loop.stop()
                 return
+
+            s = program.program_status()
+            if(s != lp.PS.RUNNING):
+                  print("program status is ", s)
+                  print("program stopped returning now!")
+                  loop.stop()
+                  break;
             await asyncio.sleep(0)
             # go from high priority -> low priority
             for queue_url in program.queue_urls[::-1]:

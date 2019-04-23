@@ -36,7 +36,7 @@ def parse_int(x):
 
 ''' NSDI gemm effectiveness experiments '''
 
-def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify, matrix_exists, read_limit, write_limit):
+def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify, matrix_exists, read_limit, write_limit, n_threads):
     # set up logging
     invoke_executor = fs.ThreadPoolExecutor(1)
     logger = logging.getLogger()
@@ -58,7 +58,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     logger.addHandler(ch)
     logger.info("Logging to {0}".format(log_file))
     if standalone:
-        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"], "OMP_NUM_THREADS":"1", "AWS_DEFAULT_REGION":region}
+        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"], "OMP_NUM_THREADS":str(n_threads), "AWS_DEFAULT_REGION":region}
         config = wc.default()
         config['runtime']['s3_bucket'] = 'numpywrenpublic'
         key = "pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz"
@@ -77,7 +77,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
     if (not matrix_exists):
         X = np.random.randn(problem_size, 1)
         shard_sizes = [shard_size, 1]
-        X_sharded = BigMatrix("gemm_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi")
+        X_sharded = BigMatrix("gemm_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrentest")
         shard_matrix(X_sharded, X)
         print("Generating PSD matrix...")
         t = time.time()
@@ -86,9 +86,9 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         e = time.time()
         print("GEMM took {0}".format(e - t))
     else:
-        X_sharded = BigMatrix("gemm_test_{0}_{1}".format(problem_size, shard_size), autosqueeze=False, bucket="numpywrennsdi")
+        X_sharded = BigMatrix("gemm_test_{0}_{1}".format(problem_size, shard_size), autosqueeze=False, bucket="numpywrentest")
         key_name = binops.generate_key_name_binop(X_sharded, X_sharded.T, "gemm")
-        XXT_sharded = BigMatrix(key_name, hash_keys=False, bucket="numpywrennsdi")
+        XXT_sharded = BigMatrix(key_name, hash_keys=False, bucket="numpywrentest")
     XXT_sharded.lambdav = problem_size*10
     t = time.time()
     program, meta = gemm(XXT_sharded, XXT_sharded.T)
@@ -347,6 +347,7 @@ if __name__ == "__main__":
     parser.add_argument('--start_cores', type=int, default=32)
     parser.add_argument('--pipeline', type=int, default=1)
     parser.add_argument('--timeout', type=int, default=140)
+    parser.add_argument('--n_threads', type=int, default=1)
     parser.add_argument('--write_limit', type=int, default=1e6)
     parser.add_argument('--read_limit', type=int, default=1e6)
     parser.add_argument('--autoscale_policy', type=str, default="constant_timeout")
@@ -361,7 +362,7 @@ if __name__ == "__main__":
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--matrix_exists', action='store_true')
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.num_priorities, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify, args.matrix_exists, args.write_limit, args.read_limit)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.num_priorities, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify, args.matrix_exists, args.write_limit, args.read_limit, args.n_threads)
 
 
 

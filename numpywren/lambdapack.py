@@ -77,6 +77,7 @@ def put(client, key, value, s3=False, s3_bucket=""):
     val = None
     while(True):
       try:
+        print(key, value)
         val = client.set(key, value)
         break
       except redis.exceptions.TimeoutError:
@@ -748,7 +749,7 @@ class LambdaPackProgram(object):
       return get(self.control_plane.client, "{0}_progress".format(self.hash))
 
     def set_up(self, value):
-      put(self.control_plane.client,self.control_plane.client, self.up, value)
+      put(self.control_plane.client, self.up, value)
 
     def wait(self, sleep_time=1):
         status = self.program_status()

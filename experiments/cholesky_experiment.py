@@ -35,9 +35,9 @@ def parse_int(x):
 
 
 
-''' NSDI cholesky effectiveness experiments '''
+''' sosp cholesky effectiveness experiments '''
 
-def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify, matrix_exists, read_limit, write_limit):
+def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eager, truncate, max_cores, start_cores, trial, launch_granularity, timeout, log_granularity, autoscale_policy, standalone, warmup, verify, matrix_exists, read_limit, write_limit, n_threads):
     # set up logging
     invoke_executor = fs.ThreadPoolExecutor(1)
     logger = logging.getLogger()
@@ -63,7 +63,8 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         config['runtime']['s3_bucket'] = 'numpywrenpublic'
         key = "pywren.runtime/pywren_runtime-3.6-numpywren.tar.gz"
         config['runtime']['s3_key'] = key
-        pwex = pywren.standalone_executor(config=config)
+        extra_env ={"AWS_ACCESS_KEY_ID" : os.environ["AWS_ACCESS_KEY_ID"], "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"], "OMP_NUM_THREADS":str(n_threads), "AWS_DEFAULT_REGION":region}
+        pwex = pywren.standalone_executor(config=config, job_max_runtime=999999)
     else:
         extra_env = {"AWS_DEFAULT_REGION":region}
         config = wc.default()
@@ -77,7 +78,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         np.random.seed(0)
         X = np.random.randn(problem_size, 1)
         shard_sizes = [shard_size, 1]
-        X_sharded = BigMatrix("nsdi_cholesky_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi2", parent_fn=constant_zeros)
+        X_sharded = BigMatrix("sosp_cholesky_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrentest", parent_fn=constant_zeros)
         shard_matrix(X_sharded, X)
         t = time.time()
         print(X_sharded.shape)
@@ -85,9 +86,9 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         e = time.time()
         print("GEMM took {0}".format(e - t))
     else:
-        X_sharded = BigMatrix("nsdi_cholesky_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrennsdi2", parent_fn=constant_zeros)
+        X_sharded = BigMatrix("sosp_cholesky_test_{0}_{1}".format(problem_size, shard_size), shape=X.shape, shard_sizes=shard_sizes, write_header=True, autosqueeze=False, bucket="numpywrentest", parent_fn=constant_zeros)
         key_name = binops.generate_key_name_binop(X_sharded, X_sharded.T, "gemm")
-        XXT_sharded = BigMatrix(key_name, hash_keys=False, bucket="numpywrennsdi2")
+        XXT_sharded = BigMatrix(key_name, hash_keys=False, bucket="numpywrentest")
     XXT_sharded.lambdav = problem_size*20e12
     if (verify):
         A = XXT_sharded.numpy()
@@ -320,6 +321,7 @@ def run_experiment(problem_size, shard_size, pipeline, num_priorities, lru, eage
         raise
         pass
     print(program.program_status())
+    print([f.result() for f in all_futures])
     exp["all_futures"] = all_futures
     exp_bytes = dill.dumps(exp)
     client = boto3.client('s3')
@@ -362,8 +364,9 @@ if __name__ == "__main__":
     parser.add_argument('--warmup', action='store_true')
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--matrix_exists', action='store_true')
+    parser.add_argument('--n_threads', type=int, default=1)
     args = parser.parse_args()
-    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.num_priorities, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify, args.matrix_exists, args.write_limit, args.read_limit)
+    run_experiment(args.problem_size, args.shard_size, args.pipeline, args.num_priorities, args.lru, args.eager, args.truncate, args.max_cores, args.start_cores, args.trial, args.launch_granularity, args.timeout, args.log_granularity, args.autoscale_policy, args.standalone, args.warmup, args.verify, args.matrix_exists, args.write_limit, args.read_limit, args.n_threads)
 
 
 
